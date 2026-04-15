@@ -31,36 +31,35 @@ echo "  vault:        $VAULT_ROOT"
 echo "  config dir:   $CLAUDE_DIR"
 echo
 
-# 1. Ensure the venv exists and brain-mcp is installed
+# 1. Ensure the venv exists and brain-mcp is installed (non-editable)
 if [ ! -x "$VENV_PYTHON" ]; then
-  echo "[1/5] creating Python venv at $MCP_SERVER_DIR/.venv"
+  echo "[1/6] creating Python venv at $MCP_SERVER_DIR/.venv"
   python3 -m venv "$MCP_SERVER_DIR/.venv"
   "$MCP_SERVER_DIR/.venv/bin/pip" install --quiet --upgrade pip
-  "$MCP_SERVER_DIR/.venv/bin/pip" install --quiet -e "$MCP_SERVER_DIR"
-else
-  echo "[1/5] venv already exists; ensuring brain-mcp is installed"
-  "$MCP_SERVER_DIR/.venv/bin/pip" install --quiet -e "$MCP_SERVER_DIR" >/dev/null 2>&1 || true
 fi
+echo "[1/6] installing brain-mcp into venv"
+"$MCP_SERVER_DIR/.venv/bin/pip" install --quiet --force-reinstall --no-deps "$MCP_SERVER_DIR" >/dev/null
+"$MCP_SERVER_DIR/.venv/bin/pip" install --quiet "$MCP_SERVER_DIR" >/dev/null
 
-# 2. Sanity check the Python module loads
-if ! BRAIN_VAULT="$VAULT_ROOT" "$VENV_PYTHON" -c "from brain_mcp import vault, server" 2>/dev/null; then
-  echo "ERROR: brain_mcp module failed to import. Aborting." >&2
+# 2. Sanity check the Python module loads from a foreign cwd
+if ! ( cd /tmp && BRAIN_VAULT="$VAULT_ROOT" "$VENV_PYTHON" -c "from brain_mcp import vault, server" 2>/dev/null ); then
+  echo "ERROR: brain_mcp module failed to import from a foreign cwd. Aborting." >&2
   exit 2
 fi
 
 mkdir -p "$CLAUDE_DIR/skills/brain"
 
 # 3. Drop the global CLAUDE.md, substituting __BRAIN_VAULT__
-echo "[2/5] writing $CLAUDE_DIR/CLAUDE.md"
+echo "[2/6] writing $CLAUDE_DIR/CLAUDE.md"
 sed "s|__BRAIN_VAULT__|$VAULT_ROOT|g" \
   "$SETUP_DIR/templates/global-CLAUDE.md" > "$CLAUDE_DIR/CLAUDE.md"
 
 # 4. Drop the brain skill
-echo "[3/5] writing $CLAUDE_DIR/skills/brain/SKILL.md"
+echo "[3/6] writing $CLAUDE_DIR/skills/brain/SKILL.md"
 cp "$SETUP_DIR/templates/skills/brain/SKILL.md" "$CLAUDE_DIR/skills/brain/SKILL.md"
 
 # 5. Merge hooks block into settings.json (in-place, preserving other keys)
-echo "[4/5] merging hooks into $CLAUDE_DIR/settings.json"
+echo "[4/6] merging hooks into $CLAUDE_DIR/settings.json"
 SETTINGS_FILE="$CLAUDE_DIR/settings.json"
 [ -f "$SETTINGS_FILE" ] || echo '{}' > "$SETTINGS_FILE"
 
@@ -91,37 +90,27 @@ with open(settings_path, "w", encoding="utf-8") as f:
     f.write("\n")
 PY
 
-# 6. Merge MCP registration into .mcp.json
-echo "[5/5] merging brain MCP server into $CLAUDE_DIR/.mcp.json"
-MCP_FILE="$CLAUDE_DIR/.mcp.json"
-[ -f "$MCP_FILE" ] || echo '{}' > "$MCP_FILE"
+# 6. Register the brain MCP server with USER scope via the claude CLI.
+#    We can't write .mcp.json by hand for user scope — Claude Code only reads .mcp.json
+#    from the current project dir. User-scoped servers live in ~/.claude.json under the
+#    config dir, and `claude mcp add --scope user` is the supported way to write them.
+echo "[5/6] registering brain MCP server (user scope)"
+CLAUDE_BIN="${CLAUDE_BIN:-claude}"
+if ! command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
+  echo "WARNING: '$CLAUDE_BIN' not on PATH; skipping MCP registration." >&2
+  echo "         Re-run with CLAUDE_BIN=/path/to/claude $0 $CLAUDE_DIR" >&2
+else
+  # Remove any previous brain registration in this scope to keep idempotency clean.
+  CLAUDE_CONFIG_DIR="$CLAUDE_DIR" "$CLAUDE_BIN" mcp remove brain --scope user >/dev/null 2>&1 || true
+  CLAUDE_CONFIG_DIR="$CLAUDE_DIR" "$CLAUDE_BIN" mcp add brain --scope user \
+    -e "BRAIN_VAULT=$VAULT_ROOT" \
+    -- "$VENV_PYTHON" -m brain_mcp >/dev/null
+  echo "       ✓ registered as user-scope MCP server in $CLAUDE_DIR"
+fi
 
-MCP_TEMPLATE="$SETUP_DIR/templates/mcp.json"
-
-"$VENV_PYTHON" - "$MCP_FILE" "$MCP_TEMPLATE" "$VENV_PYTHON" "$VAULT_ROOT" <<'PY'
-import json, sys
-mcp_path, template_path, brain_python, brain_vault = sys.argv[1:5]
-
-with open(mcp_path, "r", encoding="utf-8") as f:
-    try:
-        existing = json.load(f)
-    except json.JSONDecodeError:
-        existing = {}
-
-with open(template_path, "r", encoding="utf-8") as f:
-    template = f.read()
-
-template = template.replace("__BRAIN_PYTHON__", brain_python).replace("__BRAIN_VAULT__", brain_vault)
-new_block = json.loads(template)
-
-existing.setdefault("mcpServers", {})
-for name, definition in new_block["mcpServers"].items():
-    existing["mcpServers"][name] = definition
-
-with open(mcp_path, "w", encoding="utf-8") as f:
-    json.dump(existing, f, indent=2)
-    f.write("\n")
-PY
+# 7. Clean up the obsolete .mcp.json from earlier setup runs (it never worked).
+echo "[6/6] cleanup"
+rm -f "$CLAUDE_DIR/.mcp.json"
 
 echo
 echo "✓ Brain installed in $CLAUDE_DIR"
