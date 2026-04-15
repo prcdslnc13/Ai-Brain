@@ -1,0 +1,9 @@
+.git
+.git/**
+.DS_Store
+**/__pycache__/**
+**/*.pyc
+**/.venv/**
+Brain/.pending-saves/**
+*.tmp
+*.lock

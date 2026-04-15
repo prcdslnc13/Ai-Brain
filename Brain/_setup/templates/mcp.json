@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "brain": {
+      "command": "__BRAIN_PYTHON__",
+      "args": ["-m", "brain_mcp"],
+      "env": {
+        "BRAIN_VAULT": "__BRAIN_VAULT__"
+      }
+    }
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__BRAIN_PYTHON__ __BRAIN_HOOKS__/session_start.py",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__BRAIN_PYTHON__ __BRAIN_HOOKS__/user_prompt_submit.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__BRAIN_PYTHON__ __BRAIN_HOOKS__/stop.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__BRAIN_PYTHON__ __BRAIN_HOOKS__/pre_compact.py",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__BRAIN_PYTHON__ __BRAIN_HOOKS__/session_end.py",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
