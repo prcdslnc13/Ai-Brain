@@ -83,6 +83,19 @@ def find_python3() -> list[str]:
 
 # ---------- prompts ----------
 
+def clean_path(raw: str) -> str:
+    """Strip whitespace and one layer of surrounding quotes.
+
+    Windows Explorer's "Copy as path" wraps the result in double quotes; users on
+    any shell often paste single- or double-quoted paths. Treat the quotes as
+    decoration, not part of the path.
+    """
+    s = raw.strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
+        s = s[1:-1].strip()
+    return s
+
+
 def prompt(label: str, default: str | None = None) -> str:
     suffix = f" [{default}]" if default else ""
     while True:
@@ -116,8 +129,9 @@ def prompt_yes_no(label: str, default: bool = True) -> bool:
 
 def prompt_vault(initial: Path | None) -> Path:
     while True:
-        chosen = Path(prompt("Vault root (must contain or will contain a Brain/ subdir)",
-                             default=str(initial) if initial else None)).expanduser()
+        raw = prompt("Vault root (must contain or will contain a Brain/ subdir)",
+                     default=str(initial) if initial else None)
+        chosen = Path(clean_path(raw)).expanduser()
         if chosen.exists() and chosen.is_dir():
             return chosen.resolve()
         if not chosen.exists():
@@ -146,7 +160,7 @@ def prompt_claude_dirs(detected: list[Path]) -> list[Path]:
         return detected
 
     for token in raw.split(","):
-        token = token.strip()
+        token = clean_path(token)
         if not token:
             continue
         if token.isdigit() and detected:
@@ -370,7 +384,7 @@ def main() -> None:
 
     # ---- vault ----
     if args.vault:
-        vault_root = Path(args.vault).expanduser().resolve()
+        vault_root = Path(clean_path(args.vault)).expanduser().resolve()
         if not vault_root.exists():
             if args.non_interactive:
                 die(f"vault path does not exist: {vault_root}")
@@ -387,7 +401,7 @@ def main() -> None:
     if args.claude_dir:
         claude_dirs = []
         for d in args.claude_dir:
-            p = Path(d).expanduser().resolve()
+            p = Path(clean_path(d)).expanduser().resolve()
             if not p.exists():
                 if args.non_interactive:
                     p.mkdir(parents=True, exist_ok=True)
