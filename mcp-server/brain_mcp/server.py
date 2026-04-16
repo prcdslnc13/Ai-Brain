@@ -46,7 +46,9 @@ async def list_tools() -> list[Tool]:
             description=(
                 "Search the vault for memories matching a query. Use this proactively whenever the user "
                 "mentions a project, person, tool, or topic you might already know about — do not wait "
-                "to be asked."
+                "to be asked. Returns previews by default to keep responses small; if a hit looks "
+                "relevant and you need its full content, recall again with full_body=true and a tighter "
+                "query."
             ),
             inputSchema={
                 "type": "object",
@@ -60,6 +62,17 @@ async def list_tools() -> list[Tool]:
                     "project": {
                         "type": "string",
                         "description": "optional filter to a specific project basename",
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "description": "max number of hits to return (default 5).",
+                        "default": 5,
+                    },
+                    "full_body": {
+                        "type": "boolean",
+                        "description": "return the full file body instead of a ~600-char preview "
+                                       "(default false).",
+                        "default": False,
                     },
                 },
                 "required": ["query"],
@@ -159,12 +172,22 @@ async def call_tool(name: str, arguments: dict | None) -> list[TextContent]:
         if name == "brain_session_start":
             return _ok(vault.session_start_bundle(args.get("project")))
         if name == "brain_recall":
+            top_k = int(args.get("top_k", 5))
+            full_body = bool(args.get("full_body", False))
             results = vault.search_memories(
                 query=args["query"],
                 mtype=args.get("type"),
                 project=args.get("project"),
             )
-            return _ok({"count": len(results), "results": [m.to_dict() for m in results]})
+            truncated_total = len(results)
+            results = results[:max(1, top_k)]
+            body_chars = None if full_body else 600
+            return _ok({
+                "count": len(results),
+                "total_matches": truncated_total,
+                "preview": not full_body,
+                "results": [m.to_dict(body_chars=body_chars) for m in results],
+            })
         if name == "brain_save":
             path = vault.write_memory(
                 mtype=args["type"],
