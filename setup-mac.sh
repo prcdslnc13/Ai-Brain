@@ -50,10 +50,15 @@ echo "[1/6] installing brain-mcp into venv"
 "$MCP_SERVER_DIR/.venv/bin/pip" install --quiet "$MCP_SERVER_DIR" >/dev/null
 
 # 2. Sanity check the Python module loads from a foreign cwd
-if ! ( cd /tmp && BRAIN_VAULT="$VAULT_ROOT" "$VENV_PYTHON" -c "from brain_mcp import vault, server" 2>/dev/null ); then
+if ! ( cd /tmp && BRAIN_VAULT="$VAULT_ROOT" "$VENV_PYTHON" -c "from brain_mcp import vault, server, embed, compact" 2>/dev/null ); then
   echo "ERROR: brain_mcp module failed to import from a foreign cwd. Aborting." >&2
   exit 2
 fi
+
+# 2b. Warm up the fastembed model so the first brain_recall isn't a 30s stall.
+echo "      warming up embedding model (one-time ONNX download, ~130MB)…"
+BRAIN_VAULT="$VAULT_ROOT" "$VENV_PYTHON" -c "from brain_mcp.embed import EmbedIndex; EmbedIndex.warm()" \
+  || echo "WARNING: embed warm-up failed; vector recall will fall back to ripgrep until resolved." >&2
 
 # 3. Ensure the vault has a Brain/ subdir to write into
 mkdir -p "$VAULT_ROOT/Brain/user" "$VAULT_ROOT/Brain/feedback" "$VAULT_ROOT/Brain/references" "$VAULT_ROOT/Brain/projects"

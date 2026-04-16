@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -111,7 +112,28 @@ def write_memory(mtype: str, name: str, content: str, project: str | None = None
         )
         body = frontmatter + content.strip() + "\n"
     path.write_text(body, encoding="utf-8")
+    _try_embed_upsert(path)
     return path
+
+
+def _try_embed_upsert(path: Path) -> None:
+    if os.environ.get("BRAIN_EMBED", "1") == "0":
+        return
+    try:
+        from . import embed as _embed
+        _embed.EmbedIndex.upsert(path)
+    except Exception as e:
+        print(f"brain embed upsert skipped: {e}", file=sys.stderr)
+
+
+def _try_embed_delete(path: Path) -> None:
+    if os.environ.get("BRAIN_EMBED", "1") == "0":
+        return
+    try:
+        from . import embed as _embed
+        _embed.EmbedIndex.delete(path)
+    except Exception as e:
+        print(f"brain embed delete skipped: {e}", file=sys.stderr)
 
 
 def list_memories(mtype: str | None = None, project: str | None = None) -> list[Memory]:
@@ -138,9 +160,7 @@ def list_memories(mtype: str | None = None, project: str | None = None) -> list[
     return [Memory.from_file(p) for p in sorted(set(candidates))]
 
 
-def search_memories(query: str, mtype: str | None = None, project: str | None = None) -> list[Memory]:
-    """Use ripgrep for content search; fall back to substring scan if rg is missing."""
-    root = vault_root()
+def _ripgrep_search(query: str, root: Path) -> set[Path]:
     rg = shutil.which("rg")
     matches: set[Path] = set()
     if rg:
@@ -162,54 +182,148 @@ def search_memories(query: str, mtype: str | None = None, project: str | None = 
                     matches.add(p)
             except Exception:
                 continue
+    return {p for p in matches
+            if "_setup" not in p.parts
+            and ".pending-saves" not in p.parts
+            and ".index" not in p.parts
+            and "archive" not in p.parts}
 
-    matches = {p for p in matches if "_setup" not in p.parts and ".pending-saves" not in p.parts}
-    candidates = [Memory.from_file(p) for p in matches]
 
+def search_memories(query: str, mtype: str | None = None, project: str | None = None) -> list[Memory]:
+    """Hybrid search: vector top-K first (if available), then any extra ripgrep hits.
+
+    Disabled by setting BRAIN_EMBED=0. On any embed failure (missing dep, model load,
+    sqlite error) falls back transparently to ripgrep substring search.
+    """
+    root = vault_root()
+    use_embed = os.environ.get("BRAIN_EMBED", "1") != "0"
+
+    ordered_paths: list[Path] = []
+    seen: set[Path] = set()
+
+    if use_embed:
+        try:
+            from . import embed as _embed
+            _embed.EmbedIndex.sync()
+            hits = _embed.EmbedIndex.query(
+                query, top_k=20, type_filter=mtype, project_filter=project,
+            )
+            for path_str, _score in hits:
+                p = Path(path_str)
+                if p in seen:
+                    continue
+                if not p.exists():
+                    continue
+                if any(part in {"_setup", ".pending-saves", ".index", "archive"}
+                       for part in p.parts):
+                    continue
+                ordered_paths.append(p)
+                seen.add(p)
+        except Exception as e:
+            print(f"brain embed unavailable, falling back to ripgrep: {e}", file=sys.stderr)
+
+    rg_hits = _ripgrep_search(query, root)
+    extras = sorted(rg_hits - seen, key=lambda p: p.stat().st_mtime, reverse=True)
+    for p in extras:
+        ordered_paths.append(p)
+
+    candidates = [Memory.from_file(p) for p in ordered_paths]
     if mtype:
         candidates = [m for m in candidates if m.type == mtype]
     if project:
         candidates = [m for m in candidates if f"/projects/{project}/" in str(m.path)]
-
-    candidates.sort(key=lambda m: m.path.stat().st_mtime, reverse=True)
     return candidates
 
 
 def session_start_bundle(project: str | None = None) -> dict:
-    """Return the standard preload bundle: index + user + feedback + project context."""
-    root = vault_root()
-    bundle: dict = {"loaded_at": datetime.now().isoformat(timespec="seconds"), "sections": []}
+    """Return the standard preload bundle: index + user + feedback + project context.
 
-    def add(label: str, files: list[Path]):
-        items = []
+    Honours BRAIN_BUNDLE_BUDGET_KB (default 8). The index, project overview, and latest
+    session checkpoint are always included — they're small and load-bearing. User profile
+    entries and feedback files are added in priority order until the budget is exhausted.
+    """
+    root = vault_root()
+    try:
+        budget_kb = float(os.environ.get("BRAIN_BUNDLE_BUDGET_KB", "8"))
+    except ValueError:
+        budget_kb = 8.0
+    budget_bytes = int(budget_kb * 1024)
+
+    bundle: dict = {
+        "loaded_at": datetime.now().isoformat(timespec="seconds"),
+        "sections": [],
+        "budget_limit_kb": round(budget_kb, 2),
+    }
+
+    sections_by_label: dict[str, dict] = {}
+    consumed_bytes = 0
+    skipped_counts: dict[str, int] = {}
+
+    def add_pinned(label: str, file: Path) -> None:
+        nonlocal consumed_bytes
+        try:
+            content = file.read_text(encoding="utf-8")
+        except Exception:
+            return
+        rel = str(file.relative_to(root.parent))
+        item = {"path": rel, "content": content}
+        section = sections_by_label.get(label)
+        if section is None:
+            section = {"label": label, "items": []}
+            sections_by_label[label] = section
+            bundle["sections"].append(section)
+        section["items"].append(item)
+        consumed_bytes += len(content.encode("utf-8"))
+
+    def add_elastic(label: str, files: list[Path]) -> None:
+        nonlocal consumed_bytes
         for f in files:
             try:
-                items.append({
-                    "path": str(f.relative_to(root.parent)),
-                    "content": f.read_text(encoding="utf-8"),
-                })
+                content = f.read_text(encoding="utf-8")
             except Exception:
                 continue
-        if items:
-            bundle["sections"].append({"label": label, "items": items})
+            size = len(content.encode("utf-8"))
+            if consumed_bytes + size > budget_bytes and consumed_bytes > 0:
+                skipped_counts[label] = skipped_counts.get(label, 0) + 1
+                continue
+            rel = str(f.relative_to(root.parent))
+            item = {"path": rel, "content": content}
+            section = sections_by_label.get(label)
+            if section is None:
+                section = {"label": label, "items": []}
+                sections_by_label[label] = section
+                bundle["sections"].append(section)
+            section["items"].append(item)
+            consumed_bytes += size
 
     index_file = root / "_index.md"
     if index_file.exists():
-        add("index", [index_file])
-    add("user", sorted((root / "user").glob("*.md")) if (root / "user").exists() else [])
-    add("feedback", sorted((root / "feedback").rglob("*.md")) if (root / "feedback").exists() else [])
+        add_pinned("index", index_file)
 
     if project:
         proj_dir = root / "projects" / project
         if proj_dir.exists():
             overview = proj_dir / "overview.md"
             if overview.exists():
-                add(f"project:{project}:overview", [overview])
+                add_pinned(f"project:{project}:overview", overview)
             sessions_dir = proj_dir / "sessions"
             if sessions_dir.exists():
                 latest = sorted(sessions_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
                 if latest:
-                    add(f"project:{project}:latest-session", [latest[0]])
+                    add_pinned(f"project:{project}:latest-session", latest[0])
+
+    user_dir = root / "user"
+    if user_dir.exists():
+        add_elastic("user", sorted(user_dir.glob("*.md")))
+
+    feedback_dir = root / "feedback"
+    if feedback_dir.exists():
+        feedback_files = sorted(
+            feedback_dir.rglob("*.md"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        add_elastic("feedback", feedback_files)
 
     pending = root / ".pending-saves"
     if pending.exists():
@@ -217,6 +331,8 @@ def session_start_bundle(project: str | None = None) -> dict:
         if markers:
             bundle["pending_saves"] = [m.name for m in markers]
 
+    bundle["budget_consumed_kb"] = round(consumed_bytes / 1024.0, 2)
+    bundle["skipped_sections"] = skipped_counts
     return bundle
 
 
@@ -240,6 +356,104 @@ def write_checkpoint(project: str, summary: str) -> Path:
     return path
 
 
+_STATS_EXCLUDE = {"archive", "_setup", ".pending-saves", ".index"}
+
+
+def _stats_iter_md(root: Path):
+    for p in root.rglob("*.md"):
+        if any(part in _STATS_EXCLUDE for part in p.relative_to(root).parts):
+            continue
+        yield p
+
+
+def _read_frontmatter_type(path: Path) -> str | None:
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            head = f.read(2048)
+    except OSError:
+        return None
+    if not head.startswith("---"):
+        return None
+    end = head.find("\n---", 3)
+    if end == -1:
+        return None
+    try:
+        fm = yaml.safe_load(head[3:end]) or {}
+    except yaml.YAMLError:
+        return None
+    val = fm.get("type")
+    return val if isinstance(val, str) else None
+
+
+def stats() -> dict:
+    """Vault telemetry: counts, index size, oldest active checkpoint, pending-save backlog."""
+    root = vault_root()
+
+    total = 0
+    by_type: dict[str, int] = {"user": 0, "feedback": 0, "project": 0, "reference": 0}
+    for p in _stats_iter_md(root):
+        total += 1
+        t = _read_frontmatter_type(p)
+        if t in by_type:
+            by_type[t] += 1
+
+    oldest_checkpoint: str | None = None
+    earliest_mtime: float | None = None
+    sessions_glob = list((root / "projects").glob("*/sessions/*.md")) if (root / "projects").exists() else []
+    for p in sessions_glob:
+        try:
+            m = p.stat().st_mtime
+        except OSError:
+            continue
+        if earliest_mtime is None or m < earliest_mtime:
+            earliest_mtime = m
+            oldest_checkpoint = datetime.fromtimestamp(m).date().isoformat()
+
+    pending_max_age_hours: float | None = None
+    pending_dir = root / ".pending-saves"
+    if pending_dir.exists():
+        markers = [p for p in pending_dir.iterdir() if p.is_file()]
+        if markers:
+            mtimes = []
+            for m in markers:
+                try:
+                    mtimes.append(m.stat().st_mtime)
+                except OSError:
+                    continue
+            if mtimes:
+                pending_max_age_hours = round((datetime.now().timestamp() - min(mtimes)) / 3600.0, 2)
+
+    index_path = root / ".index" / "embeddings.sqlite"
+    index_size_mb: float | None
+    try:
+        index_size_mb = round(index_path.stat().st_size / 1e6, 3) if index_path.exists() else None
+    except OSError:
+        index_size_mb = None
+
+    archive_root = root / "archive"
+    archive_size_mb: float | None
+    if archive_root.exists():
+        total_bytes = 0
+        for f in archive_root.rglob("*"):
+            try:
+                if f.is_file():
+                    total_bytes += f.stat().st_size
+            except OSError:
+                continue
+        archive_size_mb = round(total_bytes / 1e6, 3)
+    else:
+        archive_size_mb = None
+
+    return {
+        "total_items": total,
+        "by_type": by_type,
+        "oldest_active_checkpoint": oldest_checkpoint,
+        "pending_saves_max_age_hours": pending_max_age_hours,
+        "index_size_mb": index_size_mb,
+        "archive_size_mb": archive_size_mb,
+    }
+
+
 def forget_memory(rel_or_abs_path: str) -> Path:
     root = vault_root()
     p = Path(rel_or_abs_path)
@@ -254,4 +468,5 @@ def forget_memory(rel_or_abs_path: str) -> Path:
     if root not in p.resolve().parents and p.resolve() != root:
         raise PermissionError(f"refusing to delete outside the Brain dir: {p}")
     p.unlink()
+    _try_embed_delete(p)
     return p

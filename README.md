@@ -64,8 +64,14 @@ directory. A minimal seed (created on first save automatically):
     ├── references/         # pointers to external systems
     ├── projects/<name>/    # per-project context + session checkpoints
     ├── activity.md         # rolling breadcrumb log
-    └── .pending-saves/     # transient save-signal markers
+    ├── .pending-saves/     # transient save-signal markers
+    ├── .index/             # local sqlite vector index — DO NOT sync (machine-local)
+    └── archive/            # rolled-up old checkpoints — exclude from sync to save bandwidth
 ```
+
+Add `Brain/.index/` and `Brain/archive/` to Obsidian's sync-ignore list. The vector
+index is rebuilt automatically on the next `brain_recall`, so syncing it across
+machines just churns disk and bandwidth. The archive is large but rarely read.
 
 ## Local model integration
 

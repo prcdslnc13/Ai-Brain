@@ -81,10 +81,17 @@ Write-Host "[1/6] installing brain-mcp into venv"
 Push-Location $env:TEMP
 try {
   $env:BRAIN_VAULT = $VaultRoot
-  & $VenvPython -c "from brain_mcp import vault, server"
+  & $VenvPython -c "from brain_mcp import vault, server, embed, compact"
   if ($LASTEXITCODE -ne 0) {
     Write-Error "brain_mcp module failed to import from a foreign cwd. Aborting."
     exit 2
+  }
+
+  # Warm up the fastembed model so the first brain_recall isn't a 30s stall.
+  Write-Host "      warming up embedding model (one-time ONNX download, ~130MB)..."
+  & $VenvPython -c "from brain_mcp.embed import EmbedIndex; EmbedIndex.warm()"
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warning "embed warm-up failed; vector recall will fall back to ripgrep until resolved."
   }
 } finally {
   Pop-Location

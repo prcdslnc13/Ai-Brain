@@ -125,6 +125,13 @@ exact Claude Code version — this is a regression worth fixing at the source.
 `setup-windows.ps1` quotes every path it passes. If you still see quoting errors, pass the
 config dir and vault path as quoted strings on the PowerShell command line, not unquoted.
 
+## Sync hygiene
+
+Add `Brain\.index\` and `Brain\archive\` to Obsidian's sync-ignore list. The vector
+index is machine-local sqlite — syncing it just churns bandwidth and the index will
+self-heal on the next `brain_recall` regardless. The archive directory holds rolled-up
+old session checkpoints and is rarely read.
+
 ## Also see
 
 - `ROADMAP.md` — Phase 2B for design notes and the list of Windows-specific verification

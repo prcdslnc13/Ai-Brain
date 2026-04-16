@@ -17,6 +17,14 @@ def render(bundle: dict) -> str:
     lines: list[str] = []
     lines.append("# Long-term memory (loaded from Brain vault)")
     lines.append("")
+    consumed = bundle.get("budget_consumed_kb")
+    limit = bundle.get("budget_limit_kb")
+    if consumed is not None and limit is not None:
+        skipped = bundle.get("skipped_sections") or {}
+        skip_parts = [f"{n} {label}" for label, n in skipped.items() if n]
+        skip_str = f" · skipped {', '.join(skip_parts)}" if skip_parts else ""
+        lines.append(f"> budget: {consumed}/{limit} KB{skip_str}")
+        lines.append("")
     if bundle.get("pending_saves"):
         lines.append(f"⚠ pending save markers: {', '.join(bundle['pending_saves'])}")
         lines.append("")

@@ -18,8 +18,12 @@ completes or the plan changes.
   step is a human clicking through LMStudio's UI on each machine. 2B (Windows setup script)
   is implemented but not yet verified on a real Windows machine. 2C (Ollama) still pending.
 
-- **Phase 3 — Hardening + quality: ⏳ not started.** Tuning, smarter checkpoints, optional
-  improvements. See below.
+- **Phase 3 — Hardening + quality: 🟡 partial.** Vector recall (fastembed sqlite index),
+  bundle byte budget, `brain-compact` CLI, and `brain_stats` tool all landed. Phase 3B
+  (smarter checkpoints) is now partly addressed by `brain-compact` rolling old
+  checkpoints into daily/weekly/archive buckets — the structural extracts still produce
+  the raw checkpoints; compaction keeps the live `sessions/` directory small. Remaining
+  3B work (real LLM-summarized checkpoints) is still optional.
 
 ---
 

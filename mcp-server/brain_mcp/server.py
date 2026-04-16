@@ -130,6 +130,14 @@ async def list_tools() -> list[Tool]:
                 "required": ["project", "summary"],
             },
         ),
+        Tool(
+            name="brain_stats",
+            description=(
+                "Report vault telemetry: counts, index size, oldest active checkpoint, "
+                "pending-save backlog. Useful for health checks."
+            ),
+            inputSchema={"type": "object", "properties": {}},
+        ),
     ]
 
 
@@ -174,6 +182,8 @@ async def call_tool(name: str, arguments: dict | None) -> list[TextContent]:
         if name == "brain_checkpoint":
             path = vault.write_checkpoint(args["project"], args["summary"])
             return _ok({"checkpoint": str(path)})
+        if name == "brain_stats":
+            return _ok(vault.stats())
         return _err(f"unknown tool: {name}")
     except Exception as e:
         return _err(f"{type(e).__name__}: {e}")
