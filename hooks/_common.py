@@ -7,15 +7,13 @@ All hooks read a JSON payload from stdin and may write a JSON object to stdout.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
 
-# brain_mcp lives in the sibling mcp-server/ directory; ensure it's importable
-_HERE = Path(__file__).resolve().parent
-_MCP_SERVER = _HERE.parent / "mcp-server"
-if str(_MCP_SERVER) not in sys.path:
-    sys.path.insert(0, str(_MCP_SERVER))
+# brain_mcp is installed in the sibling mcp-server/.venv (non-editable). Hooks are launched
+# with that venv's python, so brain_mcp imports without any sys.path tricks.
 
 
 def read_payload() -> dict:
@@ -37,7 +35,6 @@ def project_basename(payload: dict) -> str | None:
     cwd = payload.get("cwd")
     if cwd:
         return Path(cwd).name
-    import os
     cwd = os.environ.get("CLAUDE_PROJECT_DIR")
     if cwd:
         return Path(cwd).name
@@ -45,8 +42,16 @@ def project_basename(payload: dict) -> str | None:
 
 
 def vault_brain() -> Path:
-    """Return the Brain/ directory. Walk up from this file to find the vault root."""
-    return _HERE.parent.parent  # Brain/_setup/hooks → Brain/_setup → Brain
+    """Return the Brain/ directory inside $BRAIN_VAULT.
+
+    The hook command in settings.json must export BRAIN_VAULT before exec'ing the script.
+    """
+    raw = os.environ.get("BRAIN_VAULT")
+    if not raw:
+        raise RuntimeError("BRAIN_VAULT is not set; the hook command must export it before launching python.")
+    brain = Path(raw).expanduser().resolve() / "Brain"
+    brain.mkdir(parents=True, exist_ok=True)
+    return brain
 
 
 def append_activity(line: str) -> None:

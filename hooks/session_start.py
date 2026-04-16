@@ -3,16 +3,11 @@
 
 from __future__ import annotations
 
-import os
 import sys
 
-from _common import emit, project_basename, read_payload, vault_brain
-
-# Make BRAIN_VAULT available to brain_mcp.vault before importing it
-os.environ.setdefault("BRAIN_VAULT", str(vault_brain().parent))
-
-from brain_mcp import vault  # noqa: E402
-from brain_mcp.brain_prep import render  # noqa: E402
+from _common import emit, project_basename, read_payload
+from brain_mcp import vault
+from brain_mcp.brain_prep import render
 
 
 def main() -> None:

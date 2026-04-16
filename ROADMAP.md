@@ -13,8 +13,9 @@ completes or the plan changes.
   Repo is pushed to `github.com/<your-github-user>/Ai-Brain` (private). Code lives at `~/src/AiBrain`,
   memory content lives in the Obsidian vault at `~/Documents/Vaults/Ai-Brain`.
 
-- **Phase 2 — Local model integration: ⏳ not started.** LMStudio, Ollama, and Windows machines
-  are all deferred. See the detailed phase blocks below.
+- **Phase 2 — Local model integration: 🟡 in progress.** 2B (Windows setup script) is
+  implemented but not yet verified on a real Windows machine. 2A (LMStudio) and 2C (Ollama)
+  still pending.
 
 - **Phase 3 — Hardening + quality: ⏳ not started.** Tuning, smarter checkpoints, optional
   improvements. See below.
@@ -54,7 +55,34 @@ returns content from the vault.
 **This phase requires human action** (clicking in LMStudio's UI). An agent can only prepare the
 instructions and verify the MCP server standalone.
 
-### 2B — Windows setup script (`setup-windows.ps1`)
+### 2B — Windows setup script (`setup-windows.ps1`) 🟡 implemented, pending verification
+
+**Status:** `setup-windows.ps1` and `templates/settings.hooks.win.json` are in the repo.
+Design notes:
+- Uses a generated per-install `<config-dir>\brain-launch.cmd` wrapper (the roadmap's
+  preferred option) that bakes in `BRAIN_VAULT` and the venv python path. Each hook command
+  in `settings.json` is therefore just `<launch.cmd> <hook-name>` — no JSON quote escaping.
+- The wrapper uses `setlocal` so `BRAIN_VAULT` doesn't leak into the parent shell, and
+  `exit /b %ERRORLEVEL%` to propagate the hook's exit code.
+- Python discovery tries `py -3` → `python` → `python3`.
+- The JSON merge script escapes backslashes in the launch path before `template.replace` —
+  single backslashes would otherwise break `json.loads` of the template.
+
+**What still needs to happen on a real Windows machine:**
+1. Clone the repo to `C:\src\AiBrain` (or wherever) and run:
+   `powershell -ExecutionPolicy Bypass -File C:\src\AiBrain\setup-windows.ps1 "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"`
+2. Confirm `claude mcp list` shows `brain: ✓ Connected`.
+3. Open a Claude Code session in a real project → SessionStart preload appears.
+4. Say *"what do you know about me?"* → model recalls Mac-written memories (proves Obsidian
+   Sync propagated the vault content).
+5. If hooks fail to fire, first thing to try: change the command in
+   `templates/settings.hooks.win.json` from `__BRAIN_LAUNCH__ <hook>` to
+   `cmd.exe /c "__BRAIN_LAUNCH__ <hook>"`. (Claude Code on Windows *should* run hook commands
+   through cmd.exe, which handles `.cmd` files natively, but if it direct-execs them we'll
+   need the explicit prefix.)
+6. Verify `$CLAUDE_PROJECT_DIR` is populated on Windows the same way it is on Mac — the
+   hooks read it via `os.environ.get`. If it's missing, the project name falls back to the
+   `cwd` key in the hook payload, so this is only a risk if that payload is also absent.
 
 **Goal:** bootstrap the brain on Windows machines with the same idempotent guarantee as
 `setup-mac.sh`.

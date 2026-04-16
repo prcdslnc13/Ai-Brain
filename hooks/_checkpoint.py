@@ -10,18 +10,12 @@ NEXT model gets to summarize/integrate it as needed.
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime
 from pathlib import Path
 
-# Same import-path bootstrap as session_start
-import sys as _sys
-_HERE = Path(__file__).resolve().parent
-_MCP = _HERE.parent / "mcp-server"
-if str(_MCP) not in _sys.path:
-    _sys.path.insert(0, str(_MCP))
-
-os.environ.setdefault("BRAIN_VAULT", str(_HERE.parent.parent.parent))
+# brain_mcp is installed in mcp-server/.venv (non-editable) — the hook command launches us
+# via that interpreter, so this import works without sys.path tricks. BRAIN_VAULT must be
+# set in env by the hook command.
 from brain_mcp import vault as _vault  # noqa: E402
 
 

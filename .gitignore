@@ -1,11 +1,6 @@
 .DS_Store
-.obsidian/workspace.json
-.obsidian/workspace-mobile.json
-Brain/_setup/mcp-server/.venv/
-Brain/_setup/mcp-server/**/__pycache__/
-Brain/_setup/mcp-server/*.egg-info/
-Brain/_setup/mcp-server/build/
-Brain/_setup/hooks/__pycache__/
-Brain/.pending-saves/
-Brain/activity.md
-Brain/projects/*/sessions/
+mcp-server/.venv/
+mcp-server/**/__pycache__/
+mcp-server/*.egg-info/
+mcp-server/build/
+hooks/__pycache__/

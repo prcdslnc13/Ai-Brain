@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "BRAIN_VAULT=__BRAIN_VAULT__ __BRAIN_PYTHON__ __BRAIN_HOOKS__/session_start.py",
+            "command": "__BRAIN_LAUNCH__ session_start",
             "timeout": 15
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "BRAIN_VAULT=__BRAIN_VAULT__ __BRAIN_PYTHON__ __BRAIN_HOOKS__/user_prompt_submit.py",
+            "command": "__BRAIN_LAUNCH__ user_prompt_submit",
             "timeout": 5
           }
         ]
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "BRAIN_VAULT=__BRAIN_VAULT__ __BRAIN_PYTHON__ __BRAIN_HOOKS__/stop.py",
+            "command": "__BRAIN_LAUNCH__ stop",
             "timeout": 5
           }
         ]
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "BRAIN_VAULT=__BRAIN_VAULT__ __BRAIN_PYTHON__ __BRAIN_HOOKS__/pre_compact.py",
+            "command": "__BRAIN_LAUNCH__ pre_compact",
             "timeout": 30
           }
         ]
@@ -49,7 +49,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "BRAIN_VAULT=__BRAIN_VAULT__ __BRAIN_PYTHON__ __BRAIN_HOOKS__/session_end.py",
+            "command": "__BRAIN_LAUNCH__ session_end",
             "timeout": 30
           }
         ]

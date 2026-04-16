@@ -54,12 +54,22 @@ The moving parts fit together as follows:
   registers the MCP server with user scope via `claude mcp add`. Takes
   `<claude-config-dir> <vault-path>` as arguments.
 
+- **`setup-windows.ps1`** — the Windows counterpart to `setup-mac.sh`. Same arguments, same
+  idempotency guarantee. Generates a per-install `<config-dir>\brain-launch.cmd` wrapper that
+  bakes in `BRAIN_VAULT` and the venv python path, so hook commands in `settings.json` are just
+  `<launch.cmd> <hook-name>` with no JSON quote-escaping. Uses `templates/settings.hooks.win.json`
+  as the template. Python hooks and MCP server code are unchanged between platforms.
+
 ## Common commands
 
 ```bash
-# Re-install into a Claude Code config dir (idempotent)
+# Re-install into a Claude Code config dir (idempotent) — macOS
 ~/src/AiBrain/setup-mac.sh ~/.claude-personal ~/Documents/Vaults/Ai-Brain
 ~/src/AiBrain/setup-mac.sh ~/.claude-work ~/Documents/Vaults/Ai-Brain
+
+# Windows equivalent (PowerShell)
+# powershell -ExecutionPolicy Bypass -File C:\src\AiBrain\setup-windows.ps1 `
+#     "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
 
 # Verify the MCP server is registered and connected
 CLAUDE_CONFIG_DIR=~/.claude-personal claude mcp list
@@ -94,9 +104,12 @@ BRAIN_VAULT=~/Documents/Vaults/Ai-Brain \
   and must be written with `claude mcp add --scope user`. Do not try to hand-write it.
 
 - **Hooks must set `BRAIN_VAULT` in the command string itself**, because the subprocess inherits
-  the parent's env but the parent (Claude Code) doesn't export `BRAIN_VAULT`. The
+  the parent's env but the parent (Claude Code) doesn't export `BRAIN_VAULT`. On macOS, the
   `settings.hooks.json` template wraps each command as
-  `BRAIN_VAULT=<vault> <venv python> <hook>.py` — preserve that pattern.
+  `BRAIN_VAULT=<vault> <venv python> <hook>.py`. On Windows, Unix-style env prefixes don't work,
+  so `setup-windows.ps1` generates a `brain-launch.cmd` wrapper that sets the env and execs the
+  hook — `settings.hooks.win.json` just invokes that wrapper with the hook name as the argument.
+  Preserve whichever pattern matches the platform.
 
 - **Never walk up from `__file__` to find the vault.** That used to work when hooks lived inside
   the vault itself; now they live in this repo, which has no relationship to the vault path.
