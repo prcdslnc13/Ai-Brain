@@ -60,6 +60,10 @@ The moving parts fit together as follows:
   `<launch.cmd> <hook-name>` with no JSON quote-escaping. Uses `templates/settings.hooks.win.json`
   as the template. Python hooks and MCP server code are unchanged between platforms.
 
+- **`WINDOWS-SETUP.md`, `LMSTUDIO-SETUP.md`** — user-facing install guides for the Windows
+  bring-up and the LMStudio MCP registration. Keep these in sync with `setup-windows.ps1` and
+  the MCP server command/env contract respectively.
+
 ## Common commands
 
 ```bash

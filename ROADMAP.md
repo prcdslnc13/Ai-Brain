@@ -13,9 +13,10 @@ completes or the plan changes.
   Repo is pushed to `github.com/<your-github-user>/Ai-Brain` (private). Code lives at `~/src/AiBrain`,
   memory content lives in the Obsidian vault at `~/Documents/Vaults/Ai-Brain`.
 
-- **Phase 2 — Local model integration: 🟡 in progress.** 2B (Windows setup script) is
-  implemented but not yet verified on a real Windows machine. 2A (LMStudio) and 2C (Ollama)
-  still pending.
+- **Phase 2 — Local model integration: 🟡 in progress.** 2A (LMStudio) has a setup doc
+  (`LMSTUDIO-SETUP.md`) and the MCP server has been smoke-tested standalone; the remaining
+  step is a human clicking through LMStudio's UI on each machine. 2B (Windows setup script)
+  is implemented but not yet verified on a real Windows machine. 2C (Ollama) still pending.
 
 - **Phase 3 — Hardening + quality: ⏳ not started.** Tuning, smarter checkpoints, optional
   improvements. See below.
@@ -27,7 +28,13 @@ completes or the plan changes.
 Three independent pieces. Can be tackled in any order. 2A is the smallest win and the most useful
 because the user explicitly uses LMStudio; start there if no other preference is stated.
 
-### 2A — LMStudio MCP registration
+### 2A — LMStudio MCP registration 🟡 doc written, pending UI step
+
+**Status:** `LMSTUDIO-SETUP.md` documents the full install, verification, and troubleshooting
+flow for both macOS and Windows. The brain MCP server was smoke-tested standalone via stdio
+and confirmed healthy (initialize + tools/list both return the expected six-tool envelope).
+The only remaining work is human — clicking through LMStudio's settings UI on each machine
+to register the server — because LMStudio doesn't expose an import-from-file CLI.
 
 **Goal:** get the brain `brain_*` tools showing up inside LMStudio chats with tool-capable models.
 
