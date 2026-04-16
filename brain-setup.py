@@ -279,9 +279,13 @@ def merge_settings_json(claude_dir: Path, vault_root: Path) -> None:
     if IS_WINDOWS:
         launch_cmd = write_windows_launch_cmd(claude_dir, vault_root)
         template = (TEMPLATES_DIR / "settings.hooks.win.json").read_text(encoding="utf-8")
-        # JSON-escape the backslashes before substitution, since the template is
-        # parsed as JSON after the replace and single backslashes would break it.
-        template = template.replace("__BRAIN_LAUNCH__", str(launch_cmd).replace("\\", "\\\\"))
+        # Use forward slashes in the path written to settings.json. Claude Code on
+        # Windows often runs hooks through Git Bash (/usr/bin/bash), which strips
+        # single backslashes as escape characters — so "C:\Users\…\brain-launch.cmd"
+        # becomes "C:Usersbrain-launch.cmd" by the time it reaches the OS. Forward
+        # slashes work in cmd.exe, bash, and python.exe equally well on Windows.
+        launch_str = str(launch_cmd).replace("\\", "/")
+        template = template.replace("__BRAIN_LAUNCH__", launch_str)
     else:
         template = (TEMPLATES_DIR / "settings.hooks.json").read_text(encoding="utf-8")
         template = (

@@ -150,9 +150,12 @@ with open(settings_path, "r", encoding="utf-8") as f:
 with open(template_path, "r", encoding="utf-8") as f:
     template = f.read()
 
-# Backslashes in the Windows path must be JSON-escaped before substitution — the
-# template is parsed as JSON after the replace, and single backslashes would break it.
-template = template.replace("__BRAIN_LAUNCH__", brain_launch.replace("\\", "\\\\"))
+# Use forward slashes in the path written into settings.json. Claude Code on
+# Windows often runs hooks through Git Bash (/usr/bin/bash), which strips
+# single backslashes as escape characters — so "C:\Users\...\brain-launch.cmd"
+# becomes "C:Usersbrain-launch.cmd" by the time it reaches the OS. Forward
+# slashes work in cmd.exe, bash, and python.exe equally well on Windows.
+template = template.replace("__BRAIN_LAUNCH__", brain_launch.replace("\\", "/"))
 hooks_block = json.loads(template)["hooks"]
 
 settings.setdefault("hooks", {})

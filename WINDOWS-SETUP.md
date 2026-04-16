@@ -110,25 +110,35 @@ claude mcp list
 
 ## Troubleshooting
 
+### Hooks fail with `command not found` and a path missing its backslashes
+
+Symptom: Claude Code logs an error like
+`/usr/bin/bash: line 1: C:Users<you>.claudebrain-launch.cmd: command not found`.
+Notice the path has no backslashes — they were eaten by Git Bash, which Claude
+Code uses to run hooks on many Windows setups.
+
+Both `brain-setup.py` and `setup-windows.ps1` write **forward-slash** paths into
+`settings.json` for exactly this reason (`C:/Users/<you>/.claude/brain-launch.cmd`).
+Forward slashes survive bash, work in cmd.exe, and are accepted by `python.exe`.
+If you have an old install, re-run the wizard or `setup-windows.ps1` to refresh the
+hook block.
+
 ### Hooks don't fire at all (no SessionStart preload, no breadcrumbs in `Brain\activity.md`)
 
-The most likely cause is Claude Code's Windows hook runner direct-execing the command
-instead of going through `cmd.exe`. If that's the case, `brain-launch.cmd` is never
-interpreted as a batch file and the hook silently does nothing.
-
-Fix: edit `templates/settings.hooks.win.json` and wrap each command with `cmd.exe /c`:
+If forward-slash paths aren't enough — e.g. your shell doesn't dispatch `.cmd`
+files automatically — wrap each command with `cmd.exe /c`:
 
 ```jsonc
 // Before
-"command": "__BRAIN_LAUNCH__ session_start"
+"command": "C:/Users/<you>/.claude/brain-launch.cmd session_start"
 
 // After
-"command": "cmd.exe /c \"__BRAIN_LAUNCH__ session_start\""
+"command": "cmd.exe /c \"C:/Users/<you>/.claude/brain-launch.cmd session_start\""
 ```
 
-Then re-run `setup-windows.ps1` so the merged `settings.json` picks up the change. If this
-fixes it, please leave a note in `ROADMAP.md` Phase 2B so we can make `cmd.exe /c` the
-default on Windows.
+Edit `templates/settings.hooks.win.json` to bake this in, then re-run setup so the
+merged `settings.json` picks it up. If this fixes it for you, please leave a note in
+`ROADMAP.md` Phase 2B so we can make `cmd.exe /c` the default on Windows.
 
 ### `claude` not on PATH
 
