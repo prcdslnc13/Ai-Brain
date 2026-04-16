@@ -11,7 +11,8 @@ import os
 import sqlite3
 import struct
 import sys
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import vault
@@ -37,21 +38,27 @@ def _blob_to_vec(blob: bytes):
 
 @dataclass
 class _Embedder:
-    """Lazily-loaded fastembed wrapper."""
+    """Lazily-loaded fastembed wrapper. Thread-safe — concurrent get() calls
+    serialize on the lock, so a background warmup and a foreground recall can
+    race without double-loading the model."""
     _impl: object | None = None
+    _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def get(self):
         if self._impl is not None:
             return self._impl
-        try:
-            from fastembed import TextEmbedding  # type: ignore
-        except ImportError as e:
-            raise EmbedUnavailable(f"fastembed not installed: {e}") from e
-        try:
-            self._impl = TextEmbedding(model_name=EMBED_MODEL)
-        except Exception as e:
-            raise EmbedUnavailable(f"failed to load embedding model: {e}") from e
-        return self._impl
+        with self._lock:
+            if self._impl is not None:
+                return self._impl
+            try:
+                from fastembed import TextEmbedding  # type: ignore
+            except ImportError as e:
+                raise EmbedUnavailable(f"fastembed not installed: {e}") from e
+            try:
+                self._impl = TextEmbedding(model_name=EMBED_MODEL)
+            except Exception as e:
+                raise EmbedUnavailable(f"failed to load embedding model: {e}") from e
+            return self._impl
 
     def embed_one(self, text: str):
         impl = self.get()

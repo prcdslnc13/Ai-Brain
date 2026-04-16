@@ -23,20 +23,49 @@ and `setup-mac.sh`; this file is the Windows counterpart.
 ```powershell
 # 1. Clone the repo (anywhere — C:\src\AiBrain is the convention to match ~/src/AiBrain on Mac)
 git clone git@github.com:<your-github-user>/Ai-Brain.git C:\src\AiBrain
+```
 
-# 2. Run setup for each Claude Code config dir you use.
+### Recommended: the cross-platform wizard
+
+```powershell
+python C:\src\AiBrain\brain-setup.py
+```
+
+It prompts for the vault path and which `~\.claude*` dir(s) to install into, and
+sidesteps PowerShell quoting entirely (especially helpful for non-standard vault
+locations like `D:\Vaults\Ai-Brain`). Re-run any time to refresh — idempotent.
+
+For scripted installs:
+
+```powershell
+python C:\src\AiBrain\brain-setup.py --non-interactive `
+    --vault "D:\Vaults\Ai-Brain" `
+    --claude-dir "$env:USERPROFILE\.claude-personal" `
+    --claude-dir "$env:USERPROFILE\.claude-work"
+```
+
+### Fallback: the PowerShell installer
+
+If you prefer a native PowerShell install:
+
+```powershell
+# Run setup for each Claude Code config dir you use.
 #    Arguments: <claude-config-dir> <vault-path>
 powershell -ExecutionPolicy Bypass -File C:\src\AiBrain\setup-windows.ps1 `
     "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
 
-# If you also use a second account:
+# Non-standard vault path (no $env: prefix needed for plain paths):
 powershell -ExecutionPolicy Bypass -File C:\src\AiBrain\setup-windows.ps1 `
-    "$env:USERPROFILE\.claude-work" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
+    "$env:USERPROFILE\.claude-personal" "D:\Vaults\Ai-Brain"
 ```
 
 The script is idempotent — re-running updates the global `CLAUDE.md`, hook block, MCP
 registration, and the generated `brain-launch.cmd` wrapper without touching anything else in
 `settings.json`.
+
+> Common gotcha: `$env:NAME` is PowerShell's syntax for reading environment variables.
+> A literal drive path like `D:\Vaults\Ai-Brain` should NOT be prefixed with `$env:` —
+> just pass it as a plain double-quoted string.
 
 ## What the script does
 
@@ -81,25 +110,35 @@ claude mcp list
 
 ## Troubleshooting
 
+### Hooks fail with `command not found` and a path missing its backslashes
+
+Symptom: Claude Code logs an error like
+`/usr/bin/bash: line 1: C:Users<you>.claudebrain-launch.cmd: command not found`.
+Notice the path has no backslashes — they were eaten by Git Bash, which Claude
+Code uses to run hooks on many Windows setups.
+
+Both `brain-setup.py` and `setup-windows.ps1` write **forward-slash** paths into
+`settings.json` for exactly this reason (`C:/Users/<you>/.claude/brain-launch.cmd`).
+Forward slashes survive bash, work in cmd.exe, and are accepted by `python.exe`.
+If you have an old install, re-run the wizard or `setup-windows.ps1` to refresh the
+hook block.
+
 ### Hooks don't fire at all (no SessionStart preload, no breadcrumbs in `Brain\activity.md`)
 
-The most likely cause is Claude Code's Windows hook runner direct-execing the command
-instead of going through `cmd.exe`. If that's the case, `brain-launch.cmd` is never
-interpreted as a batch file and the hook silently does nothing.
-
-Fix: edit `templates/settings.hooks.win.json` and wrap each command with `cmd.exe /c`:
+If forward-slash paths aren't enough — e.g. your shell doesn't dispatch `.cmd`
+files automatically — wrap each command with `cmd.exe /c`:
 
 ```jsonc
 // Before
-"command": "__BRAIN_LAUNCH__ session_start"
+"command": "C:/Users/<you>/.claude/brain-launch.cmd session_start"
 
 // After
-"command": "cmd.exe /c \"__BRAIN_LAUNCH__ session_start\""
+"command": "cmd.exe /c \"C:/Users/<you>/.claude/brain-launch.cmd session_start\""
 ```
 
-Then re-run `setup-windows.ps1` so the merged `settings.json` picks up the change. If this
-fixes it, please leave a note in `ROADMAP.md` Phase 2B so we can make `cmd.exe /c` the
-default on Windows.
+Edit `templates/settings.hooks.win.json` to bake this in, then re-run setup so the
+merged `settings.json` picks it up. If this fixes it for you, please leave a note in
+`ROADMAP.md` Phase 2B so we can make `cmd.exe /c` the default on Windows.
 
 ### `claude` not on PATH
 

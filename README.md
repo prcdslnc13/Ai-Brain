@@ -41,13 +41,44 @@ Prerequisites: Python 3.11+, `claude` CLI on PATH, an Obsidian vault for the dat
 ```bash
 # Clone this repo
 git clone git@github.com:<your-github-user>/Ai-Brain.git ~/src/AiBrain
+```
 
-# Run setup for each Claude account (-> registers MCP, installs hooks, drops global CLAUDE.md)
+### Recommended: cross-platform wizard
+
+```bash
+python3 ~/src/AiBrain/brain-setup.py
+```
+
+Stdlib-only; works on macOS, Windows, and Linux. Auto-detects every `~/.claude*`
+config dir, prompts for the vault path (with `~/Documents/Vaults/Ai-Brain` as the
+default), and installs into your selection. Re-run any time to refresh — it's
+idempotent.
+
+For scripted installs:
+
+```bash
+python3 ~/src/AiBrain/brain-setup.py --non-interactive \
+    --vault ~/Documents/Vaults/Ai-Brain \
+    --claude-dir ~/.claude-personal --claude-dir ~/.claude-work
+```
+
+### Fallback: platform shell scripts
+
+The original shell installers are still here if you prefer them:
+
+```bash
+# macOS
 ~/src/AiBrain/setup-mac.sh ~/.claude-personal ~/Documents/Vaults/Ai-Brain
 ~/src/AiBrain/setup-mac.sh ~/.claude-work ~/Documents/Vaults/Ai-Brain
 ```
 
-The setup script is idempotent — re-run it any time to refresh.
+```powershell
+# Windows
+powershell -ExecutionPolicy Bypass -File C:\src\AiBrain\setup-windows.ps1 `
+    "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
+```
+
+Both are idempotent. See `WINDOWS-SETUP.md` for Windows-specific guidance.
 
 ## Vault layout
 

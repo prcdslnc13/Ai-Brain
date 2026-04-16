@@ -70,13 +70,20 @@ class Memory:
                     pass
         return cls(path=path, name=name, description=description, type=mtype, body=body)
 
-    def to_dict(self) -> dict:
+    def to_dict(self, body_chars: int | None = None) -> dict:
+        """Serialize. When body_chars is set, truncate the body to that many chars
+        with a "…" suffix when truncated. None = full body (the default for save
+        paths where the caller wants the whole thing)."""
+        if body_chars is None or len(self.body) <= body_chars:
+            body = self.body
+        else:
+            body = self.body[:body_chars].rstrip() + "…"
         return {
             "path": str(self.path.relative_to(vault_root().parent)),
             "name": self.name,
             "description": self.description,
             "type": self.type,
-            "body": self.body,
+            "body": body,
         }
 
 
