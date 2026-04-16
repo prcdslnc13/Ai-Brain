@@ -82,9 +82,9 @@ async def list_tools() -> list[Tool]:
             name="brain_save",
             description=(
                 "Write a memory to the vault. Call this proactively whenever you learn something that "
-                "matches the auto-memory taxonomy: user facts, feedback/corrections, project context, "
-                "or external references. Do NOT save code patterns, git history, ephemeral state, or "
-                "things derivable from the current code."
+                "matches the auto-memory taxonomy. ALL THREE fields 'type', 'name', and 'content' are "
+                "required. Do NOT save code patterns, git history, ephemeral state, or things derivable "
+                "from the current code."
             ),
             inputSchema={
                 "type": "object",
@@ -92,15 +92,37 @@ async def list_tools() -> list[Tool]:
                     "type": {
                         "type": "string",
                         "enum": ["user", "feedback", "project", "reference"],
+                        "description": (
+                            "REQUIRED. Pick exactly one: "
+                            "'user' = facts about the user (role, preferences, expertise); "
+                            "'feedback' = a behavior rule from the user (corrections or validated approaches); "
+                            "'project' = ongoing project context (decisions, deadlines, stakeholders) — "
+                            "also requires the 'project' field; "
+                            "'reference' = pointer to an external system (Linear project, Slack channel, etc)."
+                        ),
                     },
-                    "name": {"type": "string", "description": "short title; will be slugified for the filename"},
+                    "name": {
+                        "type": "string",
+                        "description": (
+                            "REQUIRED. Short title for the memory, 3-8 words. Will be slugified for the "
+                            "filename (e.g. 'Prefer Rust over Go' becomes 'prefer-rust-over-go.md')."
+                        ),
+                    },
                     "content": {
                         "type": "string",
-                        "description": "memory body. Plain markdown is fine; frontmatter will be added if missing.",
+                        "description": (
+                            "REQUIRED. The memory body in plain markdown. For 'feedback' and 'project' "
+                            "types, structure as: the rule/fact, then a 'Why:' line, then a "
+                            "'How to apply:' line. Frontmatter is added automatically — do not include it."
+                        ),
                     },
                     "project": {
                         "type": "string",
-                        "description": "required when type='project'; basename of the project directory.",
+                        "description": (
+                            "REQUIRED only when type='project'. The basename of the project DIRECTORY "
+                            "(e.g. 'AiBrain' for ~/src/AiBrain), NOT a category or topic name. Omit "
+                            "this field for type='user', 'feedback', or 'reference'."
+                        ),
                     },
                 },
                 "required": ["type", "name", "content"],
@@ -108,24 +130,42 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="brain_list",
-            description="Enumerate memories, optionally filtered by type and/or project.",
+            description="Enumerate memories, optionally filtered by type and/or project. All fields are optional.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "type": {
                         "type": "string",
                         "enum": ["user", "feedback", "project", "reference"],
+                        "description": "Optional. Filter to one memory type. Omit to list every type.",
                     },
-                    "project": {"type": "string"},
+                    "project": {
+                        "type": "string",
+                        "description": (
+                            "Optional. Project directory basename (e.g. 'AiBrain') to filter results "
+                            "to one project's memories. Only meaningful with type='project'."
+                        ),
+                    },
                 },
             },
         ),
         Tool(
             name="brain_forget",
-            description="Delete a memory file. Pass either a relative path (relative to the vault root) or absolute path.",
+            description=(
+                "Delete a memory file. Use the 'path' value from a prior brain_recall or brain_list "
+                "result; relative paths are resolved against the vault root."
+            ),
             inputSchema={
                 "type": "object",
-                "properties": {"path": {"type": "string"}},
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "REQUIRED. Path to the memory file to delete. Use the value from a prior "
+                            "brain_recall result (e.g. 'Brain/user/profile.md')."
+                        ),
+                    },
+                },
                 "required": ["path"],
             },
         ),
@@ -134,14 +174,25 @@ async def list_tools() -> list[Tool]:
             description=(
                 "Write a session checkpoint for a project. Call this at the end of a meaningful work "
                 "session — when the user signals completion, when you finish a multi-step task, or when "
-                "context is about to be lost. The summary should cover: what was attempted, what worked, "
-                "what failed, decisions made, and open threads."
+                "context is about to be lost. Both 'project' and 'summary' are required."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string"},
-                    "summary": {"type": "string"},
+                    "project": {
+                        "type": "string",
+                        "description": (
+                            "REQUIRED. Project directory basename (e.g. 'AiBrain') — NOT a category. "
+                            "If unsure, use the basename of the current working directory."
+                        ),
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": (
+                            "REQUIRED. Plain markdown summary of the session. Cover: what was "
+                            "attempted, what worked, what failed, decisions made, open threads."
+                        ),
+                    },
                 },
                 "required": ["project", "summary"],
             },
