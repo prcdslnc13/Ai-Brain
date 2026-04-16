@@ -23,20 +23,49 @@ and `setup-mac.sh`; this file is the Windows counterpart.
 ```powershell
 # 1. Clone the repo (anywhere — C:\src\AiBrain is the convention to match ~/src/AiBrain on Mac)
 git clone git@github.com:<your-github-user>/Ai-Brain.git C:\src\AiBrain
+```
 
-# 2. Run setup for each Claude Code config dir you use.
+### Recommended: the cross-platform wizard
+
+```powershell
+python C:\src\AiBrain\brain-setup.py
+```
+
+It prompts for the vault path and which `~\.claude*` dir(s) to install into, and
+sidesteps PowerShell quoting entirely (especially helpful for non-standard vault
+locations like `D:\Vaults\Ai-Brain`). Re-run any time to refresh — idempotent.
+
+For scripted installs:
+
+```powershell
+python C:\src\AiBrain\brain-setup.py --non-interactive `
+    --vault "D:\Vaults\Ai-Brain" `
+    --claude-dir "$env:USERPROFILE\.claude-personal" `
+    --claude-dir "$env:USERPROFILE\.claude-work"
+```
+
+### Fallback: the PowerShell installer
+
+If you prefer a native PowerShell install:
+
+```powershell
+# Run setup for each Claude Code config dir you use.
 #    Arguments: <claude-config-dir> <vault-path>
 powershell -ExecutionPolicy Bypass -File C:\src\AiBrain\setup-windows.ps1 `
     "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
 
-# If you also use a second account:
+# Non-standard vault path (no $env: prefix needed for plain paths):
 powershell -ExecutionPolicy Bypass -File C:\src\AiBrain\setup-windows.ps1 `
-    "$env:USERPROFILE\.claude-work" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
+    "$env:USERPROFILE\.claude-personal" "D:\Vaults\Ai-Brain"
 ```
 
 The script is idempotent — re-running updates the global `CLAUDE.md`, hook block, MCP
 registration, and the generated `brain-launch.cmd` wrapper without touching anything else in
 `settings.json`.
+
+> Common gotcha: `$env:NAME` is PowerShell's syntax for reading environment variables.
+> A literal drive path like `D:\Vaults\Ai-Brain` should NOT be prefixed with `$env:` —
+> just pass it as a plain double-quoted string.
 
 ## What the script does
 
