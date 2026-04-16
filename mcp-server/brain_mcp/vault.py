@@ -363,17 +363,21 @@ def write_checkpoint(project: str, summary: str) -> Path:
     return path
 
 
-_STATS_EXCLUDE = {"archive", "_setup", ".pending-saves", ".index"}
+EXCLUDE_DIRS = frozenset({"archive", "_setup", ".pending-saves", ".index"})
 
 
-def _stats_iter_md(root: Path):
+def iter_indexable_md(root: Path):
+    """Yield every `.md` file under root that's an actual memory — skipping the
+    machine-local index, archive rollups, pending-save markers, and setup
+    scaffolding. Shared by stats(), the embed index sync, and anything else
+    that enumerates the vault."""
     for p in root.rglob("*.md"):
-        if any(part in _STATS_EXCLUDE for part in p.relative_to(root).parts):
+        if any(part in EXCLUDE_DIRS for part in p.relative_to(root).parts):
             continue
         yield p
 
 
-def _read_frontmatter_type(path: Path) -> str | None:
+def read_frontmatter_type(path: Path) -> str | None:
     try:
         with path.open("r", encoding="utf-8") as f:
             head = f.read(2048)
@@ -398,9 +402,9 @@ def stats() -> dict:
 
     total = 0
     by_type: dict[str, int] = {"user": 0, "feedback": 0, "project": 0, "reference": 0}
-    for p in _stats_iter_md(root):
+    for p in iter_indexable_md(root):
         total += 1
-        t = _read_frontmatter_type(p)
+        t = read_frontmatter_type(p)
         if t in by_type:
             by_type[t] += 1
 

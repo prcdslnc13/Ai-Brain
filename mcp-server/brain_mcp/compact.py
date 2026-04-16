@@ -23,7 +23,7 @@ import argparse
 import re
 import shutil
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -107,11 +107,10 @@ def _delete_sources(sources: list[Path], dry_run: bool) -> None:
             pass
 
 
-def _compact_project(project_dir: Path, archive_root: Path, dry_run: bool) -> dict:
+def _compact_project(project_dir: Path, archive_root: Path, dry_run: bool) -> Counter:
     """Compact one project's sessions/ tree. Returns counts for the summary line."""
     sessions = project_dir / "sessions"
-    counts = {"raw_to_daily": 0, "daily_files": 0, "daily_to_weekly": 0,
-              "weekly_files": 0, "archived": 0}
+    counts: Counter = Counter()
     if not sessions.exists():
         return counts
 
@@ -191,12 +190,9 @@ def main() -> None:
     else:
         targets = sorted(p for p in projects_root.iterdir() if p.is_dir())
 
-    totals = {"raw_to_daily": 0, "daily_files": 0, "daily_to_weekly": 0,
-              "weekly_files": 0, "archived": 0}
+    totals: Counter = Counter()
     for proj in targets:
-        c = _compact_project(proj, archive_root, args.dry_run)
-        for k, v in c.items():
-            totals[k] += v
+        totals += _compact_project(proj, archive_root, args.dry_run)
 
     prefix = "[dry-run] " if args.dry_run else ""
     print(

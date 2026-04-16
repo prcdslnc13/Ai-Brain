@@ -200,8 +200,11 @@ def ensure_venv(num: int, total: int) -> None:
 
 def install_brain_mcp(num: int, total: int) -> None:
     step(num, total, "installing brain-mcp into venv")
-    # Force-reinstall the package itself (no deps) first to catch source changes,
-    # then install with deps to ensure mcp/pyyaml/fastembed/numpy are present.
+    # Two-step: `--force-reinstall --no-deps` catches local source edits (the
+    # pyproject version doesn't bump on every edit, so pip would otherwise skip).
+    # The second plain install pulls mcp/pyyaml/fastembed/numpy on first run and
+    # is near-instant on subsequent runs. Collapsing to a single --force-reinstall
+    # would re-extract ~300 MB of deps every time.
     subprocess.run(
         [str(VENV_PIP), "install", "--quiet", "--force-reinstall", "--no-deps", str(MCP_SERVER_DIR)],
         check=True,

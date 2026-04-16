@@ -20,8 +20,6 @@ from . import vault
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 EMBED_DIM = 384
 
-_EXCLUDE_PARTS = {"archive", "_setup", ".pending-saves", ".index"}
-
 
 class EmbedUnavailable(RuntimeError):
     """fastembed/numpy missing or model failed to load."""
@@ -56,7 +54,7 @@ class _Embedder:
                 raise EmbedUnavailable(f"fastembed not installed: {e}") from e
             try:
                 self._impl = TextEmbedding(model_name=EMBED_MODEL)
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
                 raise EmbedUnavailable(f"failed to load embedding model: {e}") from e
             return self._impl
 
@@ -100,12 +98,10 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
-def _iter_vault_md(root: Path):
-    for p in root.rglob("*.md"):
-        rel_parts = p.relative_to(root).parts
-        if any(part in _EXCLUDE_PARTS for part in rel_parts):
-            continue
-        yield p
+_SYNC_LOCK = threading.Lock()
+# Cache the normalized vector matrix so repeat queries don't re-read every BLOB.
+# Signature = (project_filter, row count, max mtime) — cheap sqlite query.
+_MATRIX_CACHE: dict = {"key": None, "paths": None, "mat": None}
 
 
 class EmbedIndex:
@@ -124,53 +120,55 @@ class EmbedIndex:
         """Walk the vault, upsert stale/missing rows, drop rows for deleted files.
 
         Returns the number of rows upserted. Raises EmbedUnavailable if the embedder
-        cannot load.
+        cannot load. Serialized by a process-wide lock so the background startup
+        warmup and a foreground recall don't both embed the same stale files.
         """
-        root = vault.vault_root()
-        conn = _connect()
-        try:
-            existing: dict[str, float] = {}
-            for path, mtime in conn.execute("SELECT path, mtime FROM embeddings"):
-                existing[path] = mtime
+        with _SYNC_LOCK:
+            root = vault.vault_root()
+            conn = _connect()
+            try:
+                existing: dict[str, float] = {}
+                for path, mtime in conn.execute("SELECT path, mtime FROM embeddings"):
+                    existing[path] = mtime
 
-            current: dict[str, float] = {}
-            for p in _iter_vault_md(root):
-                try:
-                    current[str(p)] = p.stat().st_mtime
-                except OSError:
-                    continue
-
-            stale = [p for p in existing if p not in current]
-            if stale:
-                conn.executemany("DELETE FROM embeddings WHERE path = ?", ((p,) for p in stale))
-
-            to_upsert: list[tuple[str, float, str]] = []
-            for path, mtime in current.items():
-                prior = existing.get(path)
-                if prior is None or mtime > prior + 1e-6:
+                current: dict[str, float] = {}
+                for p in vault.iter_indexable_md(root):
                     try:
-                        text = Path(path).read_text(encoding="utf-8")
+                        current[str(p)] = p.stat().st_mtime
                     except OSError:
                         continue
-                    to_upsert.append((path, mtime, text))
 
-            if to_upsert:
-                texts = [t for (_, _, t) in to_upsert]
-                vectors = _EMBEDDER.embed_many(texts)
-                rows = [
-                    (path, mtime, _vec_to_blob(vec))
-                    for (path, mtime, _), vec in zip(to_upsert, vectors)
-                ]
-                conn.executemany(
-                    "INSERT INTO embeddings(path, mtime, vector) VALUES (?, ?, ?) "
-                    "ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, vector=excluded.vector",
-                    rows,
-                )
+                stale = [p for p in existing if p not in current]
+                if stale:
+                    conn.executemany("DELETE FROM embeddings WHERE path = ?", ((p,) for p in stale))
 
-            conn.commit()
-            return len(to_upsert)
-        finally:
-            conn.close()
+                to_upsert: list[tuple[str, float, str]] = []
+                for path, mtime in current.items():
+                    prior = existing.get(path)
+                    if prior is None or mtime > prior + 1e-6:
+                        try:
+                            text = Path(path).read_text(encoding="utf-8")
+                        except OSError:
+                            continue
+                        to_upsert.append((path, mtime, text))
+
+                if to_upsert:
+                    texts = [t for (_, _, t) in to_upsert]
+                    vectors = _EMBEDDER.embed_many(texts)
+                    rows = [
+                        (path, mtime, _vec_to_blob(vec))
+                        for (path, mtime, _), vec in zip(to_upsert, vectors)
+                    ]
+                    conn.executemany(
+                        "INSERT INTO embeddings(path, mtime, vector) VALUES (?, ?, ?) "
+                        "ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, vector=excluded.vector",
+                        rows,
+                    )
+
+                conn.commit()
+                return len(to_upsert)
+            finally:
+                conn.close()
 
     @classmethod
     def upsert(cls, path: Path) -> None:
@@ -194,15 +192,45 @@ class EmbedIndex:
 
     @classmethod
     def delete(cls, path: Path) -> None:
-        try:
-            conn = _connect()
-        except Exception:
-            return
+        conn = _connect()
         try:
             conn.execute("DELETE FROM embeddings WHERE path = ?", (str(path),))
             conn.commit()
         finally:
             conn.close()
+
+    @classmethod
+    def _normalized_matrix(cls, project_filter: str | None):
+        """Load, filter, and cache the normalized vector matrix."""
+        import numpy as np
+
+        conn = _connect()
+        try:
+            row = conn.execute("SELECT COUNT(*), COALESCE(MAX(mtime), 0) FROM embeddings").fetchone()
+            key = (project_filter, row[0], row[1])
+            if _MATRIX_CACHE["key"] == key and _MATRIX_CACHE["mat"] is not None:
+                return _MATRIX_CACHE["paths"], _MATRIX_CACHE["mat"]
+
+            paths: list[str] = []
+            vectors: list = []
+            for path, blob in conn.execute("SELECT path, vector FROM embeddings"):
+                if project_filter and f"/projects/{project_filter}/" not in path:
+                    continue
+                paths.append(path)
+                vectors.append(_blob_to_vec(blob))
+        finally:
+            conn.close()
+
+        if not paths:
+            _MATRIX_CACHE.update(key=key, paths=paths, mat=None)
+            return paths, None
+
+        mat = np.vstack(vectors)
+        norms = np.linalg.norm(mat, axis=1)
+        norms[norms == 0] = 1.0
+        mat = mat / norms[:, None]
+        _MATRIX_CACHE.update(key=key, paths=paths, mat=mat)
+        return paths, mat
 
     @classmethod
     def query(
@@ -222,33 +250,17 @@ class EmbedIndex:
             return []
         q /= q_norm
 
-        conn = _connect()
-        try:
-            paths: list[str] = []
-            vectors: list = []
-            for path, blob in conn.execute("SELECT path, vector FROM embeddings"):
-                if project_filter and f"/projects/{project_filter}/" not in path:
-                    continue
-                paths.append(path)
-                vectors.append(_blob_to_vec(blob))
-        finally:
-            conn.close()
-
-        if not paths:
+        paths, mat = cls._normalized_matrix(project_filter)
+        if mat is None:
             return []
 
-        mat = np.vstack(vectors)
-        norms = np.linalg.norm(mat, axis=1)
-        norms[norms == 0] = 1.0
-        mat = mat / norms[:, None]
         scores = mat @ q
-
         order = np.argsort(-scores)
         results: list[tuple[str, float]] = []
         for idx in order:
             path = paths[idx]
             if type_filter:
-                t = vault._read_frontmatter_type(Path(path))
+                t = vault.read_frontmatter_type(Path(path))
                 if t != type_filter:
                     continue
             results.append((path, float(scores[idx])))
