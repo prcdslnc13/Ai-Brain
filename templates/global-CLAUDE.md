@@ -52,14 +52,33 @@ about it — that's the part worth keeping.
 ## When to save (proactive triggers)
 
 You must call `brain_save` immediately, **without waiting for the user to say "remember this"**, when
-any of the following happens:
+any of the following happens. The user expects the Brain to be fully automatic and transparent — they
+should never have to ask you to save. If they have to tell you to remember something, that's a
+failure of these triggers.
 
-- The user states a preference: *"I prefer X"*, *"I always do Y"*, *"I hate Z"*.
-- The user corrects your approach: *"don't do that"*, *"stop"*, *"that's wrong because…"*.
-- The user validates a non-obvious choice you made: *"yes exactly"*, *"perfect"*, *"that was the right call"*.
-- The user gives a durable rule: *"from now on…"*, *"next time…"*, *"never…"*, *"always…"*, *"going forward…"*.
+### User-initiated signals (things the user says)
+
+- The user states a preference: *"I prefer X"*, *"I always do Y"*, *"I hate Z"*, *"my default is X"*.
+- The user corrects your approach: *"don't do that"*, *"stop"*, *"that's wrong because…"*, *"no, use X instead"*.
+- The user validates a non-obvious choice you made: *"yes exactly"*, *"perfect"*, *"that was the right call"*,
+  or simply accepts an unusual approach without pushback.
+- The user gives a durable rule: *"from now on…"*, *"next time…"*, *"never…"*, *"always…"*, *"going forward…"*,
+  *"the right cadence is…"*, *"I want…"*, *"I'm looking for…"*.
 - The user mentions a deadline, stakeholder, incident, or constraint that won't be in the code.
 - The user mentions an external system as the source of truth for some kind of information.
+- The user explains *why* something is done a certain way and the reason isn't obvious from the code.
+
+### Model-initiated signals (things you decide or discover)
+
+- **You make a non-obvious design or architecture decision during implementation.** Save it as
+  `project` context with the reasoning — a future session seeing only the code won't know *why*
+  you chose approach A over approach B.
+- **You discover a constraint, gotcha, or non-obvious interaction** while working that would bite
+  a future session. Save it as `project` or `feedback` depending on scope.
+- **You rule out an approach** after investigating it. The dead end is valuable context — save why
+  it was rejected so a future session doesn't retry it.
+- **The user and you agree on a plan or direction** (explicitly or implicitly). Save the decision
+  and its rationale as `project` context.
 
 The user said: *"I am awful at remembering to do things like this and you are here to save me from
 myself."* Take that seriously. The cost of a missed save is high; the cost of saving something
@@ -68,15 +87,31 @@ the "do NOT save" list above.
 
 ## When to recall (proactive triggers)
 
+Recall is cheap. Call it **before** acting, not after. The user expects the Brain to surface relevant
+context automatically — they should never have to say "check the brain for…". If prior context
+existed and you didn't use it, that's a failure.
+
 You must call `brain_recall` immediately when:
+
+### Explicit mentions
 
 - The user mentions a project, repo, codebase, or file by name → `brain_recall(query=<name>, type="project")`.
 - The user mentions a person, company, tool, or external service by name → `brain_recall(query=<name>)`.
 - The user asks *"what do you know about X"*, *"do you remember Y"*, *"have we talked about Z"*.
-- You're about to make a non-trivial decision or recommendation, and there's any chance prior
-  feedback applies → `brain_recall(query=<topic>, type="feedback")`.
+- The user references prior work: *"last time we…"*, *"we already…"*, *"remember when…"*, *"that thing we did"*.
 
-Recall is cheap. Use it before answering, not after.
+### Before acting
+
+- **Before suggesting a tool, library, pattern, or approach** — recall `feedback` for that topic.
+  Prior corrections exist to prevent you from repeating mistakes; ignoring them wastes the user's time.
+- **Before starting work on a project you haven't recalled yet this session.** The SessionStart
+  preload covers the *current* project. If the user switches projects mid-session or references a
+  different repo, recall its project context before proceeding.
+- **Before making a design or architecture recommendation** — recall `project` context. There may be
+  constraints, prior decisions, or rejected approaches that should inform your suggestion.
+- **When you're unsure whether something was already decided or discussed** — recall rather than
+  guess. A redundant recall that returns nothing costs a fraction of a second. A recommendation that
+  contradicts a prior decision costs trust.
 
 ## When to checkpoint
 
