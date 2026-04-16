@@ -80,15 +80,26 @@ Recall is cheap. Use it before answering, not after.
 
 ## When to checkpoint
 
-Call `brain_checkpoint(project, summary)` proactively when:
+Checkpoint **frequently**. The user has explicitly said they lose sessions by accidentally closing
+windows before compaction fires. The automated PreCompact and SessionEnd hooks are a safety net that
+produces only a structural extract — your `brain_checkpoint` call is the primary mechanism and
+produces a real summary while you still have context fresh. Treat checkpoints like incremental saves,
+not a final save at the end.
 
-- The user signals end of session: *"thanks"*, *"that's all"*, *"we're done"*, *"good night"*.
-- You finish a multi-step task that took several turns.
-- The user is about to ask you to switch to a different project.
+Call `brain_checkpoint(project, summary)` proactively when **any** of the following happens:
 
-The PreCompact and SessionEnd hooks ALSO write checkpoints automatically as a safety net, but those
-are structural extracts. Your `brain_checkpoint` call produces a real summary and is preferred when
-you have the context fresh.
+- **After every git commit.** The commit just landed — summarize what changed and why.
+- **After any change to a plan, roadmap, or design document.** Decisions and direction changes are
+  the most valuable things to checkpoint because they're invisible in `git log`.
+- **After creating or substantially modifying files.** New modules, new setup scripts, architecture
+  changes, large refactors — anything a future session would need to understand.
+- **After completing a distinct unit of work**, even if the session continues. Don't batch — if you
+  just finished task A and are about to start task B, checkpoint task A now.
+- **When the user signals end of session:** *"thanks"*, *"that's all"*, *"we're done"*, *"good night"*.
+- **When the user is about to switch to a different project.**
+
+When in doubt, checkpoint. A redundant checkpoint costs almost nothing; a lost session costs the
+user's time reconstructing context from scratch.
 
 Format the summary as: what was attempted, what worked, what failed, decisions made, open threads.
 
