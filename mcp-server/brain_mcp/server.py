@@ -7,6 +7,9 @@ Exposes the Ai-Brain vault as a small, typed tool surface that any MCP-capable c
 from __future__ import annotations
 
 import json
+import os
+import sys
+import threading
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -189,6 +192,25 @@ async def call_tool(name: str, arguments: dict | None) -> list[TextContent]:
         return _err(f"{type(e).__name__}: {e}")
 
 
+def _background_embed_warmup() -> None:
+    """Pre-load the embedding model and sync the index in a background thread.
+
+    MCP clients (LMStudio, Claude Code) launch the server as a fresh process per
+    session; the on-disk HF cache primed by `brain-setup.py` doesn't carry over
+    in-memory model weights, so the first foreground `brain_recall` would otherwise
+    pay the full 5-10s ONNX load and exceed per-tool timeouts. Doing the load
+    eagerly at startup means the model is hot by the time a tool call arrives.
+    """
+    if os.environ.get("BRAIN_EMBED", "1") == "0":
+        return
+    try:
+        from . import embed
+        embed.EmbedIndex.sync()
+    except Exception as e:
+        print(f"brain embed background warmup: {e}", file=sys.stderr)
+
+
 async def run() -> None:
+    threading.Thread(target=_background_embed_warmup, daemon=True).start()
     async with stdio_server() as (read, write):
         await server.run(read, write, server.create_initialization_options())
