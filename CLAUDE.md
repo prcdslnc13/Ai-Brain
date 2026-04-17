@@ -32,11 +32,9 @@ The moving parts fit together as follows:
   - `pre_compact.py` / `session_end.py` — share `_checkpoint.py`, which parses the transcript JSONL
     and writes a structural checkpoint to `Brain/projects/<project>/sessions/<timestamp>.md`. No
     LLM call — the next session's model will summarize/integrate when it sees the file.
-  - `stop.py` — appends a one-line breadcrumb to `Brain/activity.md` after every turn and scans
-    the last user message for save-signal phrases ("remember", "I prefer", "from now on", etc.),
-    dropping a marker file in `Brain/.pending-saves/` when it matches.
-  - `user_prompt_submit.py` — if any pending-save markers exist, injects a reminder into the next
-    prompt telling the model to process them.
+  - `stop.py` — appends a one-line breadcrumb to `Brain/activity.md` after every turn. Proactive
+    saves are driven entirely by the directives in `templates/global-CLAUDE.md`; there is no
+    regex-based save-signal detection in the hook itself.
   - `_common.py` / `_checkpoint.py` — shared helpers. Both read `BRAIN_VAULT` from env, never from
     the filesystem layout.
 

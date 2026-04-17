@@ -200,8 +200,8 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="brain_stats",
             description=(
-                "Report vault telemetry: counts, index size, oldest active checkpoint, "
-                "pending-save backlog. Useful for health checks."
+                "Report vault telemetry: counts, index size, oldest active checkpoint. "
+                "Useful for health checks."
             ),
             inputSchema={"type": "object", "properties": {}},
         ),

@@ -138,13 +138,6 @@ user's time reconstructing context from scratch.
 
 Format the summary as: what was attempted, what worked, what failed, decisions made, open threads.
 
-## Pending save markers
-
-If a previous turn's Stop hook detected a save signal phrase the model missed, it drops a marker
-file in `__BRAIN_VAULT__/Brain/.pending-saves/`. The UserPromptSubmit hook will surface those
-markers in your context. When you see them: read the marker, decide if a `brain_save` is warranted,
-make the call, then delete the marker file.
-
 ## Confidence and verification
 
 Memory records can become stale. When you recall a memory that names a specific function, file, or

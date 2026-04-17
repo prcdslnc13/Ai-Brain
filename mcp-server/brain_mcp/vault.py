@@ -162,7 +162,7 @@ def list_memories(mtype: str | None = None, project: str | None = None) -> list[
             candidates += list(proj_root.rglob("*.md"))
     candidates = [
         p for p in candidates
-        if "_setup" not in p.parts and ".pending-saves" not in p.parts and not p.name.startswith("_")
+        if "_setup" not in p.parts and not p.name.startswith("_")
     ]
     return [Memory.from_file(p) for p in sorted(set(candidates))]
 
@@ -191,7 +191,6 @@ def _ripgrep_search(query: str, root: Path) -> set[Path]:
                 continue
     return {p for p in matches
             if "_setup" not in p.parts
-            and ".pending-saves" not in p.parts
             and ".index" not in p.parts
             and "archive" not in p.parts}
 
@@ -221,7 +220,7 @@ def search_memories(query: str, mtype: str | None = None, project: str | None = 
                     continue
                 if not p.exists():
                     continue
-                if any(part in {"_setup", ".pending-saves", ".index", "archive"}
+                if any(part in {"_setup", ".index", "archive"}
                        for part in p.parts):
                     continue
                 ordered_paths.append(p)
@@ -332,12 +331,6 @@ def session_start_bundle(project: str | None = None) -> dict:
         )
         add_elastic("feedback", feedback_files)
 
-    pending = root / ".pending-saves"
-    if pending.exists():
-        markers = sorted(pending.glob("*"))
-        if markers:
-            bundle["pending_saves"] = [m.name for m in markers]
-
     bundle["budget_consumed_kb"] = round(consumed_bytes / 1024.0, 2)
     bundle["skipped_sections"] = skipped_counts
     return bundle
@@ -363,14 +356,13 @@ def write_checkpoint(project: str, summary: str) -> Path:
     return path
 
 
-EXCLUDE_DIRS = frozenset({"archive", "_setup", ".pending-saves", ".index"})
+EXCLUDE_DIRS = frozenset({"archive", "_setup", ".index"})
 
 
 def iter_indexable_md(root: Path):
     """Yield every `.md` file under root that's an actual memory — skipping the
-    machine-local index, archive rollups, pending-save markers, and setup
-    scaffolding. Shared by stats(), the embed index sync, and anything else
-    that enumerates the vault."""
+    machine-local index, archive rollups, and setup scaffolding. Shared by
+    stats(), the embed index sync, and anything else that enumerates the vault."""
     for p in root.rglob("*.md"):
         if any(part in EXCLUDE_DIRS for part in p.relative_to(root).parts):
             continue
@@ -397,7 +389,7 @@ def read_frontmatter_type(path: Path) -> str | None:
 
 
 def stats() -> dict:
-    """Vault telemetry: counts, index size, oldest active checkpoint, pending-save backlog."""
+    """Vault telemetry: counts, index size, oldest active checkpoint."""
     root = vault_root()
 
     total = 0
@@ -419,20 +411,6 @@ def stats() -> dict:
         if earliest_mtime is None or m < earliest_mtime:
             earliest_mtime = m
             oldest_checkpoint = datetime.fromtimestamp(m).date().isoformat()
-
-    pending_max_age_hours: float | None = None
-    pending_dir = root / ".pending-saves"
-    if pending_dir.exists():
-        markers = [p for p in pending_dir.iterdir() if p.is_file()]
-        if markers:
-            mtimes = []
-            for m in markers:
-                try:
-                    mtimes.append(m.stat().st_mtime)
-                except OSError:
-                    continue
-            if mtimes:
-                pending_max_age_hours = round((datetime.now().timestamp() - min(mtimes)) / 3600.0, 2)
 
     index_path = root / ".index" / "embeddings.sqlite"
     index_size_mb: float | None
@@ -459,7 +437,6 @@ def stats() -> dict:
         "total_items": total,
         "by_type": by_type,
         "oldest_active_checkpoint": oldest_checkpoint,
-        "pending_saves_max_age_hours": pending_max_age_hours,
         "index_size_mb": index_size_mb,
         "archive_size_mb": archive_size_mb,
     }
