@@ -168,18 +168,41 @@ echo "[5/6] registering brain MCP server (user scope)"
 CLAUDE_BIN="${CLAUDE_BIN:-claude}"
 MCP_REGISTERED=0
 MCP_FAIL_REASON=""
+
+# `claude mcp add --scope user` writes to $CLAUDE_CONFIG_DIR/.claude.json when
+# the env var is set, but to $HOME/.claude.json when it isn't — two different
+# files. When $CLAUDE_DIR is the default location, we MUST leave the env var
+# unset so the write lands where a plain `claude` invocation later reads from.
+# For custom config dirs (~/.claude-personal, ~/.claude-work) each has its own
+# sibling .claude.json inside it, so the env var is correct and required.
+_canonical_path() {
+  if [ -d "$1" ]; then ( cd "$1" && pwd -P ); else printf '%s' "${1%/}"; fi
+}
+if [ "$(_canonical_path "$CLAUDE_DIR")" = "$(_canonical_path "$HOME/.claude")" ]; then
+  IS_DEFAULT_TARGET=1
+else
+  IS_DEFAULT_TARGET=0
+fi
+claude_cli() {
+  if [ "$IS_DEFAULT_TARGET" = "1" ]; then
+    "$CLAUDE_BIN" "$@"
+  else
+    CLAUDE_CONFIG_DIR="$CLAUDE_DIR" "$CLAUDE_BIN" "$@"
+  fi
+}
+
 if ! command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
   MCP_FAIL_REASON="'$CLAUDE_BIN' not on PATH"
 else
-  CLAUDE_CONFIG_DIR="$CLAUDE_DIR" "$CLAUDE_BIN" mcp remove brain --scope user >/dev/null 2>&1 || true
+  claude_cli mcp remove brain --scope user >/dev/null 2>&1 || true
   # Capture both streams so a silent CLI failure doesn't vanish into /dev/null.
-  MCP_ADD_OUT="$(CLAUDE_CONFIG_DIR="$CLAUDE_DIR" "$CLAUDE_BIN" mcp add brain --scope user \
+  MCP_ADD_OUT="$(claude_cli mcp add brain --scope user \
       -e "BRAIN_VAULT=$VAULT_ROOT" \
       -- "$VENV_PYTHON" -m brain_mcp 2>&1)" || MCP_ADD_RC=$?
   MCP_ADD_RC="${MCP_ADD_RC:-0}"
   if [ "$MCP_ADD_RC" -ne 0 ]; then
     MCP_FAIL_REASON="'claude mcp add' exited $MCP_ADD_RC: $MCP_ADD_OUT"
-  elif ! CLAUDE_CONFIG_DIR="$CLAUDE_DIR" "$CLAUDE_BIN" mcp list 2>/dev/null | grep -q "^brain"; then
+  elif ! claude_cli mcp list 2>/dev/null | grep -q "^brain"; then
     MCP_FAIL_REASON="'claude mcp add' returned success but 'brain' not in 'claude mcp list'"
   else
     MCP_REGISTERED=1
@@ -201,8 +224,13 @@ else
   echo "   reason: $MCP_FAIL_REASON"
   echo
   echo "   To fix, ensure Claude Code is installed and on PATH, then register manually:"
-  echo "     CLAUDE_CONFIG_DIR=$CLAUDE_DIR $CLAUDE_BIN mcp add brain --scope user \\"
-  echo "         -e BRAIN_VAULT=$VAULT_ROOT -- $VENV_PYTHON -m brain_mcp"
+  if [ "$IS_DEFAULT_TARGET" = "1" ]; then
+    echo "     $CLAUDE_BIN mcp add brain --scope user \\"
+    echo "         -e BRAIN_VAULT=$VAULT_ROOT -- $VENV_PYTHON -m brain_mcp"
+  else
+    echo "     CLAUDE_CONFIG_DIR=$CLAUDE_DIR $CLAUDE_BIN mcp add brain --scope user \\"
+    echo "         -e BRAIN_VAULT=$VAULT_ROOT -- $VENV_PYTHON -m brain_mcp"
+  fi
   echo "   Or re-run this script with CLAUDE_BIN pointing at the claude binary:"
   echo "     CLAUDE_BIN=\$(which claude) $0 $CLAUDE_DIR $VAULT_ROOT"
 fi

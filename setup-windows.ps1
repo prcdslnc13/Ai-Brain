@@ -184,10 +184,22 @@ Write-Host "[6/6] registering brain MCP server (user scope)"
 $ClaudeBin = if ($env:CLAUDE_BIN) { $env:CLAUDE_BIN } else { 'claude' }
 $McpRegistered = $false
 $McpFailReason = ''
+
+# `claude mcp add --scope user` writes to $CLAUDE_CONFIG_DIR/.claude.json when
+# the env var is set, but to %USERPROFILE%\.claude.json when it isn't - two
+# different files. When $ClaudeDir is the default location, we MUST leave the
+# env var unset so the write lands where a plain `claude` invocation later
+# reads from. For custom config dirs each has its own sibling .claude.json
+# inside it, so the env var is correct and required.
+$DefaultClaudeDir = Join-Path $env:USERPROFILE '.claude'
+$IsDefaultTarget = ([System.IO.Path]::GetFullPath($ClaudeDir).TrimEnd('\')) -ieq `
+                   ([System.IO.Path]::GetFullPath($DefaultClaudeDir).TrimEnd('\'))
+
 if (-not (Get-Command $ClaudeBin -ErrorAction SilentlyContinue)) {
   $McpFailReason = "'$ClaudeBin' not on PATH (check with: Get-Command claude)"
 } else {
-  $env:CLAUDE_CONFIG_DIR = $ClaudeDir
+  Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue
+  if (-not $IsDefaultTarget) { $env:CLAUDE_CONFIG_DIR = $ClaudeDir }
   try {
     & $ClaudeBin mcp remove brain --scope user 2>$null | Out-Null
     # Capture stdout+stderr so a silent CLI failure doesn't vanish into Out-Null.
@@ -222,7 +234,11 @@ if ($McpRegistered) {
   Write-Host "   reason: $McpFailReason"
   Write-Host ""
   Write-Host "   To fix, ensure Claude Code is installed and on PATH, then register manually:"
-  Write-Host "     `$env:CLAUDE_CONFIG_DIR = '$ClaudeDir'"
+  if ($IsDefaultTarget) {
+    Write-Host "     Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue"
+  } else {
+    Write-Host "     `$env:CLAUDE_CONFIG_DIR = '$ClaudeDir'"
+  }
   Write-Host "     claude mcp add brain --scope user -e `"BRAIN_VAULT=$VaultRoot`" -- `"$VenvPython`" -m brain_mcp"
   Write-Host "   Or re-run this script after pointing `$env:CLAUDE_BIN at the claude binary:"
   Write-Host "     `$env:CLAUDE_BIN = (Get-Command claude).Source"

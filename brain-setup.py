@@ -306,15 +306,34 @@ def merge_settings_json(claude_dir: Path, vault_root: Path) -> None:
     settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
 
 
-def register_mcp(claude_dir: Path, vault_root: Path) -> bool:
+def _is_default_claude_dir(claude_dir: Path) -> bool:
+    """Return True when claude_dir resolves to the Claude CLI's default config dir."""
+    default = Path.home() / ".claude"
+    try:
+        return claude_dir.resolve() == default.resolve()
+    except (OSError, RuntimeError):
+        return str(claude_dir).rstrip("\\/") == str(default).rstrip("\\/")
+
+
+def register_mcp(claude_dir: Path, vault_root: Path) -> tuple[bool, str]:
+    """Register brain as a user-scope MCP server for `claude_dir`.
+
+    Returns (ok, failure_reason). reason is '' on success.
+    """
     claude_bin = os.environ.get("CLAUDE_BIN", "claude")
     if not shutil.which(claude_bin):
-        warn(f"'{claude_bin}' not on PATH; skipping MCP registration.")
-        warn("Install Claude Code (or set CLAUDE_BIN=/path/to/claude) and re-run this wizard.")
-        return False
+        return False, f"'{claude_bin}' not on PATH (install Claude Code, or set CLAUDE_BIN)"
 
+    # `claude mcp add --scope user` writes to $CLAUDE_CONFIG_DIR/.claude.json
+    # when the env var is set, but to $HOME/.claude.json when it isn't - two
+    # different files. When claude_dir is the default location, leave the env
+    # var unset so the write lands where a plain `claude` invocation later
+    # reads from. For custom dirs each has its own sibling .claude.json.
     env = os.environ.copy()
-    env["CLAUDE_CONFIG_DIR"] = str(claude_dir)
+    if _is_default_claude_dir(claude_dir):
+        env.pop("CLAUDE_CONFIG_DIR", None)
+    else:
+        env["CLAUDE_CONFIG_DIR"] = str(claude_dir)
 
     # Idempotent: drop any existing 'brain' user-scope server first.
     subprocess.run([claude_bin, "mcp", "remove", "brain", "--scope", "user"],
@@ -327,9 +346,18 @@ def register_mcp(claude_dir: Path, vault_root: Path) -> bool:
         env=env, capture_output=True, text=True, check=False,
     )
     if res.returncode != 0:
-        warn(f"claude mcp add failed (exit {res.returncode}): {res.stderr.strip()}")
-        return False
-    return True
+        err = (res.stderr or res.stdout or "").strip()
+        return False, f"'claude mcp add' exited {res.returncode}: {err}"
+
+    # Verify the entry landed where `claude` (with this same env) will read from.
+    list_res = subprocess.run(
+        [claude_bin, "mcp", "list"],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    if not any(line.startswith("brain") for line in list_res.stdout.splitlines()):
+        return False, "'claude mcp add' returned success but 'brain' not in 'claude mcp list'"
+
+    return True, ""
 
 
 def cleanup(claude_dir: Path) -> None:
@@ -344,7 +372,8 @@ def cleanup(claude_dir: Path) -> None:
 
 # ---------- orchestration ----------
 
-def install_one(claude_dir: Path, vault_root: Path) -> None:
+def install_one(claude_dir: Path, vault_root: Path) -> tuple[bool, str]:
+    """Install brain wiring into one Claude config dir. Returns (mcp_ok, reason)."""
     info("")
     info(f"━━━ installing into {claude_dir} ━━━")
     claude_dir.mkdir(parents=True, exist_ok=True)
@@ -360,11 +389,13 @@ def install_one(claude_dir: Path, vault_root: Path) -> None:
     merge_settings_json(claude_dir, vault_root)
 
     step(4, 5, "registering brain MCP server (user scope)")
-    if register_mcp(claude_dir, vault_root):
+    ok, reason = register_mcp(claude_dir, vault_root)
+    if ok:
         info(f"       ✓ registered as user-scope MCP server in {claude_dir}")
 
     step(5, 5, "cleanup")
     cleanup(claude_dir)
+    return ok, reason
 
 
 def main() -> None:
@@ -435,11 +466,33 @@ def main() -> None:
     warm_embedder(4, 4, vault_root)
 
     # ---- per-claude-dir wiring ----
+    results: list[tuple[Path, bool, str]] = []
     for cd in claude_dirs:
-        install_one(cd, vault_root)
+        ok, reason = install_one(cd, vault_root)
+        results.append((cd, ok, reason))
 
     info("")
-    info("✓ Brain installed.")
+    failures = [(cd, reason) for cd, ok, reason in results if not ok]
+    if not failures:
+        info("✓ Brain installed.")
+    else:
+        info("✓ Brain files installed.")
+        info("")
+        info("✗ MCP SERVER NOT REGISTERED for these config dir(s) — brain_* tools will NOT appear in Claude Code:")
+        for cd, reason in failures:
+            info(f"    {cd}")
+            info(f"      reason: {reason}")
+        info("")
+        info("   To fix, ensure Claude Code is installed and on PATH, then for each failed dir above run:")
+        for cd, _ in failures:
+            if _is_default_claude_dir(cd):
+                info(f'     claude mcp add brain --scope user -e "BRAIN_VAULT={vault_root}" -- "{VENV_PY}" -m brain_mcp')
+            elif IS_WINDOWS:
+                info(f'     $env:CLAUDE_CONFIG_DIR = "{cd}"')
+                info(f'     claude mcp add brain --scope user -e "BRAIN_VAULT={vault_root}" -- "{VENV_PY}" -m brain_mcp')
+            else:
+                info(f'     CLAUDE_CONFIG_DIR="{cd}" claude mcp add brain --scope user -e BRAIN_VAULT="{vault_root}" -- "{VENV_PY}" -m brain_mcp')
+
     info("")
     info("Next steps:")
     info("  1. Open a new Claude Code session in any project.")
