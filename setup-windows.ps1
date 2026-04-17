@@ -182,18 +182,27 @@ try {
 #    file is only read from the current project dir.
 Write-Host "[6/6] registering brain MCP server (user scope)"
 $ClaudeBin = if ($env:CLAUDE_BIN) { $env:CLAUDE_BIN } else { 'claude' }
+$McpRegistered = $false
+$McpFailReason = ''
 if (-not (Get-Command $ClaudeBin -ErrorAction SilentlyContinue)) {
-  Write-Warning "'$ClaudeBin' not on PATH; skipping MCP registration."
-  Write-Warning "Re-run after installing Claude Code, or set `$env:CLAUDE_BIN to its full path."
+  $McpFailReason = "'$ClaudeBin' not on PATH (check with: Get-Command claude)"
 } else {
   $env:CLAUDE_CONFIG_DIR = $ClaudeDir
   try {
     & $ClaudeBin mcp remove brain --scope user 2>$null | Out-Null
-    & $ClaudeBin mcp add brain --scope user -e "BRAIN_VAULT=$VaultRoot" -- $VenvPython -m brain_mcp | Out-Null
-    if ($LASTEXITCODE -eq 0) {
-      Write-Host "       [ok] registered as user-scope MCP server in $ClaudeDir"
+    # Capture stdout+stderr so a silent CLI failure doesn't vanish into Out-Null.
+    $addOutput = (& $ClaudeBin mcp add brain --scope user -e "BRAIN_VAULT=$VaultRoot" -- $VenvPython -m brain_mcp 2>&1 | Out-String).Trim()
+    $addRc = $LASTEXITCODE
+    if ($addRc -ne 0) {
+      $McpFailReason = "'claude mcp add' exited $addRc: $addOutput"
     } else {
-      Write-Warning "claude mcp add returned exit code $LASTEXITCODE"
+      $listOutput = (& $ClaudeBin mcp list 2>&1 | Out-String)
+      if ($listOutput -notmatch '(?m)^brain') {
+        $McpFailReason = "'claude mcp add' returned success but 'brain' not in 'claude mcp list'"
+      } else {
+        $McpRegistered = $true
+        Write-Host "       [ok] registered as user-scope MCP server in $ClaudeDir"
+      }
     }
   } finally {
     Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue
@@ -204,7 +213,21 @@ if (-not (Get-Command $ClaudeBin -ErrorAction SilentlyContinue)) {
 Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $ClaudeDir '.mcp.json')
 
 Write-Host ""
-Write-Host "[ok] Brain installed in $ClaudeDir"
+if ($McpRegistered) {
+  Write-Host "[ok] Brain installed in $ClaudeDir"
+} else {
+  Write-Host "[ok] Brain files installed in $ClaudeDir"
+  Write-Host ""
+  Write-Host "[FAIL] MCP SERVER NOT REGISTERED — brain_* tools will NOT appear in Claude Code."
+  Write-Host "   reason: $McpFailReason"
+  Write-Host ""
+  Write-Host "   To fix, ensure Claude Code is installed and on PATH, then register manually:"
+  Write-Host "     `$env:CLAUDE_CONFIG_DIR = '$ClaudeDir'"
+  Write-Host "     claude mcp add brain --scope user -e `"BRAIN_VAULT=$VaultRoot`" -- `"$VenvPython`" -m brain_mcp"
+  Write-Host "   Or re-run this script after pointing `$env:CLAUDE_BIN at the claude binary:"
+  Write-Host "     `$env:CLAUDE_BIN = (Get-Command claude).Source"
+  Write-Host "     powershell -ExecutionPolicy Bypass -File '$($MyInvocation.MyCommand.Path)' '$ClaudeDir' '$VaultRoot'"
+}
 Write-Host ""
 Write-Host "Next steps:"
 Write-Host "  1. Open a new Claude Code session in any project."
