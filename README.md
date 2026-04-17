@@ -72,13 +72,23 @@ The original shell installers are still here if you prefer them:
 ~/src/AiBrain/setup-mac.sh ~/.claude-work ~/Documents/Vaults/Ai-Brain
 ```
 
+```bash
+# Linux (Debian Trixie, Raspberry Pi OS, Ubuntu 22.04+)
+~/src/AiBrain/setup-linux.sh ~/.claude-personal ~/Documents/Vaults/Ai-Brain
+```
+
+On Ubuntu 22.04 the default `python3` is 3.10 (too old). Install a newer
+interpreter first via the deadsnakes PPA: `sudo apt install python3.11
+python3.11-venv`. Debian Trixie / Raspberry Pi OS (2025+) ship Python 3.13
+and only need `sudo apt install python3-venv`.
+
 ```powershell
 # Windows
 powershell -ExecutionPolicy Bypass -File C:\src\AiBrain\setup-windows.ps1 `
     "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
 ```
 
-Both are idempotent. See `WINDOWS-SETUP.md` for Windows-specific guidance.
+All three are idempotent. See `WINDOWS-SETUP.md` for Windows-specific guidance.
 
 ## Vault layout
 
