@@ -1,38 +1,23 @@
 #!/usr/bin/env python3
-"""Stop hook — append a one-line breadcrumb and detect save signal phrases.
+"""Stop hook — append a one-line breadcrumb to Brain/activity.md after every turn.
 
-Runs after every assistant turn. Cheap. No LLM calls.
+Cheap, no LLM calls, no regex-based save-signal detection. Proactive saves are driven
+entirely by the directives in templates/global-CLAUDE.md.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 from pathlib import Path
 
 from _common import (
     append_activity,
-    drop_pending_marker,
     now_stamp,
     project_basename,
     read_payload,
-    vault_brain,
 )
-
-SAVE_SIGNAL_PATTERNS = [
-    r"\bremember\b",
-    r"\bfrom now on\b",
-    r"\bnext time\b",
-    r"\bdon'?t forget\b",
-    r"\bi prefer\b",
-    r"\bi like\b.*\bbetter\b",
-    r"\balways\b.*\bdo\b",
-    r"\bnever\b.*\bdo\b",
-    r"\bstop doing\b",
-    r"\bgoing forward\b",
-]
 
 
 def last_user_message(transcript_path: str | None) -> str | None:
@@ -74,11 +59,6 @@ def last_user_message(transcript_path: str | None) -> str | None:
     return last_user
 
 
-def detect_save_signal(text: str) -> bool:
-    t = text.lower()
-    return any(re.search(p, t) for p in SAVE_SIGNAL_PATTERNS)
-
-
 def main() -> None:
     payload = read_payload()
     project = project_basename(payload) or "unknown"
@@ -87,21 +67,10 @@ def main() -> None:
 
     last_msg = last_user_message(transcript) or ""
     snippet = last_msg.replace("\n", " ")[:80]
-    append_activity(f"{now_stamp()} {account} {project} — {snippet}")
-
-    if last_msg and detect_save_signal(last_msg):
-        drop_pending_marker(
-            name=f"{project}-{account}",
-            body=(
-                "---\n"
-                f"detected_at: {now_stamp()}\n"
-                f"project: {project}\n"
-                f"account: {account}\n"
-                "type: save-signal\n"
-                "---\n\n"
-                f"User message contained a save signal:\n\n> {last_msg}\n"
-            ),
-        )
+    try:
+        append_activity(f"{now_stamp()} {account} {project} — {snippet}")
+    except Exception as e:
+        sys.stderr.write(f"brain stop: {e}\n")
 
     sys.exit(0)
 

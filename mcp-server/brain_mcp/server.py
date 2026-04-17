@@ -15,7 +15,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from . import vault
+from . import doctor, vault
 
 server: Server = Server("brain")
 
@@ -200,10 +200,29 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="brain_stats",
             description=(
-                "Report vault telemetry: counts, index size, oldest active checkpoint, "
-                "pending-save backlog. Useful for health checks."
+                "Report vault telemetry: counts, index size, oldest active checkpoint. "
+                "Useful for health checks."
             ),
             inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="brain_doctor",
+            description=(
+                "Run health checks on the Brain setup: BRAIN_VAULT env, vault structure, "
+                "Obsidian Sync conflict files, vector index integrity, editable-install "
+                "detection, fastembed availability, checkpoint freshness. Returns a list "
+                "of findings with severity ok/info/warn/error. Use this when the user "
+                "reports the Brain feels stale or broken."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {
+                        "type": "string",
+                        "description": "optional project basename for the stale-checkpoint check.",
+                    }
+                },
+            },
         ),
     ]
 
@@ -261,6 +280,12 @@ async def call_tool(name: str, arguments: dict | None) -> list[TextContent]:
             return _ok({"checkpoint": str(path)})
         if name == "brain_stats":
             return _ok(vault.stats())
+        if name == "brain_doctor":
+            findings = doctor.check(args.get("project"))
+            return _ok({
+                "worst_severity": doctor.worst_severity(findings),
+                "findings": findings,
+            })
         return _err(f"unknown tool: {name}")
     except Exception as e:
         return _err(f"{type(e).__name__}: {e}")

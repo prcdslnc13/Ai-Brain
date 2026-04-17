@@ -25,9 +25,6 @@ def render(bundle: dict) -> str:
         skip_str = f" · skipped {', '.join(skip_parts)}" if skip_parts else ""
         lines.append(f"> budget: {consumed}/{limit} KB{skip_str}")
         lines.append("")
-    if bundle.get("pending_saves"):
-        lines.append(f"⚠ pending save markers: {', '.join(bundle['pending_saves'])}")
-        lines.append("")
     for section in bundle.get("sections", []):
         lines.append(f"## {section['label']}")
         for item in section["items"]:

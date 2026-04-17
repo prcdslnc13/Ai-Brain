@@ -62,22 +62,5 @@ def append_activity(line: str) -> None:
         f.write(line.rstrip() + "\n")
 
 
-def drop_pending_marker(name: str, body: str) -> Path:
-    brain = vault_brain()
-    pending = brain / ".pending-saves"
-    pending.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    p = pending / f"{stamp}-{name}.md"
-    p.write_text(body, encoding="utf-8")
-    return p
-
-
-def list_pending_markers() -> list[Path]:
-    pending = vault_brain() / ".pending-saves"
-    if not pending.exists():
-        return []
-    return sorted(pending.glob("*.md"))
-
-
 def now_stamp() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M")

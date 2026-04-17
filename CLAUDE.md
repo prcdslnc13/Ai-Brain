@@ -21,22 +21,25 @@ The moving parts fit together as follows:
 
 - **`mcp-server/`** — a Python stdio MCP server (`brain_mcp` package) that exposes the vault as
   typed tools: `brain_session_start`, `brain_recall`, `brain_save`, `brain_list`, `brain_forget`,
-  `brain_checkpoint`. Claude Code, LMStudio, and any MCP-aware Ollama frontend all connect to the
-  *same* server instance on a given machine. The server reads `BRAIN_VAULT` from env and operates
-  on files inside `$BRAIN_VAULT/Brain/`. Core logic lives in `brain_mcp/vault.py` (search, write,
-  frontmatter, session bundle); MCP tool shims are in `brain_mcp/server.py`.
+  `brain_checkpoint`, `brain_stats`, `brain_doctor`. Claude Code, LMStudio, and any MCP-aware
+  Ollama frontend all connect to the *same* server instance on a given machine. The server reads
+  `BRAIN_VAULT` from env and operates on files inside `$BRAIN_VAULT/Brain/`. Core logic lives in
+  `brain_mcp/vault.py` (search, write, frontmatter, session bundle); health checks in
+  `brain_mcp/doctor.py`; MCP tool shims in `brain_mcp/server.py`.
 
 - **`hooks/`** — Python scripts wired into Claude Code's hook events via `settings.json`:
   - `session_start.py` — preloads the vault bundle as `additionalContext` so the model sees user
-    profile + feedback + project context in its system prompt at every session start.
+    profile + feedback + project context in its system prompt at every session start. Also runs
+    `brain_mcp.doctor.check()` and prepends a `## Brain Health` banner for any warn/error findings
+    (silent failures like unset `BRAIN_VAULT`, Obsidian Sync conflict files, corrupt vector index,
+    accidental editable install) so the user sees them at the top of the session instead of
+    experiencing them as unexplained forgetfulness.
   - `pre_compact.py` / `session_end.py` — share `_checkpoint.py`, which parses the transcript JSONL
     and writes a structural checkpoint to `Brain/projects/<project>/sessions/<timestamp>.md`. No
     LLM call — the next session's model will summarize/integrate when it sees the file.
-  - `stop.py` — appends a one-line breadcrumb to `Brain/activity.md` after every turn and scans
-    the last user message for save-signal phrases ("remember", "I prefer", "from now on", etc.),
-    dropping a marker file in `Brain/.pending-saves/` when it matches.
-  - `user_prompt_submit.py` — if any pending-save markers exist, injects a reminder into the next
-    prompt telling the model to process them.
+  - `stop.py` — appends a one-line breadcrumb to `Brain/activity.md` after every turn. Proactive
+    saves are driven entirely by the directives in `templates/global-CLAUDE.md`; there is no
+    regex-based save-signal detection in the hook itself.
   - `_common.py` / `_checkpoint.py` — shared helpers. Both read `BRAIN_VAULT` from env, never from
     the filesystem layout.
 
@@ -93,6 +96,10 @@ echo '{"cwd":"/tmp/test","hook_event_name":"SessionStart","source":"startup"}' |
 # Dump the session-start bundle as markdown (useful for non-tool-calling models)
 BRAIN_VAULT=~/Documents/Vaults/Ai-Brain \
   ~/src/AiBrain/mcp-server/.venv/bin/brain-prep --project MyProject
+
+# Health check — run anytime, especially when the Brain feels stale or broken
+BRAIN_VAULT=~/Documents/Vaults/Ai-Brain \
+  ~/src/AiBrain/mcp-server/.venv/bin/brain-doctor --project MyProject
 ```
 
 ## Gotchas that will bite you
