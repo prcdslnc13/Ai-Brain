@@ -19,11 +19,13 @@ The setup script wires the two together: it points the hooks block in your Claud
 
 - **Brain MCP server** (`mcp-server/`) — Python stdio MCP server exposing the vault as typed tools:
   `brain_session_start`, `brain_recall`, `brain_save`, `brain_list`, `brain_forget`,
-  `brain_checkpoint`. Claude Code, LMStudio, and any MCP-aware Ollama frontend all connect to the
-  same server.
+  `brain_checkpoint`, `brain_stats`, `brain_doctor`. Claude Code, LMStudio, and any MCP-aware
+  Ollama frontend all connect to the same server.
 - **Hooks** (`hooks/`) — Python scripts wired into Claude Code's hook events:
   - `session_start.py` — preloads the vault bundle (user profile, feedback, project context) into
-    the system prompt at the start of every session.
+    the system prompt, and prepends a `## Brain Health` banner for any warn/error findings from
+    `brain_doctor` so silent failures (unset `BRAIN_VAULT`, Obsidian Sync conflicts, corrupt
+    vector index) become visible.
   - `pre_compact.py` / `session_end.py` — write structural session checkpoints from the transcript
     into `Brain/projects/<project>/sessions/`.
   - `stop.py` — appends a one-line breadcrumb to `Brain/activity.md` after every turn.

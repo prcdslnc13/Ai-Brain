@@ -14,6 +14,7 @@ dependencies = [
 brain-mcp = "brain_mcp.__main__:main"
 brain-prep = "brain_mcp.brain_prep:main"
 brain-compact = "brain_mcp.compact:main"
+brain-doctor = "brain_mcp.doctor:main"
 
 [build-system]
 requires = ["setuptools>=68"]
