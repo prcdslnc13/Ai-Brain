@@ -194,7 +194,7 @@ if (-not (Get-Command $ClaudeBin -ErrorAction SilentlyContinue)) {
     $addOutput = (& $ClaudeBin mcp add brain --scope user -e "BRAIN_VAULT=$VaultRoot" -- $VenvPython -m brain_mcp 2>&1 | Out-String).Trim()
     $addRc = $LASTEXITCODE
     if ($addRc -ne 0) {
-      $McpFailReason = "'claude mcp add' exited $addRc: $addOutput"
+      $McpFailReason = "'claude mcp add' exited ${addRc}: $addOutput"
     } else {
       $listOutput = (& $ClaudeBin mcp list 2>&1 | Out-String)
       if ($listOutput -notmatch '(?m)^brain') {
