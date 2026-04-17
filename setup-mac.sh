@@ -117,15 +117,25 @@ PY
 #    the current project dir.
 echo "[5/6] registering brain MCP server (user scope)"
 CLAUDE_BIN="${CLAUDE_BIN:-claude}"
+MCP_REGISTERED=0
+MCP_FAIL_REASON=""
 if ! command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
-  echo "WARNING: '$CLAUDE_BIN' not on PATH; skipping MCP registration." >&2
-  echo "         Re-run with CLAUDE_BIN=/path/to/claude $0 $CLAUDE_DIR $VAULT_ROOT" >&2
+  MCP_FAIL_REASON="'$CLAUDE_BIN' not on PATH"
 else
   CLAUDE_CONFIG_DIR="$CLAUDE_DIR" "$CLAUDE_BIN" mcp remove brain --scope user >/dev/null 2>&1 || true
-  CLAUDE_CONFIG_DIR="$CLAUDE_DIR" "$CLAUDE_BIN" mcp add brain --scope user \
-    -e "BRAIN_VAULT=$VAULT_ROOT" \
-    -- "$VENV_PYTHON" -m brain_mcp >/dev/null
-  echo "       ✓ registered as user-scope MCP server in $CLAUDE_DIR"
+  # Capture both streams so a silent CLI failure doesn't vanish into /dev/null.
+  MCP_ADD_OUT="$(CLAUDE_CONFIG_DIR="$CLAUDE_DIR" "$CLAUDE_BIN" mcp add brain --scope user \
+      -e "BRAIN_VAULT=$VAULT_ROOT" \
+      -- "$VENV_PYTHON" -m brain_mcp 2>&1)" || MCP_ADD_RC=$?
+  MCP_ADD_RC="${MCP_ADD_RC:-0}"
+  if [ "$MCP_ADD_RC" -ne 0 ]; then
+    MCP_FAIL_REASON="'claude mcp add' exited $MCP_ADD_RC: $MCP_ADD_OUT"
+  elif ! CLAUDE_CONFIG_DIR="$CLAUDE_DIR" "$CLAUDE_BIN" mcp list 2>/dev/null | grep -q "^brain"; then
+    MCP_FAIL_REASON="'claude mcp add' returned success but 'brain' not in 'claude mcp list'"
+  else
+    MCP_REGISTERED=1
+    echo "       ✓ registered as user-scope MCP server in $CLAUDE_DIR"
+  fi
 fi
 
 # 8. Clean up any obsolete .mcp.json from earlier setup runs (it never worked).
@@ -133,7 +143,20 @@ echo "[6/6] cleanup"
 rm -f "$CLAUDE_DIR/.mcp.json"
 
 echo
-echo "✓ Brain installed in $CLAUDE_DIR"
+if [ "$MCP_REGISTERED" -eq 1 ]; then
+  echo "✓ Brain installed in $CLAUDE_DIR"
+else
+  echo "✓ Brain files installed in $CLAUDE_DIR"
+  echo
+  echo "✗ MCP SERVER NOT REGISTERED — brain_* tools will NOT appear in Claude Code."
+  echo "   reason: $MCP_FAIL_REASON"
+  echo
+  echo "   To fix, ensure Claude Code is installed and on PATH, then register manually:"
+  echo "     CLAUDE_CONFIG_DIR=$CLAUDE_DIR $CLAUDE_BIN mcp add brain --scope user \\"
+  echo "         -e BRAIN_VAULT=$VAULT_ROOT -- $VENV_PYTHON -m brain_mcp"
+  echo "   Or re-run this script with CLAUDE_BIN pointing at the claude binary:"
+  echo "     CLAUDE_BIN=\$(which claude) $0 $CLAUDE_DIR $VAULT_ROOT"
+fi
 echo
 echo "Next steps:"
 echo "  1. Open a new Claude Code session in any project."
