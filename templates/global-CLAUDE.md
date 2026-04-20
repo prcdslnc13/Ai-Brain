@@ -9,6 +9,26 @@ The SessionStart hook automatically preloads the Brain bundle (index, user profi
 project overview, latest session checkpoint) into your context at the top of every session. You do
 not need to call `brain_session_start` yourself unless that preload is missing.
 
+## Session bootstrap: upgrading an overview stub
+
+The first time a project is used, the SessionStart hook writes a *stub* `overview.md` so the bundle
+has something to show. You can recognize a stub by `stub: true` in its YAML frontmatter and the
+header `# <project> — overview (STUB)`. When the preloaded overview for the current project is a
+stub, treat that as a first-turn task:
+
+1. Read the "Source material" paths listed in the stub (typically the project's `CLAUDE.md`,
+   `plan.md`, `ROADMAP.md`, `README.md` — whichever exist).
+2. Synthesize a concise overview covering **purpose**, **architecture** (moving parts and how they
+   fit together), and **non-obvious gotchas** (things a future session won't figure out by reading
+   the code).
+3. Call `brain_save(type="project", project="<project>", name="overview", content=...)` with your
+   summary. This overwrites the stub — future sessions will see your real overview instead of the
+   placeholder.
+
+Do this early in the turn, before the user's actual request if possible, so the rest of the session
+has full project context. One redundant `brain_save` if the stub was already upgraded costs nothing;
+leaving a stub in place costs every future session the context it needs.
+
 ## Memory taxonomy
 
 There are exactly four types of memories. Save things if and only if they fit one of these:

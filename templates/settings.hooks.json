@@ -22,6 +22,17 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "BRAIN_VAULT=__BRAIN_VAULT__ __BRAIN_PYTHON__ __BRAIN_HOOKS__/user_prompt_submit.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "PreCompact": [
       {
         "hooks": [

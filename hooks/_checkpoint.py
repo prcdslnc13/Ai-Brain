@@ -19,6 +19,17 @@ from pathlib import Path
 from brain_mcp import vault as _vault  # noqa: E402
 
 
+_COMMAND_TAG_PREFIXES = ("<local-command-", "<command-")
+
+
+def _is_command_wrapper(text: str) -> bool:
+    """Claude Code wraps slash-command input/output in synthetic XML-ish tags that
+    arrive as 'user' role entries in the transcript. A turn whose content is
+    entirely these wrappers is not a real user turn."""
+    stripped = text.strip()
+    return bool(stripped) and stripped.startswith(_COMMAND_TAG_PREFIXES)
+
+
 def _extract_text(content) -> str:
     if isinstance(content, str):
         return content
@@ -59,7 +70,7 @@ def parse_transcript(path: Path) -> dict:
 
             if role == "user":
                 text = _extract_text(msg.get("content") if isinstance(msg, dict) else msg)
-                if text and not text.startswith("[tool_result"):
+                if text and not text.startswith("[tool_result") and not _is_command_wrapper(text):
                     user_msgs.append(text.strip())
             elif role == "assistant":
                 content = msg.get("content") if isinstance(msg, dict) else msg
@@ -127,5 +138,7 @@ def write_session_checkpoint(transcript_path: str | None, project: str | None, s
     parsed = parse_transcript(Path(transcript_path))
     if len(parsed["user_msgs"]) < 1:
         return None  # nothing meaningful happened
+    if len(parsed["assistant_msgs"]) < 1 and len(parsed["tool_calls"]) < 1:
+        return None  # user typed but the model never did anything — not worth a checkpoint
     body = render_checkpoint(parsed, source=source, project=project)
     return _vault.write_checkpoint(project, body)

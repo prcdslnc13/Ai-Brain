@@ -16,8 +16,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -178,6 +180,93 @@ def _check_fastembed() -> list[Finding]:
     return [Finding("ok", "FASTEMBED_OK", "fastembed importable")]
 
 
+_ACTIVITY_COLUMNS_RE = re.compile(r"\[sig=([YN]) sav=([YN]) nud=([YN])\]")
+SAVE_GAP_WINDOW = 30  # tail of activity.md to examine
+SAVE_GAP_THRESHOLD = 3  # signal-without-save count that triggers a WARN
+
+
+def _tail_activity(brain: Path, n: int) -> list[str]:
+    activity = brain / "activity.md"
+    if not activity.exists():
+        return []
+    try:
+        with activity.open("r", encoding="utf-8") as f:
+            return list(deque(f, maxlen=n))
+    except Exception:
+        return []
+
+
+def _check_save_gap(brain: Path) -> list[Finding]:
+    """Warn when recent activity shows save-signals without brain_save calls.
+
+    Only counts lines written after the audit-column format landed. Older lines
+    have no `[sig=... sav=... nud=...]` suffix and are silently skipped.
+    """
+    lines = _tail_activity(brain, SAVE_GAP_WINDOW)
+    if not lines:
+        return []
+
+    audited = 0
+    signal_no_save_nudged = 0
+    signal_no_save_unnudged = 0
+    for line in lines:
+        m = _ACTIVITY_COLUMNS_RE.search(line)
+        if not m:
+            continue
+        audited += 1
+        sig, sav, nud = m.group(1), m.group(2), m.group(3)
+        if sig == "Y" and sav == "N":
+            if nud == "Y":
+                signal_no_save_nudged += 1
+            else:
+                signal_no_save_unnudged += 1
+
+    total_gap = signal_no_save_nudged + signal_no_save_unnudged
+    if audited == 0:
+        return [Finding(
+            "info", "SAVE_GAP_NO_DATA",
+            "No audited activity lines yet — new stop.py format hasn't rolled out.",
+        )]
+    if total_gap < SAVE_GAP_THRESHOLD:
+        return [Finding(
+            "ok", "SAVE_GAP_OK",
+            f"{audited} audited turns in window; {total_gap} signal-without-save.",
+        )]
+    detail = f"nudged={signal_no_save_nudged}, unnudged={signal_no_save_unnudged}"
+    return [Finding(
+        "warn", "SAVE_GAP",
+        f"{total_gap} of last {audited} turns had a save-signal with no brain_save call ({detail}).",
+        "If 'unnudged' dominates, enable the nudge (unset BRAIN_NUDGE or set =1). "
+        "If 'nudged' dominates, the model is ignoring the nudge — tighten "
+        "templates/global-CLAUDE.md proactive-save triggers.",
+    )]
+
+
+def _check_project_overview(brain: Path, project: str | None) -> list[Finding]:
+    if not project:
+        return []
+    overview = brain / "projects" / project / "overview.md"
+    if not overview.exists():
+        return [Finding(
+            "warn", "OVERVIEW_MISSING",
+            f"No overview.md for project '{project}' — session bundle is missing project context.",
+            "The SessionStart hook normally writes a stub on first run; if you see this, the hook "
+            "either didn't run or couldn't write to the vault. Check hook logs on this machine.",
+        )]
+    try:
+        from brain_mcp import vault
+        if vault.is_overview_stub(overview):
+            return [Finding(
+                "info", "OVERVIEW_STUB",
+                f"project '{project}' has a stub overview.md — model should upgrade it this session.",
+                "The model reads the stub's Source material pointers and calls brain_save to "
+                "replace it with a real summary. Automatic on first turn per global-CLAUDE.md.",
+            )]
+    except Exception:
+        pass
+    return [Finding("ok", "OVERVIEW_OK", f"project '{project}' has overview.md")]
+
+
 def _check_stale_checkpoint(brain: Path, project: str | None) -> list[Finding]:
     if not project:
         return []
@@ -216,7 +305,9 @@ def check(project: str | None = None) -> list[dict]:
     findings.extend(_check_vector_index(brain))
     findings.extend(_check_editable_install())
     findings.extend(_check_fastembed())
+    findings.extend(_check_project_overview(brain, project))
     findings.extend(_check_stale_checkpoint(brain, project))
+    findings.extend(_check_save_gap(brain))
 
     return [f.to_dict() for f in findings]
 

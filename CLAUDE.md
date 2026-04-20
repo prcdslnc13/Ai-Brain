@@ -37,11 +37,22 @@ The moving parts fit together as follows:
   - `pre_compact.py` / `session_end.py` — share `_checkpoint.py`, which parses the transcript JSONL
     and writes a structural checkpoint to `Brain/projects/<project>/sessions/<timestamp>.md`. No
     LLM call — the next session's model will summarize/integrate when it sees the file.
-  - `stop.py` — appends a one-line breadcrumb to `Brain/activity.md` after every turn. Proactive
-    saves are driven entirely by the directives in `templates/global-CLAUDE.md`; there is no
-    regex-based save-signal detection in the hook itself.
-  - `_common.py` / `_checkpoint.py` — shared helpers. Both read `BRAIN_VAULT` from env, never from
-    the filesystem layout.
+  - `stop.py` — appends an audited one-line breadcrumb to `Brain/activity.md` after every turn.
+    Each line ends with `[sig=Y|N sav=Y|N nud=Y|N]` columns: whether the user message matched a
+    save-signal pattern, whether the assistant called `brain_save`/`brain_checkpoint` this turn,
+    and whether the UserPromptSubmit nudge was enabled. `brain_doctor._check_save_gap` reads these
+    columns and WARNs when recent turns show signal-without-save — that's the feedback loop that
+    tells you whether the proactive-save directives in `templates/global-CLAUDE.md` are actually
+    firing.
+  - `user_prompt_submit.py` — optional soft nudge. If the incoming prompt matches a save-signal
+    regex (same patterns as stop.py's audit, kept in `_savesig.py`) and `BRAIN_NUDGE` is not `0`,
+    injects a one-line `additionalContext` reminder telling the model to call `brain_save`.
+    Stateless, no marker files, no pending-saves dir. Disable per-install with `BRAIN_NUDGE=0` in
+    the hook env (e.g., to keep prompts tight for local-model sessions, though hooks only fire
+    under Claude Code anyway).
+  - `_common.py` / `_checkpoint.py` / `_savesig.py` — shared helpers. All read `BRAIN_VAULT` from
+    env, never from the filesystem layout. `_savesig.py` is named with a prefix because `_signal`
+    is a CPython builtin module that shadows local imports.
 
 - **`templates/`**:
   - `global-CLAUDE.md` — the load-bearing proactive-memory directives. Copied to

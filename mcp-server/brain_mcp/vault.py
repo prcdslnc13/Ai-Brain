@@ -336,6 +336,89 @@ def session_start_bundle(project: str | None = None) -> dict:
     return bundle
 
 
+OVERVIEW_SOURCE_CANDIDATES = ("CLAUDE.md", "plan.md", "ROADMAP.md", "README.md")
+
+
+def ensure_project_overview_stub(project: str, project_dir: str | Path | None) -> Path | None:
+    """Write a minimal stub `projects/<project>/overview.md` if none exists.
+
+    The stub has `stub: true` in frontmatter so the model (via the SessionStart
+    bundle) and `brain_doctor` can tell it apart from a real, synthesized
+    overview. On first model session in this project, the template directive in
+    global-CLAUDE.md tells the model to read the listed source files and call
+    `brain_save` to replace the stub with a real summary.
+
+    Idempotent: returns None if overview.md already exists, or if `project` is
+    falsy. Returns the path that was written otherwise.
+    """
+    if not project:
+        return None
+    root = vault_root()
+    overview = root / "projects" / project / "overview.md"
+    if overview.exists():
+        return None
+
+    pointers: list[str] = []
+    if project_dir:
+        p = Path(project_dir).expanduser().resolve()
+        for name in OVERVIEW_SOURCE_CANDIDATES:
+            candidate = p / name
+            if candidate.exists():
+                pointers.append(f"- `{candidate}`")
+
+    today = datetime.now().date().isoformat()
+    if pointers:
+        pointers_block = "\n".join(pointers)
+    else:
+        pointers_block = (
+            "- _(no CLAUDE.md / plan.md / ROADMAP.md / README.md found at the project root "
+            "— synthesize the overview from code exploration instead)_"
+        )
+
+    content = (
+        "---\n"
+        "name: overview\n"
+        f"description: stub overview for {project} — awaiting upgrade on first model session\n"
+        "type: project\n"
+        "stub: true\n"
+        f"created: {today}\n"
+        "---\n\n"
+        f"# {project} — overview (STUB)\n\n"
+        "> This is an auto-generated placeholder written by the SessionStart hook so the session\n"
+        "> bundle has *something* for project context. **Action for the model that loads this:**\n"
+        "> read the source files listed below, synthesize a concise summary of purpose,\n"
+        "> architecture, and non-obvious gotchas, and call\n"
+        f"> `brain_save(type=\"project\", project=\"{project}\", name=\"overview\", content=...)`\n"
+        "> to replace this stub. Future sessions will then see your real overview.\n\n"
+        "## Source material\n\n"
+        f"{pointers_block}\n"
+    )
+
+    overview.parent.mkdir(parents=True, exist_ok=True)
+    overview.write_text(content, encoding="utf-8")
+    _try_embed_upsert(overview)
+    return overview
+
+
+def is_overview_stub(path: Path) -> bool:
+    """True when `path` has `stub: true` in its YAML frontmatter."""
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            head = f.read(2048)
+    except OSError:
+        return False
+    if not head.startswith("---"):
+        return False
+    end = head.find("\n---", 3)
+    if end == -1:
+        return False
+    try:
+        fm = yaml.safe_load(head[3:end]) or {}
+    except yaml.YAMLError:
+        return False
+    return bool(fm.get("stub"))
+
+
 def write_checkpoint(project: str, summary: str) -> Path:
     root = vault_root()
     target = root / "projects" / project / "sessions"

@@ -13,12 +13,31 @@ import sys
 from _common import emit, project_basename, read_payload
 
 
+def _import_failure_banner(component: str, err: Exception) -> str:
+    """Synthetic banner for when brain_mcp itself fails to import. Without this the
+    user sees an empty session and assumes the Brain silently forgot things."""
+    return (
+        "## Brain Health\n"
+        "\n"
+        f"- **[ERROR]** `BRAIN_MCP_IMPORT_FAILED` — {component} import failed: "
+        f"{type(err).__name__}: {err}  \n"
+        "  *Re-run setup-mac.sh / setup-windows.ps1 to reinstall the MCP venv. "
+        "Brain tools will not work until this is fixed.*\n"
+    )
+
+
 def main() -> None:
     payload = read_payload()
     project = project_basename(payload)
+    project_cwd = payload.get("cwd")
 
     try:
-        from brain_mcp import doctor
+        from brain_mcp import doctor, vault
+        if project:
+            try:
+                vault.ensure_project_overview_stub(project, project_cwd)
+            except Exception as e:
+                sys.stderr.write(f"brain session_start stub: {e}\n")
         findings = doctor.check(project)
         banner = doctor.render_banner(findings, min_severity="warn")
         vault_error = any(
@@ -28,8 +47,8 @@ def main() -> None:
         )
     except Exception as e:
         sys.stderr.write(f"brain session_start doctor: {e}\n")
-        banner = ""
-        vault_error = False
+        banner = _import_failure_banner("doctor", e)
+        vault_error = True  # treat import failure as fatal — no bundle can load either
 
     if vault_error:
         if banner:
@@ -47,13 +66,13 @@ def main() -> None:
         bundle = vault.session_start_bundle(project)
     except Exception as e:
         sys.stderr.write(f"brain session_start: {e}\n")
-        if banner:
-            emit({
-                "hookSpecificOutput": {
-                    "hookEventName": "SessionStart",
-                    "additionalContext": banner,
-                }
-            })
+        fail_banner = banner or _import_failure_banner("vault bundle", e)
+        emit({
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": fail_banner,
+            }
+        })
         sys.exit(0)
 
     context = render(bundle)
