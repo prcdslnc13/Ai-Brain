@@ -101,9 +101,49 @@ template = (
 )
 hooks_block = json.loads(template)["hooks"]
 
-settings.setdefault("hooks", {})
+
+def _is_brain_command(cmd: str) -> bool:
+    """Detect hook commands we own, so stale entries (e.g. a UserPromptSubmit
+    pointing at a deleted script) get pruned when the template shrinks."""
+    if not isinstance(cmd, str):
+        return False
+    return (
+        f"BRAIN_VAULT={brain_vault}" in cmd
+        or "BRAIN_VAULT=" in cmd and brain_hooks in cmd
+        or brain_hooks in cmd
+    )
+
+
+# Prune any Brain-owned hook entries left over from older template versions
+# before re-applying the current template. Without this, settings.json
+# accumulates orphan events (e.g. UserPromptSubmit) whose commands exec
+# scripts that no longer exist.
+existing = settings.get("hooks", {}) or {}
+if not isinstance(existing, dict):
+    existing = {}
+for event in list(existing.keys()):
+    groups = existing.get(event) or []
+    if not isinstance(groups, list):
+        continue
+    pruned_groups = []
+    for group in groups:
+        if not isinstance(group, dict):
+            pruned_groups.append(group)
+            continue
+        inner = group.get("hooks") or []
+        kept = [h for h in inner if not (isinstance(h, dict) and _is_brain_command(h.get("command", "")))]
+        if kept:
+            new_group = dict(group)
+            new_group["hooks"] = kept
+            pruned_groups.append(new_group)
+    if pruned_groups:
+        existing[event] = pruned_groups
+    else:
+        del existing[event]
+settings["hooks"] = existing
+
 for event, definition in hooks_block.items():
-    settings["hooks"][event] = definition  # overwrite the brain block; leave other events alone
+    settings["hooks"][event] = definition
 
 with open(settings_path, "w", encoding="utf-8") as f:
     json.dump(settings, f, indent=2)
