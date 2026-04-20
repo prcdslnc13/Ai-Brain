@@ -1,3 +1,4 @@
+<!-- managed-by: ai-brain -->
 # Global memory directives
 
 You have a persistent, cross-machine, cross-account memory system called the **Brain**, backed by an
