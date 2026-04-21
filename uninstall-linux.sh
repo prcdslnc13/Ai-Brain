@@ -4,11 +4,11 @@
 # Tested on Debian Trixie (Raspberry Pi OS) and Ubuntu 22.04.
 #
 # Usage:
-#     ~/src/AiBrain/uninstall-linux.sh <claude-config-dir>
+#     ~/src/Ai-Brain/uninstall-linux.sh <claude-config-dir>
 #
 # Examples:
-#     ~/src/AiBrain/uninstall-linux.sh ~/.claude-personal
-#     ~/src/AiBrain/uninstall-linux.sh ~/.claude-work
+#     ~/src/Ai-Brain/uninstall-linux.sh ~/.claude-personal
+#     ~/src/Ai-Brain/uninstall-linux.sh ~/.claude-work
 #
 # Reverses setup-linux.sh. Idempotent: running on a never-installed dir is a no-op.
 #

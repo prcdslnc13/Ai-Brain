@@ -9,7 +9,7 @@ This repo holds the **code**: hooks, MCP server, templates, setup scripts. The a
 
 | Layer | Lives at | Synced via | Contains |
 |---|---|---|---|
-| Code | `~/src/AiBrain` (this repo) | git push/pull | hooks, MCP server, templates, setup |
+| Code | `~/src/Ai-Brain` (this repo) | git push/pull | hooks, MCP server, templates, setup |
 | Data | `~/Documents/Vaults/Ai-Brain` (Obsidian vault) | Obsidian Sync | `Brain/user/`, `Brain/feedback/`, `Brain/projects/`, etc. |
 
 The setup script wires the two together: it points the hooks block in your Claude Code
@@ -39,13 +39,13 @@ Prerequisites: Python 3.11+, `claude` CLI on PATH, an Obsidian vault for the dat
 
 ```bash
 # Clone this repo
-git clone git@github.com:<your-github-user>/Ai-Brain.git ~/src/AiBrain
+git clone git@github.com:<your-github-user>/Ai-Brain.git ~/src/Ai-Brain
 ```
 
 ### Recommended: cross-platform wizard
 
 ```bash
-python3 ~/src/AiBrain/brain-setup.py
+python3 ~/src/Ai-Brain/brain-setup.py
 ```
 
 Stdlib-only; works on macOS, Windows, and Linux. Auto-detects every `~/.claude*`
@@ -56,7 +56,7 @@ idempotent.
 For scripted installs:
 
 ```bash
-python3 ~/src/AiBrain/brain-setup.py --non-interactive \
+python3 ~/src/Ai-Brain/brain-setup.py --non-interactive \
     --vault ~/Documents/Vaults/Ai-Brain \
     --claude-dir ~/.claude-personal --claude-dir ~/.claude-work
 ```
@@ -67,13 +67,13 @@ The original shell installers are still here if you prefer them:
 
 ```bash
 # macOS
-~/src/AiBrain/setup-mac.sh ~/.claude-personal ~/Documents/Vaults/Ai-Brain
-~/src/AiBrain/setup-mac.sh ~/.claude-work ~/Documents/Vaults/Ai-Brain
+~/src/Ai-Brain/setup-mac.sh ~/.claude-personal ~/Documents/Vaults/Ai-Brain
+~/src/Ai-Brain/setup-mac.sh ~/.claude-work ~/Documents/Vaults/Ai-Brain
 ```
 
 ```bash
 # Linux (Debian Trixie, Raspberry Pi OS, Ubuntu 22.04+)
-~/src/AiBrain/setup-linux.sh ~/.claude-personal ~/Documents/Vaults/Ai-Brain
+~/src/Ai-Brain/setup-linux.sh ~/.claude-personal ~/Documents/Vaults/Ai-Brain
 ```
 
 On Ubuntu 22.04 the default `python3` is 3.10 (too old). Install a newer
@@ -83,7 +83,7 @@ and only need `sudo apt install python3-venv`.
 
 ```powershell
 # Windows
-powershell -ExecutionPolicy Bypass -File C:\src\AiBrain\setup-windows.ps1 `
+powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
     "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
 ```
 
@@ -115,7 +115,7 @@ machines just churns disk and bandwidth. The archive is large but rarely read.
 ## Local model integration
 
 - **LMStudio**: register the MCP server in LMStudio's settings:
-  - command: `~/src/AiBrain/mcp-server/.venv/bin/python`
+  - command: `~/src/Ai-Brain/mcp-server/.venv/bin/python`
   - args: `-m brain_mcp`
   - env: `BRAIN_VAULT=<your vault path>`
 - **Ollama**: pair with an MCP-capable frontend (Open WebUI, msty) and register the same server.

@@ -2,11 +2,11 @@
 # setup-mac.sh — install the Brain wiring into a Claude Code config dir on macOS.
 #
 # Usage:
-#     ~/src/AiBrain/setup-mac.sh <claude-config-dir> <vault-path>
+#     ~/src/Ai-Brain/setup-mac.sh <claude-config-dir> <vault-path>
 #
 # Examples:
-#     ~/src/AiBrain/setup-mac.sh ~/.claude-personal ~/Documents/Vaults/Ai-Brain
-#     ~/src/AiBrain/setup-mac.sh ~/.claude-work ~/Documents/Vaults/Ai-Brain
+#     ~/src/Ai-Brain/setup-mac.sh ~/.claude-personal ~/Documents/Vaults/Ai-Brain
+#     ~/src/Ai-Brain/setup-mac.sh ~/.claude-work ~/Documents/Vaults/Ai-Brain
 #
 # Idempotent: re-running updates the global CLAUDE.md, hook block, and MCP registration
 # in place without disturbing other settings.

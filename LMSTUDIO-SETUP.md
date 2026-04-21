@@ -30,7 +30,7 @@ Use the full absolute paths for your machine:
 
 | Field   | macOS                                                              | Windows                                                                      |
 |---------|--------------------------------------------------------------------|------------------------------------------------------------------------------|
-| Command | `/Users/<you>/src/AiBrain/mcp-server/.venv/bin/python`             | `C:\src\AiBrain\mcp-server\.venv\Scripts\python.exe`                         |
+| Command | `/Users/<you>/src/Ai-Brain/mcp-server/.venv/bin/python`             | `C:\src\Ai-Brain\mcp-server\.venv\Scripts\python.exe`                         |
 | Args    | `-m brain_mcp`                                                     | `-m brain_mcp`                                                               |
 | Env     | `BRAIN_VAULT=/Users/<you>/Documents/Vaults/Ai-Brain`               | `BRAIN_VAULT=C:\Users\<you>\Documents\Vaults\Ai-Brain`                       |
 
@@ -55,7 +55,7 @@ LMStudio build exposes.
 {
   "mcpServers": {
     "brain": {
-      "command": "/Users/<you>/src/AiBrain/mcp-server/.venv/bin/python",
+      "command": "/Users/<you>/src/Ai-Brain/mcp-server/.venv/bin/python",
       "args": ["-m", "brain_mcp"],
       "env": {
         "BRAIN_VAULT": "/Users/<you>/Documents/Vaults/Ai-Brain"
@@ -71,7 +71,7 @@ On Windows, use backslash-escaped absolute paths:
 {
   "mcpServers": {
     "brain": {
-      "command": "C:\\src\\AiBrain\\mcp-server\\.venv\\Scripts\\python.exe",
+      "command": "C:\\src\\Ai-Brain\\mcp-server\\.venv\\Scripts\\python.exe",
       "args": ["-m", "brain_mcp"],
       "env": {
         "BRAIN_VAULT": "C:\\Users\\<you>\\Documents\\Vaults\\Ai-Brain"
@@ -122,7 +122,7 @@ macOS:
 
 ```bash
 BRAIN_VAULT=~/Documents/Vaults/Ai-Brain \
-  ~/src/AiBrain/mcp-server/.venv/bin/python -m brain_mcp <<'EOF'
+  ~/src/Ai-Brain/mcp-server/.venv/bin/python -m brain_mcp <<'EOF'
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}
 {"jsonrpc":"2.0","method":"notifications/initialized"}
 {"jsonrpc":"2.0","id":2,"method":"tools/list"}
@@ -137,7 +137,7 @@ $env:BRAIN_VAULT = "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}
 {"jsonrpc":"2.0","method":"notifications/initialized"}
 {"jsonrpc":"2.0","id":2,"method":"tools/list"}
-"@ | & "C:\src\AiBrain\mcp-server\.venv\Scripts\python.exe" -m brain_mcp
+"@ | & "C:\src\Ai-Brain\mcp-server\.venv\Scripts\python.exe" -m brain_mcp
 ```
 
 Expected: two JSON-RPC response lines on stdout. The first reports `serverInfo.name: "brain"`,

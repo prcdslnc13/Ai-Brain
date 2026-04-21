@@ -21,14 +21,14 @@ and `setup-mac.sh`; this file is the Windows counterpart.
 ## Install
 
 ```powershell
-# 1. Clone the repo (anywhere — C:\src\AiBrain is the convention to match ~/src/AiBrain on Mac)
-git clone git@github.com:<your-github-user>/Ai-Brain.git C:\src\AiBrain
+# 1. Clone the repo (anywhere — C:\src\Ai-Brain is the convention to match ~/src/Ai-Brain on Mac)
+git clone git@github.com:<your-github-user>/Ai-Brain.git C:\src\Ai-Brain
 ```
 
 ### Recommended: the cross-platform wizard
 
 ```powershell
-python C:\src\AiBrain\brain-setup.py
+python C:\src\Ai-Brain\brain-setup.py
 ```
 
 It prompts for the vault path and which `~\.claude*` dir(s) to install into, and
@@ -38,7 +38,7 @@ locations like `D:\Vaults\Ai-Brain`). Re-run any time to refresh — idempotent.
 For scripted installs:
 
 ```powershell
-python C:\src\AiBrain\brain-setup.py --non-interactive `
+python C:\src\Ai-Brain\brain-setup.py --non-interactive `
     --vault "D:\Vaults\Ai-Brain" `
     --claude-dir "$env:USERPROFILE\.claude-personal" `
     --claude-dir "$env:USERPROFILE\.claude-work"
@@ -51,11 +51,11 @@ If you prefer a native PowerShell install:
 ```powershell
 # Run setup for each Claude Code config dir you use.
 #    Arguments: <claude-config-dir> <vault-path>
-powershell -ExecutionPolicy Bypass -File C:\src\AiBrain\setup-windows.ps1 `
+powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
     "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
 
 # Non-standard vault path (no $env: prefix needed for plain paths):
-powershell -ExecutionPolicy Bypass -File C:\src\AiBrain\setup-windows.ps1 `
+powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
     "$env:USERPROFILE\.claude-personal" "D:\Vaults\Ai-Brain"
 ```
 

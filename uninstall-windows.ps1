@@ -2,10 +2,10 @@
 # uninstall-windows.ps1 - remove the Brain wiring from a Claude Code config dir on Windows.
 #
 # Usage:
-#     powershell -ExecutionPolicy Bypass -File C:\src\AiBrain\uninstall-windows.ps1 <claude-config-dir>
+#     powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\uninstall-windows.ps1 <claude-config-dir>
 #
 # Example:
-#     powershell -ExecutionPolicy Bypass -File C:\src\AiBrain\uninstall-windows.ps1 `
+#     powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\uninstall-windows.ps1 `
 #         "$env:USERPROFILE\.claude-personal"
 #
 # Reverses setup-windows.ps1. Idempotent: running on a never-installed dir is a no-op.

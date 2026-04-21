@@ -14,11 +14,11 @@
 #     sudo apt install python3-venv
 #
 # Usage:
-#     ~/src/AiBrain/setup-linux.sh <claude-config-dir> <vault-path>
+#     ~/src/Ai-Brain/setup-linux.sh <claude-config-dir> <vault-path>
 #
 # Examples:
-#     ~/src/AiBrain/setup-linux.sh ~/.claude-personal ~/Documents/Vaults/Ai-Brain
-#     ~/src/AiBrain/setup-linux.sh ~/.claude-work ~/Documents/Vaults/Ai-Brain
+#     ~/src/Ai-Brain/setup-linux.sh ~/.claude-personal ~/Documents/Vaults/Ai-Brain
+#     ~/src/Ai-Brain/setup-linux.sh ~/.claude-work ~/Documents/Vaults/Ai-Brain
 #
 # Idempotent: re-running updates the global CLAUDE.md, hook block, and MCP registration
 # in place without disturbing other settings.

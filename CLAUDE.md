@@ -8,7 +8,7 @@ This repo is the **code half** of a two-location memory system for Claude Code a
 other half — the memory **content** — lives in an Obsidian vault at `~/Documents/Vaults/Ai-Brain`
 and is propagated across machines by Obsidian Sync.
 
-- `~/src/AiBrain` (this repo) — hooks, MCP server, templates, setup scripts. Synced via git.
+- `~/src/Ai-Brain` (this repo) — hooks, MCP server, templates, setup scripts. Synced via git.
 - `~/Documents/Vaults/Ai-Brain` — `Brain/user/`, `Brain/feedback/`, `Brain/projects/`, session
   checkpoints, `_index.md`. Synced via Obsidian Sync.
 
@@ -82,18 +82,18 @@ The moving parts fit together as follows:
 
 ```bash
 # Re-install into a Claude Code config dir (idempotent) — macOS
-~/src/AiBrain/setup-mac.sh ~/.claude-personal ~/Documents/Vaults/Ai-Brain
-~/src/AiBrain/setup-mac.sh ~/.claude-work ~/Documents/Vaults/Ai-Brain
+~/src/Ai-Brain/setup-mac.sh ~/.claude-personal ~/Documents/Vaults/Ai-Brain
+~/src/Ai-Brain/setup-mac.sh ~/.claude-work ~/Documents/Vaults/Ai-Brain
 
 # Windows equivalent (PowerShell)
-# powershell -ExecutionPolicy Bypass -File C:\src\AiBrain\setup-windows.ps1 `
+# powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
 #     "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
 
 # Verify the MCP server is registered and connected
 CLAUDE_CONFIG_DIR=~/.claude-personal claude mcp list
 
 # Smoke-test the MCP server over stdio (from any cwd)
-BRAIN_VAULT=~/Documents/Vaults/Ai-Brain ~/src/AiBrain/mcp-server/.venv/bin/python -m brain_mcp <<'EOF'
+BRAIN_VAULT=~/Documents/Vaults/Ai-Brain ~/src/Ai-Brain/mcp-server/.venv/bin/python -m brain_mcp <<'EOF'
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}
 {"jsonrpc":"2.0","method":"notifications/initialized"}
 {"jsonrpc":"2.0","id":2,"method":"tools/list"}
@@ -102,15 +102,15 @@ EOF
 # Dry-run the session_start hook against a fake payload
 echo '{"cwd":"/tmp/test","hook_event_name":"SessionStart","source":"startup"}' | \
   BRAIN_VAULT=~/Documents/Vaults/Ai-Brain \
-  ~/src/AiBrain/mcp-server/.venv/bin/python ~/src/AiBrain/hooks/session_start.py
+  ~/src/Ai-Brain/mcp-server/.venv/bin/python ~/src/Ai-Brain/hooks/session_start.py
 
 # Dump the session-start bundle as markdown (useful for non-tool-calling models)
 BRAIN_VAULT=~/Documents/Vaults/Ai-Brain \
-  ~/src/AiBrain/mcp-server/.venv/bin/brain-prep --project MyProject
+  ~/src/Ai-Brain/mcp-server/.venv/bin/brain-prep --project MyProject
 
 # Health check — run anytime, especially when the Brain feels stale or broken
 BRAIN_VAULT=~/Documents/Vaults/Ai-Brain \
-  ~/src/AiBrain/mcp-server/.venv/bin/brain-doctor --project MyProject
+  ~/src/Ai-Brain/mcp-server/.venv/bin/brain-doctor --project MyProject
 ```
 
 ## Gotchas that will bite you

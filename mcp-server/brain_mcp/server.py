@@ -120,7 +120,7 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": (
                             "REQUIRED only when type='project'. The basename of the project DIRECTORY "
-                            "(e.g. 'AiBrain' for ~/src/AiBrain), NOT a category or topic name. Omit "
+                            "(e.g. 'Ai-Brain' for ~/src/Ai-Brain), NOT a category or topic name. Omit "
                             "this field for type='user', 'feedback', or 'reference'."
                         ),
                     },
@@ -142,7 +142,7 @@ async def list_tools() -> list[Tool]:
                     "project": {
                         "type": "string",
                         "description": (
-                            "Optional. Project directory basename (e.g. 'AiBrain') to filter results "
+                            "Optional. Project directory basename (e.g. 'Ai-Brain') to filter results "
                             "to one project's memories. Only meaningful with type='project'."
                         ),
                     },
@@ -182,7 +182,7 @@ async def list_tools() -> list[Tool]:
                     "project": {
                         "type": "string",
                         "description": (
-                            "REQUIRED. Project directory basename (e.g. 'AiBrain') — NOT a category. "
+                            "REQUIRED. Project directory basename (e.g. 'Ai-Brain') — NOT a category. "
                             "If unsure, use the basename of the current working directory."
                         ),
                     },

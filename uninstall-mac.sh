@@ -2,11 +2,11 @@
 # uninstall-mac.sh — remove the Brain wiring from a Claude Code config dir on macOS.
 #
 # Usage:
-#     ~/src/AiBrain/uninstall-mac.sh <claude-config-dir>
+#     ~/src/Ai-Brain/uninstall-mac.sh <claude-config-dir>
 #
 # Examples:
-#     ~/src/AiBrain/uninstall-mac.sh ~/.claude-personal
-#     ~/src/AiBrain/uninstall-mac.sh ~/.claude-work
+#     ~/src/Ai-Brain/uninstall-mac.sh ~/.claude-personal
+#     ~/src/Ai-Brain/uninstall-mac.sh ~/.claude-work
 #
 # Reverses setup-mac.sh. Idempotent: running on a never-installed dir is a no-op.
 #

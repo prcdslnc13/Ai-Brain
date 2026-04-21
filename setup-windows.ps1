@@ -2,10 +2,10 @@
 # setup-windows.ps1 - install the Brain wiring into a Claude Code config dir on Windows.
 #
 # Usage:
-#     powershell -ExecutionPolicy Bypass -File C:\src\AiBrain\setup-windows.ps1 <claude-config-dir> <vault-path>
+#     powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 <claude-config-dir> <vault-path>
 #
 # Example:
-#     powershell -ExecutionPolicy Bypass -File C:\src\AiBrain\setup-windows.ps1 `
+#     powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
 #         "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
 #
 # Idempotent: re-running updates the global CLAUDE.md, hook block, MCP registration, and
