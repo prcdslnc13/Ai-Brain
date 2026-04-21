@@ -7,14 +7,16 @@ tool-capable models can call `brain_*` tools the same way Claude Code does.
 
 1. **LMStudio 0.3.x or newer** with MCP client support. If you don't see an MCP-related
    section anywhere in Settings, upgrade first.
-2. **A tool-capable model** loaded in LMStudio. Known working (as of 2025):
-   - Qwen2.5-7B-Instruct (or larger Qwen2.5 variants)
-   - Llama 3.1 8B Instruct and larger
-   - Mistral Small (22B)
-   - Hermes 3
-   Models without native tool/function-calling (base Llama 2, Gemma 2, older Mistral) will
-   not see the `brain_*` tools at all — pick something from the list above for the first
-   verification run.
+2. **A tool-capable model** loaded in LMStudio. Known working on Apple Silicon (verified 2026-04-21):
+   - Qwen 3.5 family (Qwen3.5-9B-GGUF and larger)
+   - Gemma 4 family — `gemma-4-31B-it-GGUF` and `gemma-4-E4B-it-GGUF` both verified; `gemma-4-26B-A4B-it-GGUF` untested
+   - Qwen 2.5 family, Llama 3.1 8B+, Mistral Small (22B), Hermes 3 (earlier reports, not re-verified)
+
+   Older models without tool/function-calling (base Llama 2, Gemma 2, pre-2024 Mistral)
+   won't see the `brain_*` tools at all. If unsure whether a model is tool-capable, try it —
+   a tool-capable model will call `brain_session_start` when asked; a non-tool model will
+   respond in prose without invoking any tool. For non-tool models, use the `brain-prep`
+   CLI to dump the preload bundle as markdown and paste it into the system prompt.
 3. **The Brain MCP server already installed on this machine.** That means you have run
    either `setup-mac.sh` or `setup-windows.ps1` (see `WINDOWS-SETUP.md`) at least once, so
    `mcp-server/.venv` exists and `brain_mcp` imports cleanly.
@@ -96,10 +98,10 @@ Save and restart the chat.
 
 ## Verify it works
 
-1. Load a tool-capable model (Qwen2.5-7B-Instruct is the smallest safe default).
+1. Load a tool-capable model from the Prerequisites list (Qwen3.5-9B-GGUF is a safe first-run default on Apple Silicon).
 2. Open a new chat. If LMStudio shows an "available tools" indicator anywhere in the chat UI,
-   confirm `brain_session_start`, `brain_recall`, `brain_save`, `brain_list`, `brain_forget`,
-   and `brain_checkpoint` appear.
+   confirm all eight tools appear: `brain_session_start`, `brain_recall`, `brain_save`,
+   `brain_list`, `brain_forget`, `brain_checkpoint`, `brain_stats`, `brain_doctor`.
 3. Ask: **"What do you know about me? Call brain_session_start first."**
    The model should call the tool, read the preload bundle, and summarize your profile
    (email, preferred IDEs, multi-machine setup).
@@ -139,7 +141,7 @@ $env:BRAIN_VAULT = "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
 ```
 
 Expected: two JSON-RPC response lines on stdout. The first reports `serverInfo.name: "brain"`,
-the second lists six tools. If you see that, the server is healthy and the problem is
+the second lists eight tools. If you see that, the server is healthy and the problem is
 entirely on the LMStudio side — check the paths in your `mcp.json` byte for byte.
 
 ## Troubleshooting
