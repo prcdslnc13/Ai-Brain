@@ -47,8 +47,30 @@ Write-Host ""
 
 # 1. Ensure the venv exists and brain-mcp is installed (non-editable; editable installs
 #    use a .pth that doesn't always activate at startup, breaking imports from foreign cwds).
-if (-not (Test-Path $VenvPython)) {
-  Write-Host "[1/6] creating Python venv at $VenvDir"
+#    Health check: if an existing venv's python or pip can't run (e.g. the repo was
+#    renamed and Scripts\*.exe launchers now point at a dead interpreter path), blow
+#    it away and rebuild rather than emit a confusing FileNotFoundError from pip later.
+function Test-VenvHealthy {
+  if (-not (Test-Path $VenvPython)) { return $false }
+  if (-not (Test-Path $VenvPip))    { return $false }
+  try {
+    & $VenvPython -c "import sys" 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { return $false }
+    & $VenvPip --version 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { return $false }
+    return $true
+  } catch {
+    return $false
+  }
+}
+
+if (-not (Test-VenvHealthy)) {
+  if (Test-Path $VenvDir) {
+    Write-Host "[1/6] rebuilding stale venv at $VenvDir"
+    Remove-Item -Recurse -Force $VenvDir
+  } else {
+    Write-Host "[1/6] creating Python venv at $VenvDir"
+  }
 
   function Try-Python([string]$exe, [string]$arg) {
     try {

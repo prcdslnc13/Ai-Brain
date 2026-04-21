@@ -40,8 +40,23 @@ echo
 
 # 1. Ensure the venv exists and brain-mcp is installed (non-editable; editable installs
 #    use a .pth that doesn't always activate at startup, breaking imports from foreign cwds).
-if [ ! -x "$VENV_PYTHON" ]; then
-  echo "[1/6] creating Python venv at $MCP_SERVER_DIR/.venv"
+#    Health check: if an existing venv's python or pip can't run (e.g. the repo was
+#    renamed and console-script shebangs now point at a dead path), blow it away and
+#    rebuild rather than emit a confusing FileNotFoundError from pip later.
+_venv_healthy() {
+  [ -x "$VENV_PYTHON" ] || return 1
+  [ -x "$MCP_SERVER_DIR/.venv/bin/pip" ] || return 1
+  "$VENV_PYTHON" -c "import sys" >/dev/null 2>&1 || return 1
+  "$MCP_SERVER_DIR/.venv/bin/pip" --version >/dev/null 2>&1 || return 1
+  return 0
+}
+if ! _venv_healthy; then
+  if [ -d "$MCP_SERVER_DIR/.venv" ]; then
+    echo "[1/6] rebuilding stale venv at $MCP_SERVER_DIR/.venv"
+    rm -rf "$MCP_SERVER_DIR/.venv"
+  else
+    echo "[1/6] creating Python venv at $MCP_SERVER_DIR/.venv"
+  fi
   python3 -m venv "$MCP_SERVER_DIR/.venv"
   "$MCP_SERVER_DIR/.venv/bin/pip" install --quiet --upgrade pip
 fi

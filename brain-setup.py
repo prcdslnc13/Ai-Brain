@@ -185,10 +185,39 @@ def prompt_claude_dirs(detected: list[Path]) -> list[Path]:
 
 # ---------- install steps ----------
 
+def _venv_is_healthy() -> bool:
+    """Sanity-check an existing venv: interpreter runs AND pip's shebang is valid.
+
+    After the repo is renamed (e.g. AiBrain → Ai-Brain), console scripts keep the
+    old absolute shebang and fail to exec with a confusing FileNotFoundError. We
+    detect that here so the venv gets rebuilt instead of poisoning step 2.
+    """
+    if not VENV_PY.exists() or not VENV_PIP.exists():
+        return False
+    try:
+        res = subprocess.run(
+            [str(VENV_PY), "-c", "import sys; sys.exit(0)"],
+            capture_output=True, check=False, timeout=10,
+        )
+        if res.returncode != 0:
+            return False
+        res = subprocess.run(
+            [str(VENV_PIP), "--version"],
+            capture_output=True, check=False, timeout=10,
+        )
+        return res.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def ensure_venv(num: int, total: int) -> None:
-    if VENV_PY.exists():
+    if _venv_is_healthy():
         return
-    step(num, total, f"creating Python venv at {VENV_DIR}")
+    if VENV_DIR.exists():
+        step(num, total, f"rebuilding stale venv at {VENV_DIR}")
+        shutil.rmtree(VENV_DIR)
+    else:
+        step(num, total, f"creating Python venv at {VENV_DIR}")
     py = find_python3()
     if not py:
         die("no Python 3 interpreter found. Install Python 3.11+ and re-run.")
