@@ -244,15 +244,15 @@ def search_memories(query: str, mtype: str | None = None, project: str | None = 
 def session_start_bundle(project: str | None = None) -> dict:
     """Return the standard preload bundle: index + user + feedback + project context.
 
-    Honours BRAIN_BUNDLE_BUDGET_KB (default 8). The index, project overview, and latest
+    Honours BRAIN_BUNDLE_BUDGET_KB (default 32). The index, project overview, and latest
     session checkpoint are always included — they're small and load-bearing. User profile
     entries and feedback files are added in priority order until the budget is exhausted.
     """
     root = vault_root()
     try:
-        budget_kb = float(os.environ.get("BRAIN_BUNDLE_BUDGET_KB", "8"))
+        budget_kb = float(os.environ.get("BRAIN_BUNDLE_BUDGET_KB", "32"))
     except ValueError:
-        budget_kb = 8.0
+        budget_kb = 32.0
     budget_bytes = int(budget_kb * 1024)
 
     bundle: dict = {

@@ -13,10 +13,10 @@ completes or the plan changes.
   Repo is pushed to `github.com/<your-github-user>/Ai-Brain` (private). Code lives at `~/src/Ai-Brain`,
   memory content lives in the Obsidian vault at `~/Documents/Vaults/Ai-Brain`.
 
-- **Phase 2 — Local model integration: 🟡 in progress.** 2A (LMStudio) has a setup doc
-  (`LMSTUDIO-SETUP.md`) and the MCP server has been smoke-tested standalone; the remaining
-  step is a human clicking through LMStudio's UI on each machine. 2B (Windows setup script)
-  is implemented but not yet verified on a real Windows machine. 2C (Ollama) still pending.
+- **Phase 2 — Local model integration: 🟡 in progress.** 2A (LMStudio) verified end-to-end on
+  macOS 2026-04-21 with Qwen3.5-9B-GGUF and Gemma 4 (31B-it, E4B-it). 2B (Windows setup script)
+  verified on Windows hardware 2026-04-21 — `setup-windows.ps1`, `brain-launch.cmd` wrapper,
+  Python hooks, and MCP server all function correctly. 2C (Ollama) still pending.
 
 - **Phase 3 — Hardening + quality: 🟡 partial.** Vector recall (fastembed sqlite index),
   bundle byte budget, `brain-compact` CLI, and `brain_stats` tool all landed. Phase 3B
@@ -66,7 +66,7 @@ returns content from the vault.
 **This phase requires human action** (clicking in LMStudio's UI). An agent can only prepare the
 instructions and verify the MCP server standalone.
 
-### 2B — Windows setup script (`setup-windows.ps1`) 🟡 implemented, pending verification
+### 2B — Windows setup script (`setup-windows.ps1`) ✅ verified 2026-04-21
 
 **Status:** `setup-windows.ps1` and `templates/settings.hooks.win.json` are in the repo.
 Design notes:
