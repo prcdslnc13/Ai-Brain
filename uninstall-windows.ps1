@@ -4,7 +4,9 @@
 # Usage:
 #     powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\uninstall-windows.ps1 <claude-config-dir>
 #
-# Example:
+# Examples:
+#     powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\uninstall-windows.ps1 `
+#         "$env:USERPROFILE\.claude"
 #     powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\uninstall-windows.ps1 `
 #         "$env:USERPROFILE\.claude-personal"
 #

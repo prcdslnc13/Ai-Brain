@@ -5,6 +5,7 @@
 #     ~/src/Ai-Brain/uninstall-mac.sh <claude-config-dir>
 #
 # Examples:
+#     ~/src/Ai-Brain/uninstall-mac.sh ~/.claude
 #     ~/src/Ai-Brain/uninstall-mac.sh ~/.claude-personal
 #     ~/src/Ai-Brain/uninstall-mac.sh ~/.claude-work
 #
@@ -201,8 +202,8 @@ fi
 
 # 5. Remove the in-repo venv — but only if no OTHER claude config dir still
 #    references it. The venv is shared across every config dir setup installed
-#    into; if the user has ~/.claude-personal AND ~/.claude-work, uninstalling from
-#    f42 must not break work.
+#    into; if the user has ~/.claude-personal AND ~/.claude-work, uninstalling
+#    from one must not break the other.
 #    The installer writes the venv path literally into each config's settings.json,
 #    so a substring grep catches every live reference.
 echo "[5/5] removing $VENV_DIR"

@@ -39,8 +39,12 @@ Prerequisites: Python 3.11+, `claude` CLI on PATH, an Obsidian vault for the dat
 
 ```bash
 # Clone this repo
-git clone git@github.com:<your-github-user>/Ai-Brain.git ~/src/Ai-Brain
+git clone https://github.com/<your-github-user>/Ai-Brain.git ~/src/Ai-Brain
 ```
+
+If you plan to run multiple Claude Code accounts on the same machine (personal + work,
+for example), see [Multiple Claude Code accounts](#multiple-claude-code-accounts) before
+running setup — pick your config-dir naming first, then install into each.
 
 ### Recommended: cross-platform wizard
 
@@ -63,17 +67,22 @@ python3 ~/src/Ai-Brain/brain-setup.py --non-interactive \
 
 ### Fallback: platform shell scripts
 
-The original shell installers are still here if you prefer them:
+The original shell installers are still here if you prefer them. Each one takes
+`<claude-config-dir> <vault-path>` — the config dir can be any name you like
+(e.g. `~/.claude`, `~/.claude-personal`, `~/.claude-work`, `~/.claude-projectX`):
 
 ```bash
-# macOS
+# macOS — single account (default config dir)
+~/src/Ai-Brain/setup-mac.sh ~/.claude ~/Documents/Vaults/Ai-Brain
+
+# macOS — multiple accounts (re-run once per config dir)
 ~/src/Ai-Brain/setup-mac.sh ~/.claude-personal ~/Documents/Vaults/Ai-Brain
-~/src/Ai-Brain/setup-mac.sh ~/.claude-work ~/Documents/Vaults/Ai-Brain
+~/src/Ai-Brain/setup-mac.sh ~/.claude-work     ~/Documents/Vaults/Ai-Brain
 ```
 
 ```bash
 # Linux (Debian Trixie, Raspberry Pi OS, Ubuntu 22.04+)
-~/src/Ai-Brain/setup-linux.sh ~/.claude-personal ~/Documents/Vaults/Ai-Brain
+~/src/Ai-Brain/setup-linux.sh ~/.claude ~/Documents/Vaults/Ai-Brain
 ```
 
 On Ubuntu 22.04 the default `python3` is 3.10 (too old). Install a newer
@@ -84,10 +93,119 @@ and only need `sudo apt install python3-venv`.
 ```powershell
 # Windows
 powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
-    "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
+    "$env:USERPROFILE\.claude" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
 ```
 
 All three are idempotent. See `WINDOWS-SETUP.md` for Windows-specific guidance.
+
+## Multiple Claude Code accounts
+
+Claude Code stores per-account state (login, settings, MCP registrations, global
+`CLAUDE.md`) in a single config directory. The default is `~/.claude` on
+macOS/Linux and `%USERPROFILE%\.claude` on Windows. To run multiple accounts
+side-by-side (e.g. personal + work, or one account per client), point Claude
+Code at a **different config directory per account** using the
+`CLAUDE_CONFIG_DIR` environment variable.
+
+The naming is entirely up to you — Claude Code and the Ai-Brain installer both
+treat `CLAUDE_CONFIG_DIR` as an opaque path. `~/.claude-personal` and
+`~/.claude-work` are used throughout these docs as examples, but
+`~/.claude-acme` or `~/.claude-client-foo` work equally well. The Ai-Brain
+installer's auto-discovery (in `brain-setup.py` and the uninstallers) finds
+every `~/.claude*` directory, so any name starting with `.claude` is picked up.
+
+### macOS / Linux
+
+Set the env var before launching `claude`:
+
+```bash
+# Personal account
+CLAUDE_CONFIG_DIR=~/.claude-personal claude
+
+# Work account
+CLAUDE_CONFIG_DIR=~/.claude-work claude
+```
+
+First launch in a fresh config dir will walk you through login. Each config dir
+is its own fully isolated Claude Code install — login, settings.json,
+projects/, and MCP registrations are all separate.
+
+For convenience, add shell aliases to your `~/.zshrc` / `~/.bashrc`:
+
+```bash
+alias claude-personal='CLAUDE_CONFIG_DIR=$HOME/.claude-personal claude'
+alias claude-work='CLAUDE_CONFIG_DIR=$HOME/.claude-work claude'
+```
+
+Then install the Brain wiring into each:
+
+```bash
+~/src/Ai-Brain/setup-mac.sh ~/.claude-personal ~/Documents/Vaults/Ai-Brain
+~/src/Ai-Brain/setup-mac.sh ~/.claude-work     ~/Documents/Vaults/Ai-Brain
+```
+
+Or do both in one call with the cross-platform wizard:
+
+```bash
+python3 ~/src/Ai-Brain/brain-setup.py \
+    --vault ~/Documents/Vaults/Ai-Brain \
+    --claude-dir ~/.claude-personal \
+    --claude-dir ~/.claude-work
+```
+
+### Windows
+
+Same idea with PowerShell:
+
+```powershell
+# Personal account (one-off)
+$env:CLAUDE_CONFIG_DIR = "$env:USERPROFILE\.claude-personal"
+claude
+
+# Work account (one-off)
+$env:CLAUDE_CONFIG_DIR = "$env:USERPROFILE\.claude-work"
+claude
+```
+
+Make it persistent across PowerShell sessions by adding functions to your
+`$PROFILE` (run `notepad $PROFILE` to create/edit it):
+
+```powershell
+function claude-personal {
+    $env:CLAUDE_CONFIG_DIR = "$env:USERPROFILE\.claude-personal"
+    claude @args
+}
+function claude-work {
+    $env:CLAUDE_CONFIG_DIR = "$env:USERPROFILE\.claude-work"
+    claude @args
+}
+```
+
+Then install the Brain wiring into each:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
+    "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
+powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
+    "$env:USERPROFILE\.claude-work" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
+```
+
+### Notes
+
+- **Same vault across all accounts.** All examples above point every Claude Code
+  account at the same `BRAIN_VAULT`. That's the whole point — a memory written
+  from your work account is readable from your personal account, and vice versa.
+  If you want partitioned memories instead, pass a different vault path per
+  install (e.g. `~/Documents/Vaults/Ai-Brain-Work`).
+- **The default `~/.claude` still works.** You don't have to use `CLAUDE_CONFIG_DIR`
+  at all — single-account users can run `setup-mac.sh ~/.claude <vault>` and
+  launch `claude` with no env var. The installer auto-detects whether the target
+  is the default config dir and writes the MCP registration to the right
+  `.claude.json` either way.
+- **Verifying which account is active.** `claude mcp list` prints the MCP servers
+  registered for the current `CLAUDE_CONFIG_DIR` (or `~/.claude` if unset). If
+  you see the `brain` server missing, you're probably launching Claude Code with
+  the wrong env var.
 
 ## Vault layout
 

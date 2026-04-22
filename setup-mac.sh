@@ -5,8 +5,13 @@
 #     ~/src/Ai-Brain/setup-mac.sh <claude-config-dir> <vault-path>
 #
 # Examples:
-#     ~/src/Ai-Brain/setup-mac.sh ~/.claude-personal ~/Documents/Vaults/Ai-Brain
-#     ~/src/Ai-Brain/setup-mac.sh ~/.claude-work ~/Documents/Vaults/Ai-Brain
+#     ~/src/Ai-Brain/setup-mac.sh ~/.claude           ~/Documents/Vaults/Ai-Brain
+#     ~/src/Ai-Brain/setup-mac.sh ~/.claude-personal  ~/Documents/Vaults/Ai-Brain
+#     ~/src/Ai-Brain/setup-mac.sh ~/.claude-work      ~/Documents/Vaults/Ai-Brain
+#
+# The config dir can be any path. Single-account users use ~/.claude; multi-account
+# users pick their own names (anything starting with .claude is auto-discovered by
+# the cross-platform brain-setup.py wizard).
 #
 # Idempotent: re-running updates the global CLAUDE.md, hook block, and MCP registration
 # in place without disturbing other settings.
@@ -179,8 +184,8 @@ MCP_FAIL_REASON=""
 # the env var is set, but to $HOME/.claude.json when it isn't — two different
 # files. When $CLAUDE_DIR is the default location, we MUST leave the env var
 # unset so the write lands where a plain `claude` invocation later reads from.
-# For custom config dirs (~/.claude-personal, ~/.claude-work) each has its own
-# sibling .claude.json inside it, so the env var is correct and required.
+# For custom config dirs (e.g. ~/.claude-personal, ~/.claude-work) each has
+# its own sibling .claude.json inside it, so the env var is correct and required.
 _canonical_path() {
   if [ -d "$1" ]; then ( cd "$1" && pwd -P ); else printf '%s' "${1%/}"; fi
 }

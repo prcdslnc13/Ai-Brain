@@ -7,6 +7,7 @@
 #     ~/src/Ai-Brain/uninstall-linux.sh <claude-config-dir>
 #
 # Examples:
+#     ~/src/Ai-Brain/uninstall-linux.sh ~/.claude
 #     ~/src/Ai-Brain/uninstall-linux.sh ~/.claude-personal
 #     ~/src/Ai-Brain/uninstall-linux.sh ~/.claude-work
 #
