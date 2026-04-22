@@ -22,8 +22,13 @@ and `setup-mac.sh`; this file is the Windows counterpart.
 
 ```powershell
 # 1. Clone the repo (anywhere — C:\src\Ai-Brain is the convention to match ~/src/Ai-Brain on Mac)
-git clone git@github.com:<your-github-user>/Ai-Brain.git C:\src\Ai-Brain
+git clone https://github.com/<your-github-user>/Ai-Brain.git C:\src\Ai-Brain
 ```
+
+If you plan to run multiple Claude Code accounts on this machine (e.g. personal +
+work), read [Multiple Claude Code accounts](#multiple-claude-code-accounts) at
+the bottom of this file before running setup — pick your config-dir naming
+first, then install into each.
 
 ### Recommended: the cross-platform wizard
 
@@ -44,6 +49,12 @@ python C:\src\Ai-Brain\brain-setup.py --non-interactive `
     --claude-dir "$env:USERPROFILE\.claude-work"
 ```
 
+The `--claude-dir` values can be any path you like — `brain-setup.py` and
+`setup-windows.ps1` treat them as opaque strings. `~\.claude-personal` /
+`~\.claude-work` are used as examples throughout, but any name that starts
+with `.claude` (e.g. `.claude-clientX`) is picked up by the installer's
+auto-discovery.
+
 ### Fallback: the PowerShell installer
 
 If you prefer a native PowerShell install:
@@ -51,8 +62,15 @@ If you prefer a native PowerShell install:
 ```powershell
 # Run setup for each Claude Code config dir you use.
 #    Arguments: <claude-config-dir> <vault-path>
+# Single account using the default config dir:
+powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
+    "$env:USERPROFILE\.claude" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
+
+# Multiple accounts — re-run once per config dir:
 powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
     "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
+powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
+    "$env:USERPROFILE\.claude-work" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
 
 # Non-standard vault path (no $env: prefix needed for plain paths):
 powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
@@ -92,6 +110,7 @@ registration, and the generated `brain-launch.cmd` wrapper without touching anyt
 
 ```powershell
 # 1. MCP server is registered and reachable.
+#    (Omit the CLAUDE_CONFIG_DIR line if you installed into the default ~\.claude.)
 $env:CLAUDE_CONFIG_DIR = "$env:USERPROFILE\.claude-personal"
 claude mcp list
 # Expected: "brain: ✓ Connected"
@@ -163,6 +182,80 @@ exact Claude Code version — this is a regression worth fixing at the source.
 
 `setup-windows.ps1` quotes every path it passes. If you still see quoting errors, pass the
 config dir and vault path as quoted strings on the PowerShell command line, not unquoted.
+
+## Multiple Claude Code accounts
+
+Claude Code stores per-account state (login, settings, MCP registrations,
+`CLAUDE.md`) in a single config directory. The default is
+`%USERPROFILE%\.claude`. To run multiple accounts side-by-side (personal + work,
+or one per client), point Claude Code at a **different config directory per
+account** using the `CLAUDE_CONFIG_DIR` environment variable.
+
+The naming is up to you — Claude Code and `setup-windows.ps1` treat
+`CLAUDE_CONFIG_DIR` as an opaque path. `~\.claude-personal` and `~\.claude-work`
+are the examples used throughout these docs, but anything starting with
+`.claude` (e.g. `.claude-acme`, `.claude-clientX`) is picked up by the Ai-Brain
+installer's auto-discovery.
+
+### One-off from a PowerShell prompt
+
+```powershell
+# Personal account
+$env:CLAUDE_CONFIG_DIR = "$env:USERPROFILE\.claude-personal"
+claude
+
+# Work account
+$env:CLAUDE_CONFIG_DIR = "$env:USERPROFILE\.claude-work"
+claude
+```
+
+The first launch against a fresh config dir walks you through login. Each
+config dir is fully isolated — login, settings.json, projects/, and MCP
+registrations are all separate.
+
+### Persistent, across every PowerShell window
+
+Add functions to your PowerShell `$PROFILE`. Run `notepad $PROFILE` to open (or
+create) it, then add:
+
+```powershell
+function claude-personal {
+    $env:CLAUDE_CONFIG_DIR = "$env:USERPROFILE\.claude-personal"
+    claude @args
+}
+function claude-work {
+    $env:CLAUDE_CONFIG_DIR = "$env:USERPROFILE\.claude-work"
+    claude @args
+}
+```
+
+Save, close, and reload (`. $PROFILE`) or open a new PowerShell window.
+`claude-personal` and `claude-work` now launch Claude Code against the right
+config dir automatically.
+
+### Install the Brain into each account
+
+Run `setup-windows.ps1` (or the wizard) once per config dir:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
+    "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
+powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
+    "$env:USERPROFILE\.claude-work" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
+```
+
+Or in one `brain-setup.py` call:
+
+```powershell
+python C:\src\Ai-Brain\brain-setup.py `
+    --vault "$env:USERPROFILE\Documents\Vaults\Ai-Brain" `
+    --claude-dir "$env:USERPROFILE\.claude-personal" `
+    --claude-dir "$env:USERPROFILE\.claude-work"
+```
+
+All accounts share the same vault by default, so a memory saved in one account
+is recalled from the others. If you want partitioned memories, point each
+install at a different `BRAIN_VAULT` instead.
 
 ## Sync hygiene
 

@@ -7,11 +7,11 @@ completes or the plan changes.
 ## Status at a glance
 
 - **Phase 1 — Mac bring-up: ✅ complete.** Brain MCP server, hooks, templates, setup-mac.sh, and
-  per-account install for both `claude-personal` and `claude-work` all work end-to-end. Verified by
+  per-account install for multiple Claude Code config dirs all work end-to-end. Verified by
   running a real Claude Code session: SessionStart preload fires, `brain_*` tools appear in the
   tool list, proactive `brain_save` and `brain_recall` work without the user typing `/brain`.
-  Repo is pushed to `github.com/<your-github-user>/Ai-Brain` (private). Code lives at `~/src/Ai-Brain`,
-  memory content lives in the Obsidian vault at `~/Documents/Vaults/Ai-Brain`.
+  Code lives at `~/src/Ai-Brain`, memory content lives in the Obsidian vault at
+  `~/Documents/Vaults/Ai-Brain`.
 
 - **Phase 2 — Local model integration: 🟡 in progress.** 2A (LMStudio) verified end-to-end on
   macOS 2026-04-21 with Qwen3.5-9B-GGUF and Gemma 4 (31B-it, E4B-it). 2B (Windows setup script)
@@ -50,10 +50,10 @@ existing MCP server in LMStudio's settings UI — no code changes needed on our 
 1. Open LMStudio → Settings → Model Context Protocol (or the current equivalent in the UI).
 2. Add a new stdio MCP server with these fields:
    - **Name:** `brain`
-   - **Command:** `/Users/<you>/src/Ai-Brain/mcp-server/.venv/bin/python` (or whatever the
+   - **Command:** `<home>/src/Ai-Brain/mcp-server/.venv/bin/python` (whatever the
      user's local path is — `setup-mac.sh` prints it at the end)
    - **Args:** `-m brain_mcp`
-   - **Env:** `BRAIN_VAULT=/Users/<you>/Documents/Vaults/Ai-Brain`
+   - **Env:** `BRAIN_VAULT=<home>/Documents/Vaults/Ai-Brain`
 3. Save and restart a chat. Load a tool-capable model (Qwen2.5-7B-Instruct, Llama 3.1+, etc.).
 4. In a chat, ask *"what do you know about me?"* — the model should call `brain_session_start`
    and surface the user profile.
@@ -130,7 +130,7 @@ identically on Windows given the right launcher command. Only `setup-mac.sh` is 
 
 **Verification:**
 
-1. On a Windows machine: `powershell -File C:\src\Ai-Brain\setup-windows.ps1 $env:USERPROFILE\.claude-personal "C:\Users\<you>\Documents\Vaults\Ai-Brain"`
+1. On a Windows machine: `powershell -File C:\src\Ai-Brain\setup-windows.ps1 $env:USERPROFILE\.claude-personal "$env:USERPROFILE\Documents\Vaults\Ai-Brain"`
 2. Open a Claude Code session in any project → SessionStart preload appears.
 3. Run `claude mcp list` → `brain: ✓ Connected`.
 4. Say *"what do you know about me?"* → model recalls the Mac-written memories (proves Obsidian
@@ -235,11 +235,12 @@ Returns a list of stale references. The model can then call `brain_save` to upda
 
 Low priority — do this only when there's evidence of stale-memory bugs in practice.
 
-### 3D — `claude-work` parity
+### 3D — Per-account memory partitioning
 
-Currently `claude-work` has the same brain setup as `claude-personal`. If over time it becomes clear
-that work and personal memories should be partitioned (e.g., project memories should not
-cross-pollinate), consider:
+Every Claude Code account on the same machine currently shares a single vault. If
+over time it becomes clear that different accounts (e.g. personal vs. work)
+should be partitioned (e.g., project memories should not cross-pollinate),
+consider:
 
 - A `BRAIN_ACCOUNT` scope that filters `brain_recall` results.
 - Or a second vault for work, with a different `BRAIN_VAULT` env var per account.

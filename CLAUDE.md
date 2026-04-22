@@ -82,14 +82,16 @@ The moving parts fit together as follows:
 
 ```bash
 # Re-install into a Claude Code config dir (idempotent) — macOS
+# The config dir can be any path. Single-account users typically use ~/.claude;
+# multi-account users pick their own names (e.g. ~/.claude-personal, ~/.claude-work).
 ~/src/Ai-Brain/setup-mac.sh ~/.claude-personal ~/Documents/Vaults/Ai-Brain
-~/src/Ai-Brain/setup-mac.sh ~/.claude-work ~/Documents/Vaults/Ai-Brain
+~/src/Ai-Brain/setup-mac.sh ~/.claude-work     ~/Documents/Vaults/Ai-Brain
 
 # Windows equivalent (PowerShell)
 # powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
 #     "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
 
-# Verify the MCP server is registered and connected
+# Verify the MCP server is registered and connected (omit CLAUDE_CONFIG_DIR for the default ~/.claude)
 CLAUDE_CONFIG_DIR=~/.claude-personal claude mcp list
 
 # Smoke-test the MCP server over stdio (from any cwd)

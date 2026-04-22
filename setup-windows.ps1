@@ -4,9 +4,15 @@
 # Usage:
 #     powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 <claude-config-dir> <vault-path>
 #
-# Example:
+# Examples:
+#     powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
+#         "$env:USERPROFILE\.claude" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
 #     powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
 #         "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
+#
+# The config dir can be any path. Single-account users use %USERPROFILE%\.claude;
+# multi-account users pick their own names (anything starting with .claude is
+# auto-discovered by the cross-platform brain-setup.py wizard).
 #
 # Idempotent: re-running updates the global CLAUDE.md, hook block, MCP registration, and
 # generated brain-launch.cmd in place without disturbing other settings.

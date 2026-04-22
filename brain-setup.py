@@ -437,6 +437,10 @@ def main() -> None:
             "  python brain-setup.py --vault D:\\Vaults\\Ai-Brain --claude-dir %USERPROFILE%\\.claude-personal\n"
             "  python brain-setup.py --non-interactive --vault ~/Documents/Vaults/Ai-Brain \\\n"
             "                        --claude-dir ~/.claude-personal --claude-dir ~/.claude-work\n"
+            "\n"
+            "The --claude-dir value can be any path. Single-account users use ~/.claude;\n"
+            "multi-account users pick their own names (anything starting with .claude is\n"
+            "picked up by auto-discovery when --claude-dir is omitted).\n"
         ),
     )
     parser.add_argument("--vault", help="vault root (the directory containing or that will contain Brain/).")
