@@ -18,6 +18,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 from collections import deque
 from dataclasses import dataclass
@@ -180,9 +181,12 @@ def _check_fastembed() -> list[Finding]:
     return [Finding("ok", "FASTEMBED_OK", "fastembed importable")]
 
 
-_ACTIVITY_COLUMNS_RE = re.compile(r"\[sig=([YN]) sav=([YN]) nud=([YN])\]")
+_ACTIVITY_COLUMNS_RE = re.compile(
+    r"\[sig=([YN]) sav=([YN]) nud=([YN])(?: pro=([YN]))?\]"
+)
 SAVE_GAP_WINDOW = 30  # tail of activity.md to examine
 SAVE_GAP_THRESHOLD = 3  # signal-without-save count that triggers a WARN
+PROMISE_GAP_THRESHOLD = 1  # any unfulfilled promise is a bug worth flagging
 
 
 def _tail_activity(brain: Path, n: int) -> list[str]:
@@ -242,6 +246,147 @@ def _check_save_gap(brain: Path) -> list[Finding]:
     )]
 
 
+def _check_promise_gap(brain: Path) -> list[Finding]:
+    """Warn when recent activity shows save-*promises* without brain_save calls.
+
+    This is the observability backstop behind the Stop-hook gate in
+    `hooks/stop.py`. With the gate enabled (default), these should be near-zero
+    — if they're not, either the gate is disabled (BRAIN_STOP_GATE=0), the
+    promise regex missed a phrasing, or the model was already re-entering a
+    blocked stop (stop_hook_active=true) and we deliberately bypassed the gate.
+
+    Only examines lines written after the `pro=` column landed. Older lines
+    have no `pro=` suffix and are silently skipped.
+    """
+    lines = _tail_activity(brain, SAVE_GAP_WINDOW)
+    if not lines:
+        return []
+
+    audited = 0
+    unfulfilled = 0
+    for line in lines:
+        m = _ACTIVITY_COLUMNS_RE.search(line)
+        if not m:
+            continue
+        pro = m.group(4)
+        if pro is None:
+            continue  # old-format line, no promise column
+        audited += 1
+        sav = m.group(2)
+        if pro == "Y" and sav == "N":
+            unfulfilled += 1
+
+    if audited == 0:
+        return []
+    if unfulfilled < PROMISE_GAP_THRESHOLD:
+        return [Finding(
+            "ok", "PROMISE_GAP_OK",
+            f"{audited} audited turns in window; no unfulfilled save-promises.",
+        )]
+    return [Finding(
+        "warn", "PROMISE_GAP",
+        f"{unfulfilled} of last {audited} audited turns promised a save but did not call brain_save/brain_checkpoint.",
+        "The Stop-hook gate should catch these. If it didn't: check that "
+        "BRAIN_STOP_GATE is not set to 0, and consider tightening "
+        "hooks/_savesig.py PROMISE_PATTERNS if a phrasing slipped through.",
+    )]
+
+
+def _check_stale_uncommitted(
+    brain: Path,
+    project: str | None,
+    project_cwd: str | Path | None,
+) -> list[Finding]:
+    """Flag when the project has on-disk changes that postdate the latest
+    session checkpoint. Catches the specific failure mode behind the 2026-04-22
+    MM-ToolDecoder incident: a window died mid-work after significant edits,
+    nothing checkpointed, and the next session started with no trail.
+
+    Disabled by BRAIN_STALE_CHECK=0. Skipped when we have no project cwd, no
+    git repo, or no prior checkpoints (first-session case — nothing to compare).
+    """
+    if not project or not project_cwd:
+        return []
+    if os.environ.get("BRAIN_STALE_CHECK", "1").strip() in ("0", "false", "no", "off"):
+        return []
+    cwd_path = Path(project_cwd).expanduser()
+    if not (cwd_path / ".git").exists():
+        return []
+
+    sessions = brain / "projects" / project / "sessions"
+    if not sessions.exists():
+        return []
+    checkpoints = list(sessions.glob("*.md"))
+    if not checkpoints:
+        return []
+    latest_mtime = max(p.stat().st_mtime for p in checkpoints)
+
+    commit_age_hours: float | None = None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(cwd_path), "log", "-1", "--format=%ct"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            try:
+                ts = int(result.stdout.strip().splitlines()[0])
+                if ts > latest_mtime:
+                    commit_age_hours = (datetime.now().timestamp() - ts) / 3600
+            except ValueError:
+                pass
+    except Exception:
+        pass
+
+    uncommitted_age_hours: float | None = None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(cwd_path), "status", "--porcelain"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            newest = 0.0
+            for line in result.stdout.splitlines():
+                # porcelain format: "XY path" (path may be quoted for special chars)
+                rest = line[3:] if len(line) > 3 else ""
+                rest = rest.strip().strip('"')
+                if "->" in rest:  # renames: "old -> new"
+                    rest = rest.split("->")[-1].strip()
+                if not rest:
+                    continue
+                fpath = cwd_path / rest
+                try:
+                    m = fpath.stat().st_mtime
+                    if m > newest:
+                        newest = m
+                except OSError:
+                    continue
+            if newest > latest_mtime:
+                uncommitted_age_hours = (datetime.now().timestamp() - newest) / 3600
+    except Exception:
+        pass
+
+    if commit_age_hours is None and uncommitted_age_hours is None:
+        return [Finding(
+            "ok", "STALE_UNCOMMITTED_OK",
+            f"project '{project}' git state matches latest checkpoint.",
+        )]
+
+    parts: list[str] = []
+    if commit_age_hours is not None:
+        parts.append(f"commits as recent as {int(commit_age_hours)}h ago")
+    if uncommitted_age_hours is not None:
+        parts.append(f"uncommitted edits as recent as {int(uncommitted_age_hours)}h ago")
+    latest_iso = datetime.fromtimestamp(latest_mtime).strftime("%Y-%m-%d %H:%M")
+    return [Finding(
+        "warn", "STALE_UNCOMMITTED",
+        f"project '{project}' has {' and '.join(parts)}, postdating the last Brain checkpoint ({latest_iso}).",
+        "Work happened since the last checkpoint. If you did it in this project, "
+        "reconstruct what changed and call brain_checkpoint to capture it. If it "
+        "was done outside Claude Code (manual edits, another tool), you can ignore "
+        "this — or set BRAIN_STALE_CHECK=0 per-install to silence it.",
+    )]
+
+
 def _check_project_overview(brain: Path, project: str | None) -> list[Finding]:
     if not project:
         return []
@@ -291,7 +436,10 @@ def _check_stale_checkpoint(brain: Path, project: str | None) -> list[Finding]:
     return [Finding("ok", "CHECKPOINT_FRESH", f"newest checkpoint for '{project}' is {int(age_days)}d old")]
 
 
-def check(project: str | None = None) -> list[dict]:
+def check(
+    project: str | None = None,
+    project_cwd: str | Path | None = None,
+) -> list[dict]:
     findings: list[Finding] = []
 
     vault_findings = _check_brain_vault()
@@ -307,7 +455,9 @@ def check(project: str | None = None) -> list[dict]:
     findings.extend(_check_fastembed())
     findings.extend(_check_project_overview(brain, project))
     findings.extend(_check_stale_checkpoint(brain, project))
+    findings.extend(_check_stale_uncommitted(brain, project, project_cwd))
     findings.extend(_check_save_gap(brain))
+    findings.extend(_check_promise_gap(brain))
 
     return [f.to_dict() for f in findings]
 
@@ -341,6 +491,11 @@ def render_banner(findings: list[dict], min_severity: str = "warn") -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run Ai-Brain health checks.")
     parser.add_argument("--project", help="project basename for stale-checkpoint check")
+    parser.add_argument(
+        "--cwd",
+        help="project working directory for stale-uncommitted check "
+             "(defaults to current cwd when --project is given)",
+    )
     parser.add_argument("--json", action="store_true", help="emit findings as JSON")
     parser.add_argument(
         "--quiet", action="store_true",
@@ -348,7 +503,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    findings = check(args.project)
+    cwd = args.cwd if args.cwd else (os.getcwd() if args.project else None)
+    findings = check(args.project, cwd)
 
     if args.json:
         print(json.dumps(findings, indent=2))

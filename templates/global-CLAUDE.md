@@ -30,6 +30,52 @@ Do this early in the turn, before the user's actual request if possible, so the 
 has full project context. One redundant `brain_save` if the stub was already upgraded costs nothing;
 leaving a stub in place costs every future session the context it needs.
 
+## Say = do: stated intent must be fulfilled in the same turn
+
+When you tell the user you will perform an action — save to brain, checkpoint, run a command, write
+a file — that action **must happen in the same turn**. Not the next turn, not "after we finish the
+next step", not "once you confirm". A stated commitment is not a plan; it's a promise the user
+treats as already-done.
+
+A Stop-hook gate (`BRAIN_STOP_GATE`, default on) watches your final message for save-promise
+phrasings: *"I'll save this"*, *"let me checkpoint"*, *"saving to brain"*, *"recording this"*,
+*"checkpointing now"*, *"I'll save as feedback"*, etc. If the gate sees one and no matching
+`brain_save` / `brain_checkpoint` tool call happened in the turn, it blocks turn-end and feeds the
+block reason back to you — you then have to either call the tool or explicitly recant before the
+turn can close.
+
+Three ways to stay on the right side of the gate:
+
+1. **Fulfill it** — call `brain_save` or `brain_checkpoint` in the same turn, *before* your final
+   text. Then describe what you just did in past tense. This is the preferred path.
+2. **Don't promise until you're ready** — skip "I'll save this" entirely, just save, then mention
+   it: *"Saved as feedback."* No promise, no gate risk.
+3. **Explicitly defer** — if you really do mean to save later (e.g. after the user confirms a
+   choice), phrase it with a conditional the gate won't trip on, and actually follow through when
+   the condition is met. Gate false-positives here are a minor annoyance; silent drops are not.
+
+The triggering incident (2026-04-22, MM-ToolDecoder): the model said *"recording verification steps
+to brain so they survive a restart"* and never called `brain_save`. The window died before the
+safety-net checkpoint fired and ~70 minutes of migration work plus the user's verification plan
+were lost. The user: *"It's unacceptable that the model says it's doing something and it just
+doesn't."* The gate exists so this cannot happen again silently.
+
+## Session-start health banner: act on it
+
+The SessionStart bundle you're reading *right now* may include a `## Brain Health` banner at the
+top listing warn/error findings from `brain_doctor`. Read it before you answer the user. In
+particular:
+
+- **`STALE_UNCOMMITTED`** — the project has on-disk changes (commits or uncommitted edits) that
+  postdate the last Brain checkpoint. A prior session likely died before checkpointing. Before
+  starting new work, reconstruct what changed from `git log` / `git diff` and call
+  `brain_checkpoint` to close the gap. Then proceed with the user's actual request.
+- **`PROMISE_GAP`** — recent turns promised saves and didn't fulfill them. The gate may be off,
+  the regex may have missed a phrasing, or there's a re-entry path bypassing enforcement. Mention
+  this to the user if they're about to rely on saved state.
+- **`SAVE_GAP`** — signals in user messages aren't turning into saves often enough. Tighten your
+  own proactive-save behavior this session.
+
 ## Memory taxonomy
 
 There are exactly four types of memories. Save things if and only if they fit one of these:
