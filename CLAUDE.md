@@ -30,20 +30,29 @@ The moving parts fit together as follows:
 - **`hooks/`** — Python scripts wired into Claude Code's hook events via `settings.json`:
   - `session_start.py` — preloads the vault bundle as `additionalContext` so the model sees user
     profile + feedback + project context in its system prompt at every session start. Also runs
-    `brain_mcp.doctor.check()` and prepends a `## Brain Health` banner for any warn/error findings
-    (silent failures like unset `BRAIN_VAULT`, Obsidian Sync conflict files, corrupt vector index,
-    accidental editable install) so the user sees them at the top of the session instead of
-    experiencing them as unexplained forgetfulness.
+    `brain_mcp.doctor.check(project, project_cwd)` and prepends a `## Brain Health` banner for any
+    warn/error findings: silent failures like unset `BRAIN_VAULT`, Obsidian Sync conflict files,
+    corrupt vector index, accidental editable install, plus two stop-gap checks —
+    `STALE_UNCOMMITTED` (project has on-disk changes postdating the last checkpoint; prior session
+    likely died before checkpointing — reads `project_cwd` from the hook payload, disable with
+    `BRAIN_STALE_CHECK=0`) and `PROMISE_GAP` (recent turns promised saves without fulfilling
+    them). Surfacing these at the top of the session forces reconstruction instead of silent
+    context loss.
   - `pre_compact.py` / `session_end.py` — share `_checkpoint.py`, which parses the transcript JSONL
     and writes a structural checkpoint to `Brain/projects/<project>/sessions/<timestamp>.md`. No
     LLM call — the next session's model will summarize/integrate when it sees the file.
-  - `stop.py` — appends an audited one-line breadcrumb to `Brain/activity.md` after every turn.
-    Each line ends with `[sig=Y|N sav=Y|N nud=Y|N]` columns: whether the user message matched a
-    save-signal pattern, whether the assistant called `brain_save`/`brain_checkpoint` this turn,
-    and whether the UserPromptSubmit nudge was enabled. `brain_doctor._check_save_gap` reads these
-    columns and WARNs when recent turns show signal-without-save — that's the feedback loop that
-    tells you whether the proactive-save directives in `templates/global-CLAUDE.md` are actually
-    firing.
+  - `stop.py` — two jobs. (1) Gate: when the assistant's final message contains a save-promise
+    phrase (*"I'll save this to brain"*, *"checkpointing now"*, etc.) and no
+    `brain_save`/`brain_checkpoint` tool call occurred in the turn, emit
+    `{decision: "block", reason: …}` so Claude Code feeds the reason back to the model and it must
+    either fulfill the commitment or recant before ending. Disable per-install with
+    `BRAIN_STOP_GATE=0`. Re-entries (payload `stop_hook_active=true`) bypass the gate to avoid
+    infinite loops. (2) Audit: append a breadcrumb to `Brain/activity.md` with columns
+    `[sig=Y|N sav=Y|N nud=Y|N pro=Y|N]` — save-signal in user message, brain tool call this turn,
+    UserPromptSubmit nudge enabled, save-promise in assistant message. `brain_doctor._check_save_gap`
+    and `_check_promise_gap` read the tail to surface signal-without-save and promise-without-save
+    trends. Promise-gap threshold is 1 (any miss is a bug); save-gap threshold is 3 in a 30-turn
+    window.
   - `user_prompt_submit.py` — optional soft nudge. If the incoming prompt matches a save-signal
     regex (same patterns as stop.py's audit, kept in `_savesig.py`) and `BRAIN_NUDGE` is not `0`,
     injects a one-line `additionalContext` reminder telling the model to call `brain_save`.

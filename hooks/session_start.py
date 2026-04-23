@@ -38,7 +38,7 @@ def main() -> None:
                 vault.ensure_project_overview_stub(project, project_cwd)
             except Exception as e:
                 sys.stderr.write(f"brain session_start stub: {e}\n")
-        findings = doctor.check(project)
+        findings = doctor.check(project, project_cwd)
         banner = doctor.render_banner(findings, min_severity="warn")
         vault_error = any(
             f["severity"] == "error"
