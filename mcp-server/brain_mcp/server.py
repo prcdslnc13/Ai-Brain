@@ -13,9 +13,19 @@ import threading
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import TextContent, Tool, ToolAnnotations
 
 from . import doctor, vault
+
+# Permission hints for MCP-aware clients (e.g. claw-code) that gate tool calls
+# by mode. Read-only memory operations should run without elevation; write
+# operations should require WorkspaceWrite; brain_forget is destructive and
+# should require explicit DangerFullAccess approval.
+_READ_ONLY = ToolAnnotations(readOnlyHint=True, idempotentHint=True)
+_WRITE = ToolAnnotations(readOnlyHint=False, idempotentHint=False)
+_DESTRUCTIVE = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=True, idempotentHint=True
+)
 
 server: Server = Server("brain")
 
@@ -40,6 +50,7 @@ async def list_tools() -> list[Tool]:
                     }
                 },
             },
+            annotations=_READ_ONLY,
         ),
         Tool(
             name="brain_recall",
@@ -77,6 +88,7 @@ async def list_tools() -> list[Tool]:
                 },
                 "required": ["query"],
             },
+            annotations=_READ_ONLY,
         ),
         Tool(
             name="brain_save",
@@ -127,6 +139,7 @@ async def list_tools() -> list[Tool]:
                 },
                 "required": ["type", "name", "content"],
             },
+            annotations=_WRITE,
         ),
         Tool(
             name="brain_list",
@@ -148,6 +161,7 @@ async def list_tools() -> list[Tool]:
                     },
                 },
             },
+            annotations=_READ_ONLY,
         ),
         Tool(
             name="brain_forget",
@@ -168,6 +182,7 @@ async def list_tools() -> list[Tool]:
                 },
                 "required": ["path"],
             },
+            annotations=_DESTRUCTIVE,
         ),
         Tool(
             name="brain_checkpoint",
@@ -196,6 +211,7 @@ async def list_tools() -> list[Tool]:
                 },
                 "required": ["project", "summary"],
             },
+            annotations=_WRITE,
         ),
         Tool(
             name="brain_stats",
@@ -204,6 +220,7 @@ async def list_tools() -> list[Tool]:
                 "Useful for health checks."
             ),
             inputSchema={"type": "object", "properties": {}},
+            annotations=_READ_ONLY,
         ),
         Tool(
             name="brain_doctor",
@@ -223,6 +240,7 @@ async def list_tools() -> list[Tool]:
                     }
                 },
             },
+            annotations=_READ_ONLY,
         ),
     ]
 
