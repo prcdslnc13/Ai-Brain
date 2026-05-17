@@ -32,6 +32,10 @@ IS_WINDOWS = platform.system() == "Windows"
 VENV_PY = VENV_DIR / ("Scripts/python.exe" if IS_WINDOWS else "bin/python")
 VENV_PIP = VENV_DIR / ("Scripts/pip.exe" if IS_WINDOWS else "bin/pip")
 
+# Mirror mcp-server/pyproject.toml `requires-python`. Bump both together.
+MIN_PY = (3, 11)
+_VERSION_GATE = f"import sys; sys.exit(0 if sys.version_info >= {MIN_PY} else 1)"
+
 
 # ---------- output helpers ----------
 
@@ -63,20 +67,32 @@ def discover_claude_dirs() -> list[Path]:
 
 
 def find_python3() -> list[str]:
-    """Return a command-prefix that runs Python 3 (e.g. ['py','-3'] or ['python3'])."""
+    """Return a command-prefix that runs Python >= MIN_PY.
+
+    Prefers version-suffixed binaries (python3.14, py -3.14, ...) over generic
+    `python3` because system pythons on some platforms are pinned to old releases
+    that fail the brain-mcp install — most notably macOS /usr/bin/python3, which
+    is still 3.9 and would shadow a perfectly good Homebrew 3.14 on PATH.
+    """
+    minors = range(20, MIN_PY[1] - 1, -1)
     candidates: list[list[str]] = []
     if IS_WINDOWS:
-        candidates += [["py", "-3"], ["python"], ["python3"]]
+        candidates += [["py", f"-3.{m}"] for m in minors]
+        candidates += [["py", "-3"], ["python3"], ["python"]]
     else:
+        candidates += [[f"python3.{m}"] for m in minors]
         candidates += [["python3"], ["python"]]
     for cmd in candidates:
         if not shutil.which(cmd[0]):
             continue
         try:
-            out = subprocess.run(cmd + ["--version"], capture_output=True, text=True, check=False)
-            if out.returncode == 0 and "Python 3" in (out.stdout + out.stderr):
+            res = subprocess.run(
+                cmd + ["-c", _VERSION_GATE],
+                capture_output=True, check=False, timeout=10,
+            )
+            if res.returncode == 0:
                 return cmd
-        except OSError:
+        except (OSError, subprocess.TimeoutExpired):
             continue
     return []
 
@@ -186,17 +202,20 @@ def prompt_claude_dirs(detected: list[Path]) -> list[Path]:
 # ---------- install steps ----------
 
 def _venv_is_healthy() -> bool:
-    """Sanity-check an existing venv: interpreter runs AND pip's shebang is valid.
+    """Sanity-check an existing venv: interpreter runs at MIN_PY+ AND pip's shebang is valid.
 
     After the repo is renamed (e.g. AiBrain → Ai-Brain), console scripts keep the
     old absolute shebang and fail to exec with a confusing FileNotFoundError. We
-    detect that here so the venv gets rebuilt instead of poisoning step 2.
+    detect that here so the venv gets rebuilt instead of poisoning step 2. The
+    version check catches a separate trap: a venv built against a too-old Python
+    (e.g. macOS /usr/bin/python3 == 3.9) passes a bare `import sys` test but later
+    fails `pip install brain-mcp` because pyproject demands >= 3.11.
     """
     if not VENV_PY.exists() or not VENV_PIP.exists():
         return False
     try:
         res = subprocess.run(
-            [str(VENV_PY), "-c", "import sys; sys.exit(0)"],
+            [str(VENV_PY), "-c", _VERSION_GATE],
             capture_output=True, check=False, timeout=10,
         )
         if res.returncode != 0:
@@ -220,7 +239,7 @@ def ensure_venv(num: int, total: int) -> None:
         step(num, total, f"creating Python venv at {VENV_DIR}")
     py = find_python3()
     if not py:
-        die("no Python 3 interpreter found. Install Python 3.11+ and re-run.")
+        die(f"no Python >= {MIN_PY[0]}.{MIN_PY[1]} found on PATH. Install it and re-run.")
     res = subprocess.run(py + ["-m", "venv", str(VENV_DIR)], check=False)
     if res.returncode != 0:
         die(f"venv creation failed (exit {res.returncode})")
