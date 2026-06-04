@@ -274,9 +274,15 @@ def sanity_import(num: int, total: int, vault_root: Path) -> None:
 
 
 def warm_embedder(num: int, total: int, vault_root: Path) -> None:
-    step(num, total, "warming up embedding model (one-time ONNX download, ~130MB)")
+    # embed.py pins a stable, machine-local cache (%LOCALAPPDATA%\Ai-Brain\fastembed on
+    # Windows, ~/.cache/ai-brain/fastembed elsewhere) so this one-time download lands
+    # there and every later load is offline — no per-recall HuggingFace round-trip, which
+    # when slow/unreachable previously hung brain_recall. Override the location with
+    # BRAIN_EMBED_CACHE; force-online model updates with BRAIN_EMBED_OFFLINE=0.
+    step(num, total, "warming up embedding model (one-time ONNX download, ~65MB)")
     env = os.environ.copy()
     env["BRAIN_VAULT"] = str(vault_root)
+    env.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
     res = subprocess.run(
         [str(VENV_PY), "-c", "from brain_mcp.embed import EmbedIndex; EmbedIndex.warm()"],
         env=env, check=False,

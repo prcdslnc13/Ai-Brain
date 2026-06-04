@@ -3,6 +3,16 @@
 The index lives at `$BRAIN_VAULT/Brain/.index/embeddings.sqlite`. Embedding model is
 fastembed's `BAAI/bge-small-en-v1.5` (384-dim, ONNX, CPU-only). Failures are non-fatal:
 callers fall back to ripgrep substring search.
+
+Model load is **offline-first**. fastembed has no `local_files_only` knob (0.8.0), and
+`TextEmbedding(...)` makes a HuggingFace metadata round-trip on every construction even
+when the model is fully cached. That call has no timeout, runs while `_Embedder._lock`
+is held, and blocks the synchronous `brain_recall` handler — so a slow or unreachable
+hub turns recall into an unbounded hang (observed: a ~1h lock-up on 2026-06-03). We fix
+this by (a) pinning a stable machine-local cache dir so the model is found regardless of
+how the harness rewrites TMP, (b) setting bounded HF network timeouts and `HF_HUB_OFFLINE`
+*before* huggingface_hub freezes them into module constants at import, and (c) only going
+online when the model is genuinely absent (then bounded by the timeouts, to self-heal).
 """
 
 from __future__ import annotations
@@ -19,6 +29,51 @@ from . import vault
 
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 EMBED_DIM = 384
+
+
+def _embed_cache_dir() -> Path:
+    """Stable, machine-local directory for the ONNX model weights.
+
+    Deliberately NOT the system temp dir (fastembed's default): the harness and
+    OS temp-cleaners rewrite/purge TMP, which moves the cache out from under the
+    server and forces re-downloads — the trigger behind the recall hang. Also
+    deliberately NOT inside the synced vault, so the 64MB model never replicates
+    over Obsidian Sync. Override with FASTEMBED_CACHE_PATH or BRAIN_EMBED_CACHE.
+    """
+    explicit = os.environ.get("FASTEMBED_CACHE_PATH") or os.environ.get("BRAIN_EMBED_CACHE")
+    if explicit:
+        return Path(explicit).expanduser()
+    base = os.environ.get("LOCALAPPDATA")
+    if base:
+        return Path(base) / "Ai-Brain" / "fastembed"
+    return Path.home() / ".cache" / "ai-brain" / "fastembed"
+
+
+def _model_is_cached(cache_dir: Path) -> bool:
+    """True when an ONNX model file already exists under cache_dir."""
+    if not cache_dir.exists():
+        return False
+    try:
+        for _ in cache_dir.rglob("*.onnx"):
+            return True
+    except OSError:
+        pass
+    return False
+
+
+_CACHE_DIR = _embed_cache_dir()
+
+# Configure HuggingFace behaviour BEFORE huggingface_hub is imported (its import
+# is lazy, inside _Embedder.get()). huggingface_hub reads these into module-level
+# constants once at import, so toggling them later — e.g. inside get(), after
+# `from fastembed import TextEmbedding` has already pulled in the hub — is a no-op.
+# Bound every network op so even a cache-miss download can't hang the session.
+os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "10")
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "30")
+# Offline-first: when the model is already on disk, forbid HF network round-trips
+# entirely. On a genuine cache miss we stay online (bounded above) to self-heal.
+if os.environ.get("BRAIN_EMBED_OFFLINE", "1") != "0" and _model_is_cached(_CACHE_DIR):
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 
 class EmbedUnavailable(RuntimeError):
@@ -53,7 +108,9 @@ class _Embedder:
             except ImportError as e:
                 raise EmbedUnavailable(f"fastembed not installed: {e}") from e
             try:
-                self._impl = TextEmbedding(model_name=EMBED_MODEL)
+                self._impl = TextEmbedding(
+                    model_name=EMBED_MODEL, cache_dir=str(_CACHE_DIR)
+                )
             except (OSError, RuntimeError) as e:
                 raise EmbedUnavailable(f"failed to load embedding model: {e}") from e
             return self._impl

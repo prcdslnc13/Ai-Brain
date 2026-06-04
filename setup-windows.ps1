@@ -116,7 +116,12 @@ try {
   }
 
   # Warm up the fastembed model so the first brain_recall isn't a 30s stall.
-  Write-Host "      warming up embedding model (one-time ONNX download, ~130MB)..."
+  # embed.py pins a stable, machine-local cache at %LOCALAPPDATA%\Ai-Brain\fastembed
+  # (NOT the temp dir, which the harness rewrites — that caused a recall hang), so this
+  # one-time download lands there and every later load is offline. Override with
+  # BRAIN_EMBED_CACHE; force-online updates with BRAIN_EMBED_OFFLINE=0.
+  Write-Host "      warming up embedding model (one-time ONNX download, ~65MB) into %LOCALAPPDATA%\Ai-Brain\fastembed..."
+  $env:HF_HUB_DISABLE_SYMLINKS_WARNING = "1"
   & $VenvPython -c "from brain_mcp.embed import EmbedIndex; EmbedIndex.warm()"
   if ($LASTEXITCODE -ne 0) {
     Write-Warning "embed warm-up failed; vector recall will fall back to ripgrep until resolved."
@@ -124,6 +129,7 @@ try {
 } finally {
   Pop-Location
   Remove-Item Env:BRAIN_VAULT -ErrorAction SilentlyContinue
+  Remove-Item Env:HF_HUB_DISABLE_SYMLINKS_WARNING -ErrorAction SilentlyContinue
 }
 
 # 3. Ensure the Brain/ layout exists in the vault.
