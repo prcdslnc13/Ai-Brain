@@ -132,6 +132,26 @@ BRAIN_VAULT=~/Documents/Vaults/Ai-Brain \
 
 ## Gotchas that will bite you
 
+- **`brain_recall` could hang the whole session on the embedding-model load (fixed 2026-06-03).**
+  fastembed 0.8.0's `TextEmbedding()` makes a HuggingFace metadata round-trip on *every*
+  construction even when the model is fully cached, with no timeout, while holding
+  `_Embedder._lock`. The synchronous recall handler (and the background warmup thread that grabs
+  the lock first) block behind it, so a slow or unreachable hub turns a single `brain_recall` into
+  an unbounded hang (one observed lock-up ran ~1h). Two things compounded it: fastembed's default
+  cache is `tempfile.gettempdir()/fastembed_cache`, but Claude Code rewrites TMP for child
+  processes (e.g. `…\Temp\claude\…`), so the server often looked in an empty dir and re-downloaded
+  the 64MB ONNX every start; and `huggingface_hub` freezes `HF_HUB_OFFLINE` / `HF_HUB_*_TIMEOUT`
+  into module constants at import, so they must be set *before* fastembed (hence the hub) is
+  imported. The fix lives in `embed.py`'s module-top block: it pins a stable machine-local cache
+  (`%LOCALAPPDATA%\Ai-Brain\fastembed` on Windows, `~/.cache/ai-brain/fastembed` elsewhere), sets
+  bounded HF timeouts and `HF_HUB_OFFLINE` (only when the model is already cached) before any
+  fastembed import, and passes `cache_dir` to `TextEmbedding`. On a genuine cache miss it stays
+  online (bounded by the timeouts) so vector search self-heals; total failure falls back to
+  ripgrep. **Knobs:** `BRAIN_EMBED_OFFLINE=0` lets HF check for model updates every load;
+  `BRAIN_EMBED_CACHE` / `FASTEMBED_CACHE_PATH` relocate the cache; `BRAIN_EMBED=0` disables vector
+  search entirely. If recall ever feels slow again, confirm the model exists under the cache dir
+  and that `HF_HUB_OFFLINE=1` is being set — a missing cache forces the online path.
+
 - **`brain-setup.py` could report success while leaving brain unregistered (fixed 2026-06-03).**
   The old `register_mcp` verify trusted a transient `claude mcp list` snapshot: if any line
   starting with `brain` appeared at that instant, it returned success. That hid two real failures —

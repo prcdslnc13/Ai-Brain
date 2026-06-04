@@ -108,9 +108,12 @@ if ! ( cd /tmp && BRAIN_VAULT="$VAULT_ROOT" "$VENV_PYTHON" -c "from brain_mcp im
 fi
 
 # 2b. Warm up the fastembed model so the first brain_recall isn't a 30s stall.
-#     On a Raspberry Pi this download can take a minute or two on a slow SD card;
-#     it's a one-time cost cached under ~/.cache/fastembed.
-echo "      warming up embedding model (one-time ONNX download, ~130MB)…"
+#     embed.py pins a stable, machine-local cache (~/.cache/ai-brain/fastembed) so this
+#     one-time download lands there and every later load is offline (no per-recall HF
+#     round-trip — that uncapped network call caused a recall hang). On a Raspberry Pi
+#     this download can take a minute or two on a slow SD card. Override the location
+#     with BRAIN_EMBED_CACHE; force-online model updates with BRAIN_EMBED_OFFLINE=0.
+echo "      warming up embedding model (one-time ONNX download, ~65MB) into ~/.cache/ai-brain/fastembed…"
 BRAIN_VAULT="$VAULT_ROOT" "$VENV_PYTHON" -c "from brain_mcp.embed import EmbedIndex; EmbedIndex.warm()" \
   || echo "WARNING: embed warm-up failed; vector recall will fall back to ripgrep until resolved." >&2
 
