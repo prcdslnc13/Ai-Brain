@@ -182,7 +182,7 @@ def _check_fastembed() -> list[Finding]:
 
 
 _ACTIVITY_COLUMNS_RE = re.compile(
-    r"\[sig=([YN]) sav=([YN]) nud=([YN])(?: pro=([YN]))?\]"
+    r"\[sig=([YN]) sav=([YN]) nud=([YN])(?: pro=([YN]))?(?: too=([YN]))?\]"
 )
 SAVE_GAP_WINDOW = 30  # tail of activity.md to examine
 SAVE_GAP_THRESHOLD = 3  # signal-without-save count that triggers a WARN
@@ -217,6 +217,8 @@ def _check_save_gap(brain: Path) -> list[Finding]:
         m = _ACTIVITY_COLUMNS_RE.search(line)
         if not m:
             continue
+        if m.group(5) == "N":
+            continue  # brain tools weren't callable — a missed save was unsatisfiable
         audited += 1
         sig, sav, nud = m.group(1), m.group(2), m.group(3)
         if sig == "Y" and sav == "N":
@@ -256,7 +258,10 @@ def _check_promise_gap(brain: Path) -> list[Finding]:
     blocked stop (stop_hook_active=true) and we deliberately bypassed the gate.
 
     Only examines lines written after the `pro=` column landed. Older lines
-    have no `pro=` suffix and are silently skipped.
+    have no `pro=` suffix and are silently skipped. Rows tagged `too=N` (the
+    brain MCP server wasn't registered that session, so the promised save was
+    physically uncallable) are also skipped — that's an infra failure, not a
+    model bug. See the 2026-06-03 false positive this guards against.
     """
     lines = _tail_activity(brain, SAVE_GAP_WINDOW)
     if not lines:
@@ -271,6 +276,9 @@ def _check_promise_gap(brain: Path) -> list[Finding]:
         pro = m.group(4)
         if pro is None:
             continue  # old-format line, no promise column
+        if m.group(5) == "N":
+            continue  # brain tools weren't callable this session — the promise
+            # was physically unsatisfiable (infra failure, not a model bug)
         audited += 1
         sav = m.group(2)
         if pro == "Y" and sav == "N":

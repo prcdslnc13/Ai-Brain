@@ -13,12 +13,19 @@ Two jobs, in order:
    safety-net checkpoint fired — ~70 minutes of migration work lost.
 
 2. **Audit**: append a one-line breadcrumb to Brain/activity.md:
-     timestamp account project [sig=Y|N sav=Y|N nud=Y|N pro=Y|N] — snippet
+     timestamp account project [sig=Y|N sav=Y|N nud=Y|N pro=Y|N too=Y|N] — snippet
    Columns:
      sig — did the user's last message match a save-signal pattern?
      sav — did the assistant call brain_save/brain_checkpoint this turn?
      nud — was the UserPromptSubmit nudge enabled (and would it have fired)?
      pro — did the assistant's final message contain a save-promise?
+     too — was the brain MCP server registered for this session, i.e. were
+           brain_save/brain_checkpoint actually callable? A `too=N` row means a
+           save-promise was physically unsatisfiable (the tools didn't exist
+           that session — an infra failure, not a model bug), so the gap checks
+           skip it. See the 2026-06-03 PROMISE_GAP false positive: the very
+           session troubleshooting an unregistered brain promised a save the
+           gate then demanded, but there was no tool to call.
    `brain_doctor._check_save_gap` and `_check_promise_gap` read the tail of
    activity.md to surface long-run gaps.
 
@@ -144,6 +151,46 @@ def _yn(flag: bool) -> str:
     return "Y" if flag else "N"
 
 
+def _active_config_files() -> list[Path]:
+    """Candidate `.claude.json` files for the config dir this session runs under.
+
+    Claude Code reads user-scope MCP registrations from a `.claude.json` keyed
+    to its config dir. The default dir (~/.claude) keeps that file at
+    ~/.claude.json (home), NOT inside the dir; a custom CLAUDE_CONFIG_DIR keeps a
+    sibling `.claude.json` inside it. We check whichever applies plus the home
+    file, and treat "brain registered in any of them" as callable.
+    """
+    files: list[Path] = []
+    cfg_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    if cfg_dir:
+        files.append(Path(cfg_dir).expanduser() / ".claude.json")
+    files.append(Path.home() / ".claude.json")
+    return files
+
+
+def brain_tools_callable() -> bool:
+    """Best-effort: is the brain MCP server registered for this session?
+
+    Used to annotate the audit breadcrumb so the promise-/save-gap checks can
+    ignore sessions where the brain_* tools were never registered — a
+    save-promise in such a session is physically unsatisfiable, an infra failure
+    rather than a model bug. Conservative on uncertainty: any unreadable or
+    unparseable config returns True so a real unfulfilled promise is never
+    hidden. Only a positively-readable config with no `brain` entry returns
+    False.
+    """
+    for f in _active_config_files():
+        try:
+            if not f.exists():
+                continue
+            cfg = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return True  # can't tell → assume available, don't suppress
+        if "brain" in (cfg.get("mcpServers") or {}):
+            return True
+    return False
+
+
 def main() -> None:
     payload = read_payload()
     project = project_basename(payload) or "unknown"
@@ -157,8 +204,13 @@ def main() -> None:
     promised = is_save_promise(assistant_text)
     nudged = signal and nudge_enabled()
 
+    tools_ok = brain_tools_callable()
+
     snippet = last_user.replace("\n", " ")[:80]
-    columns = f"[sig={_yn(signal)} sav={_yn(saved)} nud={_yn(nudged)} pro={_yn(promised)}]"
+    columns = (
+        f"[sig={_yn(signal)} sav={_yn(saved)} nud={_yn(nudged)} "
+        f"pro={_yn(promised)} too={_yn(tools_ok)}]"
+    )
     try:
         append_activity(f"{now_stamp()} {account} {project} {columns} — {snippet}")
     except Exception as e:

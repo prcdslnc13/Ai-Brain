@@ -48,11 +48,17 @@ The moving parts fit together as follows:
     either fulfill the commitment or recant before ending. Disable per-install with
     `BRAIN_STOP_GATE=0`. Re-entries (payload `stop_hook_active=true`) bypass the gate to avoid
     infinite loops. (2) Audit: append a breadcrumb to `Brain/activity.md` with columns
-    `[sig=Y|N sav=Y|N nud=Y|N pro=Y|N]` — save-signal in user message, brain tool call this turn,
-    UserPromptSubmit nudge enabled, save-promise in assistant message. `brain_doctor._check_save_gap`
+    `[sig=Y|N sav=Y|N nud=Y|N pro=Y|N too=Y|N]` — save-signal in user message, brain tool call this
+    turn, UserPromptSubmit nudge enabled, save-promise in assistant message, and whether the brain
+    MCP server was *registered for this session* (i.e. `brain_save`/`brain_checkpoint` were actually
+    callable, read from the active config dir's `.claude.json` `mcpServers`). `brain_doctor._check_save_gap`
     and `_check_promise_gap` read the tail to surface signal-without-save and promise-without-save
-    trends. Promise-gap threshold is 1 (any miss is a bug); save-gap threshold is 3 in a 30-turn
-    window.
+    trends, **skipping `too=N` rows** — a save-promise in a session where the tools weren't registered
+    is physically unsatisfiable (infra failure, not a model bug), so counting it would be a false
+    positive (this guards against the 2026-06-03 PROMISE_GAP false alarm where the session
+    troubleshooting an unregistered brain promised a save the gate then demanded). Legacy rows with
+    no `too=` column still count, for backward compatibility. Promise-gap threshold is 1 (any miss is
+    a bug); save-gap threshold is 3 in a 30-turn window.
   - `user_prompt_submit.py` — optional soft nudge. If the incoming prompt matches a save-signal
     regex (same patterns as stop.py's audit, kept in `_savesig.py`) and `BRAIN_NUDGE` is not `0`,
     injects a one-line `additionalContext` reminder telling the model to call `brain_save`.
