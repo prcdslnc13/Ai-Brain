@@ -363,6 +363,18 @@ def _is_default_claude_dir(claude_dir: Path) -> bool:
         return str(claude_dir).rstrip("\\/") == str(default).rstrip("\\/")
 
 
+def _mcp_config_file(claude_dir: Path) -> Path:
+    """Return the .claude.json that `claude mcp` reads/writes for `claude_dir`.
+
+    The default config dir (~/.claude) is special: its user-scope config file
+    lives at ~/.claude.json (home), NOT inside ~/.claude/. Custom config dirs
+    (set via CLAUDE_CONFIG_DIR) keep a sibling .claude.json inside the dir.
+    """
+    if _is_default_claude_dir(claude_dir):
+        return Path.home() / ".claude.json"
+    return claude_dir / ".claude.json"
+
+
 def register_mcp(claude_dir: Path, vault_root: Path) -> tuple[bool, str]:
     """Register brain as a user-scope MCP server for `claude_dir`.
 
@@ -397,13 +409,23 @@ def register_mcp(claude_dir: Path, vault_root: Path) -> tuple[bool, str]:
         err = (res.stderr or res.stdout or "").strip()
         return False, f"'claude mcp add' exited {res.returncode}: {err}"
 
-    # Verify the entry landed where `claude` (with this same env) will read from.
-    list_res = subprocess.run(
-        [claude_bin, "mcp", "list"],
-        env=env, capture_output=True, text=True, check=False,
-    )
-    if not any(line.startswith("brain") for line in list_res.stdout.splitlines()):
-        return False, "'claude mcp add' returned success but 'brain' not in 'claude mcp list'"
+    # Verify the entry actually PERSISTED to the config file `claude` will read
+    # from when launched against this dir — not a transient `claude mcp list`
+    # snapshot. The old check grepped `claude mcp list`, which passed whenever a
+    # 'brain' line appeared at that instant; it silently missed the case where
+    # the entry landed in a different config file than the one this dir launches
+    # with (e.g. registered the default dir's ~/.claude.json but the user runs
+    # Claude under CLAUDE_CONFIG_DIR=.claude-foo). Read mcpServers directly.
+    config_file = _mcp_config_file(claude_dir)
+    try:
+        cfg = json.loads(config_file.read_text(encoding="utf-8")) if config_file.exists() else {}
+    except (OSError, json.JSONDecodeError) as e:
+        return False, f"could not read {config_file} to verify registration: {e}"
+    if "brain" not in (cfg.get("mcpServers") or {}):
+        return False, (
+            f"'claude mcp add' returned success but 'brain' is not in "
+            f"mcpServers of {config_file}"
+        )
 
     return True, ""
 
