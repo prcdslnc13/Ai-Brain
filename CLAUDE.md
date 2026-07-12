@@ -19,13 +19,18 @@ point — each side has the sync mechanism that suits it.
 
 The moving parts fit together as follows:
 
-- **`mcp-server/`** — a Python stdio MCP server (`brain_mcp` package) that exposes the vault as
-  typed tools: `brain_session_start`, `brain_recall`, `brain_save`, `brain_list`, `brain_forget`,
-  `brain_checkpoint`, `brain_stats`, `brain_doctor`. Claude Code, LMStudio, and any MCP-aware
-  Ollama frontend all connect to the *same* server instance on a given machine. The server reads
-  `BRAIN_VAULT` from env and operates on files inside `$BRAIN_VAULT/Brain/`. Core logic lives in
-  `brain_mcp/vault.py` (search, write, frontmatter, session bundle); health checks in
-  `brain_mcp/doctor.py`; MCP tool shims in `brain_mcp/server.py`.
+- **`mcp-server/`** — the `brain_mcp` Python package with two thin frontends over one core:
+  - **`brain_mcp/cli.py`** → the `brain` console script, the **primary interface**. Claude Code
+    (via the brain skill + global CLAUDE.md) and pi run `brain recall|save|list|forget|checkpoint|
+    stats|doctor` through their shell tool. Costs no context tokens until invoked.
+  - **`brain_mcp/server.py`** → stdio MCP server exposing the same operations as typed tools
+    (`brain_session_start`, `brain_recall`, `brain_save`, `brain_list`, `brain_forget`,
+    `brain_checkpoint`, `brain_stats`, `brain_doctor`) for MCP clients: LMStudio, MCP-aware
+    Ollama frontends, or Claude Code when setup ran with `--with-mcp`.
+  - Core logic lives in `brain_mcp/vault.py` (search, write, frontmatter, session bundle);
+    recall/list payload caps and compact-markdown rendering in `brain_mcp/render.py` (shared by
+    both frontends — keep it that way); health checks in `brain_mcp/doctor.py`. Everything reads
+    `BRAIN_VAULT` from env and operates on files inside `$BRAIN_VAULT/Brain/`.
 
 - **`hooks/`** — Python scripts wired into Claude Code's hook events via `settings.json`:
   - `session_start.py` — preloads the vault bundle as `additionalContext` so the model sees user
@@ -42,19 +47,22 @@ The moving parts fit together as follows:
     and writes a structural checkpoint to `Brain/projects/<project>/sessions/<timestamp>.md`. No
     LLM call — the next session's model will summarize/integrate when it sees the file.
   - `stop.py` — two jobs. (1) Gate: when the assistant's final message contains a save-promise
-    phrase (*"I'll save this to brain"*, *"checkpointing now"*, etc.) and no
-    `brain_save`/`brain_checkpoint` tool call occurred in the turn, emit
-    `{decision: "block", reason: …}` so Claude Code feeds the reason back to the model and it must
-    either fulfill the commitment or recant before ending. Disable per-install with
-    `BRAIN_STOP_GATE=0`. Re-entries (payload `stop_hook_active=true`) bypass the gate to avoid
-    infinite loops. (2) Audit: append a breadcrumb to `Brain/activity.md` with columns
-    `[sig=Y|N sav=Y|N nud=Y|N pro=Y|N too=Y|N]` — save-signal in user message, brain tool call this
-    turn, UserPromptSubmit nudge enabled, save-promise in assistant message, and whether the brain
-    MCP server was *registered for this session* (i.e. `brain_save`/`brain_checkpoint` were actually
-    callable, read from the active config dir's `.claude.json` `mcpServers`). `brain_doctor._check_save_gap`
-    and `_check_promise_gap` read the tail to surface signal-without-save and promise-without-save
-    trends, **skipping `too=N` rows** — a save-promise in a session where the tools weren't registered
-    is physically unsatisfiable (infra failure, not a model bug), so counting it would be a false
+    phrase (*"I'll save this to brain"*, *"checkpointing now"*, etc.) and no brain save occurred
+    in the turn, emit `{decision: "block", reason: …}` so Claude Code feeds the reason back to the
+    model and it must either fulfill the commitment or recant before ending. "A brain save" means
+    a `brain_save`/`brain_checkpoint` MCP tool call **or** a Bash/PowerShell tool_use whose
+    command invokes the `brain save`/`brain checkpoint` CLI (`is_cli_save_command`, tolerant of
+    paths, `.exe`/`.cmd`, and quoting, but deliberately not matching the phrase inside quoted
+    arguments). Disable per-install with `BRAIN_STOP_GATE=0`. Re-entries (payload
+    `stop_hook_active=true`) bypass the gate to avoid infinite loops. (2) Audit: append a
+    breadcrumb to `Brain/activity.md` with columns `[sig=Y|N sav=Y|N nud=Y|N pro=Y|N too=Y|N]` —
+    save-signal in user message, brain save this turn (either interface), UserPromptSubmit nudge
+    enabled, save-promise in assistant message, and whether a save interface was *available this
+    session* (the `brain` CLI exists in the repo venv, or the MCP server is registered in the
+    active config dir's `.claude.json` `mcpServers`). `brain_doctor._check_save_gap` and
+    `_check_promise_gap` read the tail to surface signal-without-save and promise-without-save
+    trends, **skipping `too=N` rows** — a save-promise in a session with no save interface is
+    physically unsatisfiable (infra failure, not a model bug), so counting it would be a false
     positive (this guards against the 2026-06-03 PROMISE_GAP false alarm where the session
     troubleshooting an unregistered brain promised a save the gate then demanded). Legacy rows with
     no `too=` column still count, for backward compatibility. Promise-gap threshold is 1 (any miss is
@@ -71,27 +79,35 @@ The moving parts fit together as follows:
 
 - **`templates/`**:
   - `global-CLAUDE.md` — the load-bearing proactive-memory directives. Copied to
-    `~/.claude-*/CLAUDE.md` by setup with `__BRAIN_VAULT__` substituted. This is what makes the
-    model save/recall/checkpoint automatically instead of waiting for `/brain` commands.
+    `~/.claude-*/CLAUDE.md` by setup with `__BRAIN_VAULT__` and `__BRAIN_CMD__` (the full CLI
+    invocation for the machine) substituted. This is what makes the model save/recall/checkpoint
+    automatically instead of waiting for `/brain` commands.
   - `settings.hooks.json` — the hooks block merged into `~/.claude-*/settings.json`. Each command
     is wrapped with `BRAIN_VAULT=<vault> <venv python> <repo hook>.py` so the env is set at launch.
-  - `skills/brain/SKILL.md` — the `/brain save|recall|checkpoint|forget|list` slash commands.
-    These are manual escape hatches; the primary path is the model calling tools proactively.
+  - `skills/brain/SKILL.md` — the CLI syntax reference and `/brain save|recall|checkpoint|forget|
+    list` handler. Rendered with `__BRAIN_CMD__` substituted. The proactive triggers live in
+    global-CLAUDE.md; the skill holds the how.
+  - `AGENTS-brain.md` — the Brain snippet for AGENTS.md-style agents (pi). Manually rendered by
+    the user per `PI-SETUP.md` (setup scripts don't know about pi installs).
 
 - **`setup-mac.sh`** — idempotent bootstrap. Installs brain-mcp into `mcp-server/.venv`, writes the
-  global CLAUDE.md, drops the brain skill, merges the hooks block into settings.json, and
-  registers the MCP server with user scope via `claude mcp add`. Takes
-  `<claude-config-dir> <vault-path>` as arguments.
+  global CLAUDE.md and brain skill (with `__BRAIN_CMD__` substituted), and merges the hooks block
+  into settings.json. Takes `<claude-config-dir> <vault-path> [--with-mcp]`. **MCP registration is
+  opt-in**: only `--with-mcp` runs `claude mcp add`; without it, any existing user-scope `brain`
+  registration is *removed* so the CLI-first token saving actually lands.
 
-- **`setup-windows.ps1`** — the Windows counterpart to `setup-mac.sh`. Same arguments, same
-  idempotency guarantee. Generates a per-install `<config-dir>\brain-launch.cmd` wrapper that
-  bakes in `BRAIN_VAULT` and the venv python path, so hook commands in `settings.json` are just
-  `<launch.cmd> <hook-name>` with no JSON quote-escaping. Uses `templates/settings.hooks.win.json`
-  as the template. Python hooks and MCP server code are unchanged between platforms.
+- **`setup-windows.ps1`** — the Windows counterpart to `setup-mac.sh`. Same arguments (`-WithMcp`
+  switch), same idempotency guarantee. Generates two per-install wrappers (Unix-style env prefixes
+  don't work on Windows): `<config-dir>\brain-launch.cmd` for hook commands in `settings.json`
+  (`<launch.cmd> <hook-name>`, no JSON quote-escaping) and `<config-dir>\brain.cmd` — the CLI
+  wrapper substituted for `__BRAIN_CMD__`, which bakes in `BRAIN_VAULT` and forwards args to the
+  venv's `brain.exe`. Uses `templates/settings.hooks.win.json` as the template. Python hooks and
+  server/CLI code are unchanged between platforms.
 
-- **`WINDOWS-SETUP.md`, `LMSTUDIO-SETUP.md`** — user-facing install guides for the Windows
-  bring-up and the LMStudio MCP registration. Keep these in sync with `setup-windows.ps1` and
-  the MCP server command/env contract respectively.
+- **`WINDOWS-SETUP.md`, `LMSTUDIO-SETUP.md`, `PI-SETUP.md`** — user-facing install guides for the
+  Windows bring-up, the LMStudio MCP registration, and the pi (pi.dev) CLI wiring. Keep these in
+  sync with `setup-windows.ps1`, the MCP server command/env contract, and the `brain` CLI surface
+  respectively.
 
 ## Common commands
 
@@ -106,7 +122,13 @@ The moving parts fit together as follows:
 # powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
 #     "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
 
-# Verify the MCP server is registered and connected (omit CLAUDE_CONFIG_DIR for the default ~/.claude)
+# Exercise the brain CLI directly (the primary interface; same caps/rendering as MCP)
+BRAIN_VAULT=~/Documents/Vaults/Ai-Brain ~/src/Ai-Brain/mcp-server/.venv/bin/brain stats
+BRAIN_VAULT=~/Documents/Vaults/Ai-Brain ~/src/Ai-Brain/mcp-server/.venv/bin/brain recall lmstudio
+# On Windows, use the generated wrapper instead: <config-dir>/brain.cmd stats
+
+# Verify the MCP server is registered and connected — only meaningful after a --with-mcp
+# install (omit CLAUDE_CONFIG_DIR for the default ~/.claude)
 CLAUDE_CONFIG_DIR=~/.claude-personal claude mcp list
 
 # Smoke-test the MCP server over stdio (from any cwd)
@@ -131,6 +153,19 @@ BRAIN_VAULT=~/Documents/Vaults/Ai-Brain \
 ```
 
 ## Gotchas that will bite you
+
+- **Recall/list output is deliberately capped — don't "fix" that by removing the caps
+  (added 2026-07-11).** Before `render.py`, `brain_recall` honored a model-supplied `top_k`
+  unbounded and `full_body=true` uncapped, and the result set merged *all* ripgrep substring
+  hits after the vector top-K. Every session checkpoint for a project mentions the project's
+  name, so a recall on a project name matched the whole `sessions/` history — one LMStudio
+  recall returned 200k+ tokens and blew the local model's context. Now: `top_k` defaults to 3
+  and is clamped (`BRAIN_RECALL_MAX_K`, default 10), previews are ~300 chars
+  (`BRAIN_RECALL_PREVIEW_CHARS`), `full_body` bodies are capped per file
+  (`BRAIN_RECALL_MAX_BODY_CHARS`, 6000) and per response (`BRAIN_RECALL_MAX_TOTAL_CHARS`,
+  20000), session checkpoints are excluded unless `include_sessions` is passed, and output is
+  compact markdown instead of `indent=2` JSON. Both frontends must keep routing recall/list
+  through `render.py` so a new frontend can't reintroduce the unbounded path.
 
 - **`brain_recall` could hang the whole session on the embedding-model load (fixed 2026-06-03).**
   fastembed 0.8.0's `TextEmbedding()` makes a HuggingFace metadata round-trip on *every*
@@ -192,12 +227,13 @@ BRAIN_VAULT=~/Documents/Vaults/Ai-Brain \
 There is no test suite yet. Verification is manual and lives in the README's verification matrix.
 When making a non-trivial change:
 
-1. Re-run `setup-mac.sh` for both Claude config dirs.
+1. Re-run `setup-mac.sh` (or the platform equivalent) for both Claude config dirs.
 2. Sanity-check `BRAIN_VAULT=... .venv/bin/python -c "from brain_mcp import vault, server"` from
    `/tmp` (catches editable-install regressions).
-3. Open a fresh Claude Code session in a real project and confirm the brain context is preloaded
-   and the `brain_*` tools appear in the tool list.
-4. Say *"I prefer X over Y"* and confirm a new file appears in `~/Documents/Vaults/Ai-Brain/Brain/user/`.
+3. Exercise the CLI: `BRAIN_VAULT=... .venv/bin/brain recall <something>` and `... brain stats`.
+4. Open a fresh Claude Code session in a real project and confirm the brain context is preloaded
+   and `/brain list` works (with a `--with-mcp` install, also confirm the `brain_*` tools appear).
+5. Say *"I prefer X over Y"* and confirm a new file appears in `~/Documents/Vaults/Ai-Brain/Brain/user/`.
 
 ## Memory system notes
 

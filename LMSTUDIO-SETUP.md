@@ -1,7 +1,16 @@
 # LMStudio setup
 
 How to wire the Brain MCP server into [LMStudio](https://lmstudio.ai) so local,
-tool-capable models can call `brain_*` tools the same way Claude Code does.
+tool-capable models can call the `brain_*` tools.
+
+> MCP remains the right integration for LMStudio (it has no shell tool for the `brain`
+> CLI). Two things changed on the server side, both in local models' favor:
+> `brain_recall`/`brain_list` results are now compact markdown with hard caps (3 preview
+> hits by default, capped bodies, ~20k-char total ceiling — a single recall can no longer
+> flood a local model's context with 200k+ tokens of session checkpoints), and Claude Code
+> itself now defaults to the `brain` CLI instead of MCP, which does not affect LMStudio's
+> registration at all. If you're moving local coding to [pi](https://pi.dev), see
+> `PI-SETUP.md` instead — pi uses the CLI, not MCP.
 
 ## Prerequisites
 

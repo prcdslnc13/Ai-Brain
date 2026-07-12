@@ -13,14 +13,20 @@ This repo holds the **code**: hooks, MCP server, templates, setup scripts. The a
 | Data | `~/Documents/Vaults/Ai-Brain` (Obsidian vault) | Obsidian Sync | `Brain/user/`, `Brain/feedback/`, `Brain/projects/`, etc. |
 
 The setup script wires the two together: it points the hooks block in your Claude Code
-`settings.json` at this repo and registers the MCP server with `BRAIN_VAULT` set to your vault path.
+`settings.json` at this repo, installs the `brain` CLI + skill (the default interface), and —
+only if you pass `--with-mcp` — registers the MCP server, all with `BRAIN_VAULT` set to your
+vault path.
 
 ## Architecture
 
-- **Brain MCP server** (`mcp-server/`) — Python stdio MCP server exposing the vault as typed tools:
-  `brain_session_start`, `brain_recall`, `brain_save`, `brain_list`, `brain_forget`,
-  `brain_checkpoint`, `brain_stats`, `brain_doctor`. Claude Code, LMStudio, and any MCP-aware
-  Ollama frontend all connect to the same server.
+- **`brain` CLI** (`mcp-server/brain_mcp/cli.py`) — the primary interface. Any agent with a
+  shell tool (Claude Code via the brain skill, [pi](https://pi.dev), plain scripts) runs
+  `brain recall|save|list|forget|checkpoint|stats|doctor`. Costs zero context tokens until
+  invoked, unlike MCP tool schemas which load into every session (~3k tokens).
+- **Brain MCP server** (`mcp-server/brain_mcp/server.py`) — the same operations as typed MCP
+  tools, for clients that want MCP (LMStudio, MCP-aware Ollama frontends, or Claude Code with
+  `--with-mcp`). Both frontends share the same core (`vault.py`, `render.py`), so recall output
+  and payload caps are identical either way.
 - **Hooks** (`hooks/`) — Python scripts wired into Claude Code's hook events:
   - `session_start.py` — preloads the vault bundle (user profile, feedback, project context) into
     the system prompt, and prepends a `## Brain Health` banner for any warn/error findings from
@@ -97,6 +103,14 @@ powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
 ```
 
 All three are idempotent. See `WINDOWS-SETUP.md` for Windows-specific guidance.
+
+**MCP is opt-in.** By default no MCP server is registered with Claude Code — the model drives
+the Brain through the `brain` CLI (via the installed skill and global CLAUDE.md), which avoids
+loading ~3k tokens of tool schemas into every session. Re-running setup without the flag also
+*removes* any existing user-scope `brain` registration. Pass `--with-mcp` (shell scripts and
+`brain-setup.py`) or `-WithMcp` (`setup-windows.ps1`) to register the MCP server for Claude
+Code as well. LMStudio/Ollama registration is separate (in that app's own config) and is
+unaffected by this flag.
 
 ## Multiple Claude Code accounts
 
@@ -202,10 +216,11 @@ powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
   launch `claude` with no env var. The installer auto-detects whether the target
   is the default config dir and writes the MCP registration to the right
   `.claude.json` either way.
-- **Verifying which account is active.** `claude mcp list` prints the MCP servers
-  registered for the current `CLAUDE_CONFIG_DIR` (or `~/.claude` if unset). If
-  you see the `brain` server missing, you're probably launching Claude Code with
-  the wrong env var.
+- **Verifying which account is active.** Each config dir gets its own rendered
+  `CLAUDE.md` and skill, so an easy check is whether the session's brain context
+  preloads. If you installed with `--with-mcp`, `claude mcp list` additionally
+  shows the `brain` server for the current `CLAUDE_CONFIG_DIR` (or `~/.claude`
+  if unset).
 
 ## Vault layout
 
@@ -232,10 +247,18 @@ machines just churns disk and bandwidth. The archive is large but rarely read.
 
 ## Local model integration
 
-- **LMStudio**: register the MCP server in LMStudio's settings:
+- **pi** ([pi.dev](https://pi.dev)): pi has no MCP support by design — use the `brain` CLI via
+  pi's shell tool. See `PI-SETUP.md`.
+- **LMStudio**: register the MCP server in LMStudio's settings (see `LMSTUDIO-SETUP.md`):
   - command: `~/src/Ai-Brain/mcp-server/.venv/bin/python`
   - args: `-m brain_mcp`
   - env: `BRAIN_VAULT=<your vault path>`
 - **Ollama**: pair with an MCP-capable frontend (Open WebUI, msty) and register the same server.
 - **Models without function-calling**: `mcp-server/.venv/bin/brain-prep --project <name>` prints
   the session-start bundle as a system prompt suitable for piping into `ollama run`.
+
+Recall/list output is server-capped for every client (local models used to receive unbounded
+payloads — one project recall returned 200k+ tokens). Defaults: 3 hits, ~300-char previews,
+6k-char bodies with `full_body`, 20k chars total, session checkpoints excluded unless asked.
+Tune with `BRAIN_RECALL_MAX_K`, `BRAIN_RECALL_PREVIEW_CHARS`, `BRAIN_RECALL_MAX_BODY_CHARS`,
+`BRAIN_RECALL_MAX_TOTAL_CHARS`.

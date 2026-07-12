@@ -11,6 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
+brain = "brain_mcp.cli:main"
 brain-mcp = "brain_mcp.__main__:main"
 brain-prep = "brain_mcp.brain_prep:main"
 brain-compact = "brain_mcp.compact:main"

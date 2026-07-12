@@ -130,15 +130,18 @@ def gate_enabled() -> bool:
 NUDGE_TEXT = (
     "Brain nudge: your last message contained a potential save-signal "
     "(preference, correction, durable rule, deadline, or external reference). "
-    "Call `brain_save` now if the content fits one of the four memory types "
-    "(user / feedback / project / reference). If it does not, ignore this nudge."
+    "Save it now if the content fits one of the four memory types "
+    "(user / feedback / project / reference) — run `brain save` per your "
+    "global CLAUDE.md, or call the brain_save MCP tool if registered. "
+    "If it does not fit, ignore this nudge."
 )
 
 GATE_BLOCK_REASON = (
     "You told the user you would save or checkpoint something to the Brain, "
-    "but no brain_save or brain_checkpoint tool call occurred in this turn. "
-    "Say = do: a stated commitment must be fulfilled in the same turn. "
-    "Either call the matching brain tool now, OR explicitly recant/defer the "
+    "but no brain save happened this turn (neither a `brain save`/`brain "
+    "checkpoint` CLI command via Bash nor a brain_save/brain_checkpoint MCP "
+    "tool call). Say = do: a stated commitment must be fulfilled in the same "
+    "turn. Either perform the save now, OR explicitly recant/defer the "
     "commitment to the user ('actually, I'll hold off on saving until…') "
     "before ending the turn."
 )

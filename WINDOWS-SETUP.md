@@ -77,9 +77,14 @@ powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
     "$env:USERPROFILE\.claude-personal" "D:\Vaults\Ai-Brain"
 ```
 
-The script is idempotent — re-running updates the global `CLAUDE.md`, hook block, MCP
-registration, and the generated `brain-launch.cmd` wrapper without touching anything else in
-`settings.json`.
+The script is idempotent — re-running updates the global `CLAUDE.md`, skill, hook block, MCP
+registration, and the generated `brain-launch.cmd` / `brain.cmd` wrappers without touching
+anything else in `settings.json`.
+
+By default no MCP server is registered with Claude Code — the model drives the Brain through
+the generated `brain.cmd` CLI wrapper instead (saving ~3k tokens of tool schemas per session),
+and any stale user-scope `brain` MCP entry is removed. Pass `-WithMcp` to register the MCP
+server as before.
 
 > Common gotcha: `$env:NAME` is PowerShell's syntax for reading environment variables.
 > A literal drive path like `D:\Vaults\Ai-Brain` should NOT be prefixed with `$env:` —
@@ -92,9 +97,11 @@ registration, and the generated `brain-launch.cmd` wrapper without touching anyt
 2. Sanity-checks that `brain_mcp` imports from `$env:TEMP`, to catch editable-install
    regressions before they reach a live session.
 3. Ensures `<vault>\Brain\{user,feedback,references,projects}` exists.
-4. Writes `<config>\CLAUDE.md` from `templates/global-CLAUDE.md` with `__BRAIN_VAULT__`
-   substituted.
-5. Copies `templates/skills/brain/SKILL.md` to `<config>\skills\brain\SKILL.md`.
+4. Generates `<config>\brain.cmd` — the CLI wrapper the model invokes via the Bash tool
+   (`<config>/brain.cmd recall ...`). Bakes in `BRAIN_VAULT` and forwards all arguments to
+   the venv's `brain.exe`.
+5. Writes `<config>\CLAUDE.md` and `<config>\skills\brain\SKILL.md` from the templates,
+   with `__BRAIN_VAULT__` / `__BRAIN_CMD__` substituted.
 6. Generates `<config>\brain-launch.cmd` — a small wrapper that sets `BRAIN_VAULT` via
    `setlocal`, then execs the requested hook with the venv python. This sidesteps the fact
    that Unix-style `VAR=val cmd` env prefixes don't work in Windows shells, *and* avoids
@@ -102,18 +109,18 @@ registration, and the generated `brain-launch.cmd` wrapper without touching anyt
 7. Merges `templates/settings.hooks.win.json` into `<config>\settings.json`, replacing
    `__BRAIN_LAUNCH__` with the full path to the generated `brain-launch.cmd`. Each hook
    command ends up as just `<config>\brain-launch.cmd <hook-name>`.
-8. Registers the brain MCP server at user scope via
+8. MCP registration: with `-WithMcp`, registers the brain MCP server at user scope via
    `claude mcp add brain --scope user -e BRAIN_VAULT=<vault> -- <venv-python> -m brain_mcp`.
+   Without it (the default), removes any existing user-scope `brain` registration.
 9. Removes any stale `<config>\.mcp.json` left over from earlier setup attempts.
 
 ## Verify the install
 
 ```powershell
-# 1. MCP server is registered and reachable.
-#    (Omit the CLAUDE_CONFIG_DIR line if you installed into the default ~\.claude.)
-$env:CLAUDE_CONFIG_DIR = "$env:USERPROFILE\.claude-personal"
-claude mcp list
-# Expected: "brain: ✓ Connected"
+# 1. The brain CLI works end to end (paths per your install):
+& "$env:USERPROFILE\.claude-personal\brain.cmd" stats
+# Expected: one line of JSON with total_items / by_type counts.
+# (If you installed with -WithMcp, also check: claude mcp list → "brain: ✓ Connected")
 
 # 2. Open a Claude Code session in any project dir. The SessionStart hook should
 #    preload the brain bundle into context (user profile, feedback, project overview,

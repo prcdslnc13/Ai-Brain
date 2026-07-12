@@ -14,35 +14,53 @@
 #     sudo apt install python3-venv
 #
 # Usage:
-#     ~/src/Ai-Brain/setup-linux.sh <claude-config-dir> <vault-path>
+#     ~/src/Ai-Brain/setup-linux.sh <claude-config-dir> <vault-path> [--with-mcp]
 #
 # Examples:
 #     ~/src/Ai-Brain/setup-linux.sh ~/.claude           ~/Documents/Vaults/Ai-Brain
 #     ~/src/Ai-Brain/setup-linux.sh ~/.claude-personal  ~/Documents/Vaults/Ai-Brain
-#     ~/src/Ai-Brain/setup-linux.sh ~/.claude-work      ~/Documents/Vaults/Ai-Brain
+#     ~/src/Ai-Brain/setup-linux.sh ~/.claude-work      ~/Documents/Vaults/Ai-Brain --with-mcp
 #
 # The config dir can be any path. Single-account users use ~/.claude; multi-account
 # users pick their own names (anything starting with .claude is auto-discovered by
 # the cross-platform brain-setup.py wizard).
 #
-# Idempotent: re-running updates the global CLAUDE.md, hook block, and MCP registration
-# in place without disturbing other settings.
+# By default the Brain is driven through the `brain` CLI (via the skill and global
+# CLAUDE.md) — no MCP server is registered with Claude Code, saving the ~3k tokens
+# of tool schemas every session. Pass --with-mcp to also register the MCP server.
+# Without --with-mcp, any existing user-scope 'brain' MCP registration is REMOVED
+# so the token saving actually lands.
+#
+# Idempotent: re-running updates the global CLAUDE.md, skill, hook block, and MCP
+# registration in place without disturbing other settings.
 
 set -euo pipefail
 
 if [ $# -lt 2 ]; then
-  echo "usage: $0 <claude-config-dir> <vault-path>" >&2
+  echo "usage: $0 <claude-config-dir> <vault-path> [--with-mcp]" >&2
   echo "example: $0 ~/.claude-personal ~/Documents/Vaults/Ai-Brain" >&2
   exit 1
 fi
 
 CLAUDE_DIR="${1/#\~/$HOME}"
 VAULT_ROOT="${2/#\~/$HOME}"
+shift 2
+WITH_MCP=0
+for arg in "$@"; do
+  case "$arg" in
+    --with-mcp) WITH_MCP=1 ;;
+    *) echo "unknown argument: $arg" >&2; exit 1 ;;
+  esac
+done
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOKS_DIR="$REPO_DIR/hooks"
 MCP_SERVER_DIR="$REPO_DIR/mcp-server"
 TEMPLATES_DIR="$REPO_DIR/templates"
 VENV_PYTHON="$MCP_SERVER_DIR/.venv/bin/python"
+VENV_BRAIN="$MCP_SERVER_DIR/.venv/bin/brain"
+# The exact invocation substituted for __BRAIN_CMD__ in the templates: env
+# prefix + absolute path, so the model can run it from any cwd via Bash.
+BRAIN_CMD="BRAIN_VAULT=\"$VAULT_ROOT\" \"$VENV_BRAIN\""
 
 if [ ! -d "$VAULT_ROOT" ]; then
   echo "ERROR: vault path does not exist: $VAULT_ROOT" >&2
@@ -122,14 +140,15 @@ mkdir -p "$VAULT_ROOT/Brain/user" "$VAULT_ROOT/Brain/feedback" "$VAULT_ROOT/Brai
 
 mkdir -p "$CLAUDE_DIR/skills/brain"
 
-# 4. Drop the global CLAUDE.md, substituting __BRAIN_VAULT__
+# 4. Drop the global CLAUDE.md, substituting __BRAIN_VAULT__ and __BRAIN_CMD__
 echo "[2/6] writing $CLAUDE_DIR/CLAUDE.md"
-sed "s|__BRAIN_VAULT__|$VAULT_ROOT|g" \
+sed -e "s|__BRAIN_VAULT__|$VAULT_ROOT|g" -e "s|__BRAIN_CMD__|$BRAIN_CMD|g" \
   "$TEMPLATES_DIR/global-CLAUDE.md" > "$CLAUDE_DIR/CLAUDE.md"
 
-# 5. Drop the brain skill
+# 5. Drop the brain skill, substituting __BRAIN_CMD__
 echo "[3/6] writing $CLAUDE_DIR/skills/brain/SKILL.md"
-cp "$TEMPLATES_DIR/skills/brain/SKILL.md" "$CLAUDE_DIR/skills/brain/SKILL.md"
+sed "s|__BRAIN_CMD__|$BRAIN_CMD|g" \
+  "$TEMPLATES_DIR/skills/brain/SKILL.md" > "$CLAUDE_DIR/skills/brain/SKILL.md"
 
 # 6. Merge hooks block into settings.json (in-place, preserving other keys)
 echo "[4/6] merging hooks into $CLAUDE_DIR/settings.json"
@@ -238,23 +257,36 @@ claude_cli() {
   fi
 }
 
-if ! command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
-  MCP_FAIL_REASON="'$CLAUDE_BIN' not on PATH"
-else
-  claude_cli mcp remove brain --scope user >/dev/null 2>&1 || true
-  # Capture both streams so a silent CLI failure doesn't vanish into /dev/null.
-  MCP_ADD_OUT="$(claude_cli mcp add brain --scope user \
-      -e "BRAIN_VAULT=$VAULT_ROOT" \
-      -- "$VENV_PYTHON" -m brain_mcp 2>&1)" || MCP_ADD_RC=$?
-  MCP_ADD_RC="${MCP_ADD_RC:-0}"
-  if [ "$MCP_ADD_RC" -ne 0 ]; then
-    MCP_FAIL_REASON="'claude mcp add' exited $MCP_ADD_RC: $MCP_ADD_OUT"
-  elif ! claude_cli mcp list 2>/dev/null | grep -q "^brain"; then
-    MCP_FAIL_REASON="'claude mcp add' returned success but 'brain' not in 'claude mcp list'"
+if [ "$WITH_MCP" -eq 1 ]; then
+  if ! command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
+    MCP_FAIL_REASON="'$CLAUDE_BIN' not on PATH"
   else
-    MCP_REGISTERED=1
-    echo "       ✓ registered as user-scope MCP server in $CLAUDE_DIR"
+    claude_cli mcp remove brain --scope user >/dev/null 2>&1 || true
+    # Capture both streams so a silent CLI failure doesn't vanish into /dev/null.
+    MCP_ADD_OUT="$(claude_cli mcp add brain --scope user \
+        -e "BRAIN_VAULT=$VAULT_ROOT" \
+        -- "$VENV_PYTHON" -m brain_mcp 2>&1)" || MCP_ADD_RC=$?
+    MCP_ADD_RC="${MCP_ADD_RC:-0}"
+    if [ "$MCP_ADD_RC" -ne 0 ]; then
+      MCP_FAIL_REASON="'claude mcp add' exited $MCP_ADD_RC: $MCP_ADD_OUT"
+    elif ! claude_cli mcp list 2>/dev/null | grep -q "^brain"; then
+      MCP_FAIL_REASON="'claude mcp add' returned success but 'brain' not in 'claude mcp list'"
+    else
+      MCP_REGISTERED=1
+      echo "       ✓ registered as user-scope MCP server in $CLAUDE_DIR"
+    fi
   fi
+else
+  # CLI-first default: the skill + global CLAUDE.md drive the `brain` CLI, so
+  # the MCP server would only cost ~3k tokens of schemas per session. Remove
+  # any stale registration so the saving actually lands.
+  if command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
+    claude_cli mcp remove brain --scope user >/dev/null 2>&1 || true
+    echo "       skipped (CLI-first default); removed any stale user-scope 'brain' entry."
+  else
+    echo "       skipped (CLI-first default; '$CLAUDE_BIN' not on PATH, nothing to remove)."
+  fi
+  echo "       pass --with-mcp to register the brain_* MCP tools instead."
 fi
 
 # 8. Clean up any obsolete .mcp.json from earlier setup runs (it never worked).
@@ -262,9 +294,7 @@ echo "[6/6] cleanup"
 rm -f "$CLAUDE_DIR/.mcp.json"
 
 echo
-if [ "$MCP_REGISTERED" -eq 1 ]; then
-  echo "✓ Brain installed in $CLAUDE_DIR"
-else
+if [ "$WITH_MCP" -eq 1 ] && [ "$MCP_REGISTERED" -ne 1 ]; then
   echo "✓ Brain files installed in $CLAUDE_DIR"
   echo
   echo "✗ MCP SERVER NOT REGISTERED — brain_* tools will NOT appear in Claude Code."
@@ -279,14 +309,21 @@ else
     echo "         -e BRAIN_VAULT=$VAULT_ROOT -- $VENV_PYTHON -m brain_mcp"
   fi
   echo "   Or re-run this script with CLAUDE_BIN pointing at the claude binary:"
-  echo "     CLAUDE_BIN=\$(which claude) $0 $CLAUDE_DIR $VAULT_ROOT"
+  echo "     CLAUDE_BIN=\$(which claude) $0 $CLAUDE_DIR $VAULT_ROOT --with-mcp"
+else
+  echo "✓ Brain installed in $CLAUDE_DIR"
 fi
 echo
 echo "Next steps:"
 echo "  1. Open a new Claude Code session in any project."
 echo "  2. The SessionStart hook should preload the brain context automatically."
-echo "  3. The brain_* MCP tools should appear in your tool list."
-echo "  4. To register with LMStudio, point its MCP settings at:"
+if [ "$WITH_MCP" -eq 1 ]; then
+  echo "  3. The brain_* MCP tools should appear in your tool list."
+else
+  echo "  3. The model drives the Brain via the CLI: $BRAIN_CMD <recall|save|...>"
+  echo "     (try /brain list in a session, or run the command above yourself)."
+fi
+echo "  4. To register with LMStudio or another MCP client, point its MCP settings at:"
 echo "       command: $VENV_PYTHON"
 echo "       args:    -m brain_mcp"
 echo "       env:     BRAIN_VAULT=$VAULT_ROOT"
