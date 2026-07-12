@@ -16,16 +16,18 @@ Two jobs, in order:
      timestamp account project [sig=Y|N sav=Y|N nud=Y|N pro=Y|N too=Y|N] — snippet
    Columns:
      sig — did the user's last message match a save-signal pattern?
-     sav — did the assistant call brain_save/brain_checkpoint this turn?
+     sav — did a brain save happen this turn? Counts both the MCP tools
+           (brain_save/brain_checkpoint) and a Bash/PowerShell invocation of
+           the `brain save` / `brain checkpoint` CLI.
      nud — was the UserPromptSubmit nudge enabled (and would it have fired)?
      pro — did the assistant's final message contain a save-promise?
-     too — was the brain MCP server registered for this session, i.e. were
-           brain_save/brain_checkpoint actually callable? A `too=N` row means a
-           save-promise was physically unsatisfiable (the tools didn't exist
-           that session — an infra failure, not a model bug), so the gap checks
-           skip it. See the 2026-06-03 PROMISE_GAP false positive: the very
-           session troubleshooting an unregistered brain promised a save the
-           gate then demanded, but there was no tool to call.
+     too — was a brain save interface available this session (MCP server
+           registered OR the `brain` CLI installed in the repo venv)? A
+           `too=N` row means a save-promise was physically unsatisfiable (an
+           infra failure, not a model bug), so the gap checks skip it. See the
+           2026-06-03 PROMISE_GAP false positive: the very session
+           troubleshooting an unregistered brain promised a save the gate then
+           demanded, but there was no tool to call.
    `brain_doctor._check_save_gap` and `_check_promise_gap` read the tail of
    activity.md to surface long-run gaps.
 
@@ -39,6 +41,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -63,6 +66,32 @@ BRAIN_SAVE_TOOL_NAMES = {
     "mcp__brain__brain_save",
     "mcp__brain__brain_checkpoint",
 }
+
+# Shell tools whose commands can invoke the `brain` CLI. Since the CLI became
+# the primary interface (MCP registration is opt-in), a save can be fulfilled
+# by running `<...>brain save ...` / `<...>brain checkpoint ...` through
+# Bash/PowerShell instead of calling an MCP tool.
+SHELL_TOOL_NAMES = {"Bash", "PowerShell"}
+
+# Matches the brain CLI (bare, path-prefixed, .exe/.cmd, optionally the whole
+# path in quotes) followed by a save/checkpoint subcommand. Deliberately does
+# NOT match the phrase inside quoted arguments (e.g. `git commit -m "brain
+# save fix"`): the quoted alternative requires the closing quote immediately
+# after the executable name, and the bare alternative rejects a quote directly
+# before `brain`.
+_CLI_SAVE_RE = re.compile(
+    r"""(?:^|[;&|]\s*|\s)                                  # command start or separator
+        (?:
+            ["'](?:[A-Za-z]:)?[^"'\n]*brain(?:\.exe|\.cmd)?["']  # quoted path
+          | (?:[A-Za-z]:)?[\w~./\\-]*brain(?:\.exe|\.cmd)?       # bare path
+        )
+        \s+(?:save|checkpoint)\b""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def is_cli_save_command(command: str) -> bool:
+    return bool(command) and bool(_CLI_SAVE_RE.search(command))
 
 
 def _message_text(msg) -> str:
@@ -140,6 +169,10 @@ def _analyze_last_turn(transcript_path: str | None) -> tuple[str, str, int]:
                     name = c.get("name", "")
                     if name in BRAIN_SAVE_TOOL_NAMES:
                         brain_tool_count += 1
+                    elif name in SHELL_TOOL_NAMES:
+                        cmd = (c.get("input") or {}).get("command", "")
+                        if is_cli_save_command(cmd):
+                            brain_tool_count += 1
         elif isinstance(content, str):
             assistant_texts.append(content)
 
@@ -168,17 +201,31 @@ def _active_config_files() -> list[Path]:
     return files
 
 
-def brain_tools_callable() -> bool:
-    """Best-effort: is the brain MCP server registered for this session?
+def _cli_available() -> bool:
+    """Is the `brain` console script installed in the repo venv?
 
-    Used to annotate the audit breadcrumb so the promise-/save-gap checks can
-    ignore sessions where the brain_* tools were never registered — a
-    save-promise in such a session is physically unsatisfiable, an infra failure
-    rather than a model bug. Conservative on uncertainty: any unreadable or
-    unparseable config returns True so a real unfulfilled promise is never
-    hidden. Only a positively-readable config with no `brain` entry returns
-    False.
+    The hooks live in the repo, so the venv is a fixed relative location. With
+    the CLI installed, a save-promise is always satisfiable via the Bash tool
+    even when no MCP server is registered.
     """
+    venv = Path(__file__).resolve().parent.parent / "mcp-server" / ".venv"
+    return (venv / "Scripts" / "brain.exe").exists() or (venv / "bin" / "brain").exists()
+
+
+def brain_tools_callable() -> bool:
+    """Best-effort: could this session actually perform a brain save?
+
+    True when the brain MCP server is registered for this session OR the
+    `brain` CLI is installed (callable through the Bash tool regardless of MCP
+    registration). Used to annotate the audit breadcrumb so the promise-/
+    save-gap checks can ignore sessions where no save interface existed — a
+    save-promise there is physically unsatisfiable, an infra failure rather
+    than a model bug. Conservative on uncertainty: any unreadable or
+    unparseable config returns True so a real unfulfilled promise is never
+    hidden.
+    """
+    if _cli_available():
+        return True
     for f in _active_config_files():
         try:
             if not f.exists():

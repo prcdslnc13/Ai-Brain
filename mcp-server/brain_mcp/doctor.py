@@ -241,7 +241,7 @@ def _check_save_gap(brain: Path) -> list[Finding]:
     detail = f"nudged={signal_no_save_nudged}, unnudged={signal_no_save_unnudged}"
     return [Finding(
         "warn", "SAVE_GAP",
-        f"{total_gap} of last {audited} turns had a save-signal with no brain_save call ({detail}).",
+        f"{total_gap} of last {audited} turns had a save-signal with no brain save ({detail}).",
         "If 'unnudged' dominates, enable the nudge (unset BRAIN_NUDGE or set =1). "
         "If 'nudged' dominates, the model is ignoring the nudge — tighten "
         "templates/global-CLAUDE.md proactive-save triggers.",
@@ -293,7 +293,7 @@ def _check_promise_gap(brain: Path) -> list[Finding]:
         )]
     return [Finding(
         "warn", "PROMISE_GAP",
-        f"{unfulfilled} of last {audited} audited turns promised a save but did not call brain_save/brain_checkpoint.",
+        f"{unfulfilled} of last {audited} audited turns promised a save but no brain save/checkpoint ran.",
         "The Stop-hook gate should catch these. If it didn't: check that "
         "BRAIN_STOP_GATE is not set to 0, and consider tightening "
         "hooks/_savesig.py PROMISE_PATTERNS if a phrasing slipped through.",

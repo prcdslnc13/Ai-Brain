@@ -15,7 +15,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool, ToolAnnotations
 
-from . import doctor, vault
+from . import doctor, render, vault
 
 # Permission hints for MCP-aware clients (e.g. claw-code) that gate tool calls
 # by mode. Read-only memory operations should run without elevation; write
@@ -56,10 +56,10 @@ async def list_tools() -> list[Tool]:
             name="brain_recall",
             description=(
                 "Search the vault for memories matching a query. Use this proactively whenever the user "
-                "mentions a project, person, tool, or topic you might already know about — do not wait "
-                "to be asked. Returns previews by default to keep responses small; if a hit looks "
-                "relevant and you need its full content, recall again with full_body=true and a tighter "
-                "query."
+                "mentions a project, person, tool, or topic you might already know about. Returns short "
+                "previews (default 3 hits); if a hit matters, recall again with full_body=true and a "
+                "tighter query. Session checkpoints are excluded unless include_sessions=true. All "
+                "result sizes are server-capped."
             ),
             inputSchema={
                 "type": "object",
@@ -76,13 +76,17 @@ async def list_tools() -> list[Tool]:
                     },
                     "top_k": {
                         "type": "integer",
-                        "description": "max number of hits to return (default 5).",
-                        "default": 5,
+                        "description": "max hits to return (default 3, server-capped).",
+                        "default": 3,
                     },
                     "full_body": {
                         "type": "boolean",
-                        "description": "return the full file body instead of a ~600-char preview "
-                                       "(default false).",
+                        "description": "return full bodies (still capped) instead of ~300-char previews.",
+                        "default": False,
+                    },
+                    "include_sessions": {
+                        "type": "boolean",
+                        "description": "include session checkpoint files in results (default false).",
                         "default": False,
                     },
                 },
@@ -143,7 +147,10 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="brain_list",
-            description="Enumerate memories, optionally filtered by type and/or project. All fields are optional.",
+            description=(
+                "Enumerate memories (paths + one-line descriptions, no bodies), optionally "
+                "filtered by type and/or project. All fields are optional."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -158,6 +165,11 @@ async def list_tools() -> list[Tool]:
                             "Optional. Project directory basename (e.g. 'Ai-Brain') to filter results "
                             "to one project's memories. Only meaningful with type='project'."
                         ),
+                    },
+                    "include_sessions": {
+                        "type": "boolean",
+                        "description": "include session checkpoint files (default false).",
+                        "default": False,
                     },
                 },
             },
@@ -246,7 +258,11 @@ async def list_tools() -> list[Tool]:
 
 
 def _ok(payload) -> list[TextContent]:
-    return [TextContent(type="text", text=json.dumps(payload, indent=2, default=str))]
+    return [TextContent(type="text", text=json.dumps(payload, default=str))]
+
+
+def _text(markdown: str) -> list[TextContent]:
+    return [TextContent(type="text", text=markdown)]
 
 
 def _err(msg: str) -> list[TextContent]:
@@ -260,22 +276,15 @@ async def call_tool(name: str, arguments: dict | None) -> list[TextContent]:
         if name == "brain_session_start":
             return _ok(vault.session_start_bundle(args.get("project")))
         if name == "brain_recall":
-            top_k = int(args.get("top_k", 5))
-            full_body = bool(args.get("full_body", False))
-            results = vault.search_memories(
+            payload = render.recall_payload(
                 query=args["query"],
                 mtype=args.get("type"),
                 project=args.get("project"),
+                top_k=int(args.get("top_k", render.DEFAULT_TOP_K)),
+                full_body=bool(args.get("full_body", False)),
+                include_sessions=bool(args.get("include_sessions", False)),
             )
-            truncated_total = len(results)
-            results = results[:max(1, top_k)]
-            body_chars = None if full_body else 600
-            return _ok({
-                "count": len(results),
-                "total_matches": truncated_total,
-                "preview": not full_body,
-                "results": [m.to_dict(body_chars=body_chars) for m in results],
-            })
+            return _text(render.render_recall(payload))
         if name == "brain_save":
             path = vault.write_memory(
                 mtype=args["type"],
@@ -285,11 +294,12 @@ async def call_tool(name: str, arguments: dict | None) -> list[TextContent]:
             )
             return _ok({"saved": str(path)})
         if name == "brain_list":
-            results = vault.list_memories(
+            payload = render.list_payload(
                 mtype=args.get("type"),
                 project=args.get("project"),
+                include_sessions=bool(args.get("include_sessions", False)),
             )
-            return _ok({"count": len(results), "memories": [m.to_dict() for m in results]})
+            return _text(render.render_list(payload))
         if name == "brain_forget":
             path = vault.forget_memory(args["path"])
             return _ok({"forgot": str(path)})

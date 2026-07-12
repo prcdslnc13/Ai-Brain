@@ -1,49 +1,96 @@
 ---
 name: brain
-description: Manual override commands for the Brain memory system. Use only when the user explicitly types /brain. The model handles save/recall/checkpoint automatically per global CLAUDE.md instructions in normal use.
+description: Persistent cross-machine memory (the Brain). Use to save a preference/correction/decision, recall what is known about a project/person/tool, checkpoint a work session, or list/delete memories. Invoked by /brain or whenever a memory operation is needed and the exact CLI syntax is not already known.
 ---
 
-# /brain — manual memory commands
+# Brain memory — CLI reference
 
-These commands let the user drive the Brain memory system explicitly. In normal use the model and
-hooks handle everything automatically (see your global CLAUDE.md). These commands are escape hatches
-for when the user wants direct control.
+The Brain is an Obsidian vault of memory files, driven through the `brain` CLI.
+Every command below is run with the Bash tool. The full invocation prefix on
+this machine (env + absolute path, substituted by setup) is:
 
-All commands route through the `brain_*` MCP tools — never edit memory files directly.
+```
+__BRAIN_CMD__
+```
 
-## /brain save <type> <name or content>
+Referred to as `brain` below. Do **not** edit memory files in the vault
+directly — always go through the CLI so frontmatter, slugs, and the vector
+index stay consistent.
 
-Save a memory. Type must be one of `user`, `feedback`, `project`, `reference`. If the user gives you
-just a phrase rather than a structured name+content, infer a sensible short name and use the rest as
-the content body.
+Proactive triggers (when to save/recall/checkpoint without being asked) live in
+your global CLAUDE.md — this skill is the syntax reference and the handler for
+explicit `/brain` commands.
 
-Call: `brain_save(type=<type>, name=<short title>, content=<body>, project=<basename if type=project>)`
+## Recall
 
-After saving, confirm in one short sentence: `Saved as <type>/<filename>.`
+```
+brain recall <query words> [--type user|feedback|project|reference] [--project <basename>]
+```
 
-## /brain recall <topic>
+Returns up to 3 short previews, server-capped. Escalate only when a hit
+matters: add `--full-body` (bodies still capped) or `--top-k N` (capped at 10).
+Session checkpoints are excluded unless you pass `--include-sessions` — use
+that when looking for what happened in past work sessions.
 
-Search the brain for memories matching a topic. Call `brain_recall(query=<topic>)`. Surface the
-results inline, grouped by type, with the relevant snippet from each.
+## Save
 
-If nothing matches, say so in one sentence — do not pad with apologies.
+Body comes from stdin — use a heredoc for anything multi-line:
 
-## /brain checkpoint
+```
+brain save <type> "<short title 3-8 words>" [--project <basename>] <<'EOF'
+<body>
+EOF
+```
 
-Write a session checkpoint immediately, without waiting for compaction or session end.
+- `type` is one of: `user` (facts about the user), `feedback` (behavior rules —
+  lead with the rule, then `**Why:**` and `**How to apply:**` lines), `project`
+  (ongoing-work context not derivable from the code; requires `--project` with
+  the project *directory basename*), `reference` (pointer to an external system).
+- Short one-liners can use `--content "..."` instead of stdin.
+- Confirm afterwards in one short sentence: `Saved as <path>.`
 
-1. Identify the current project from the working directory (basename).
-2. Compose a summary covering: what was attempted this session, what worked, what failed, decisions
-   made, open threads. Keep it tight — 6-15 bullets.
-3. Call `brain_checkpoint(project=<basename>, summary=<your summary>)`.
-4. Confirm the path of the file that was written.
+## Checkpoint
 
-## /brain forget <path or pattern>
+```
+brain checkpoint <project-basename> <<'EOF'
+<summary: what was attempted, what worked, what failed, decisions made, open threads>
+EOF
+```
 
-Delete a memory. If the user gives a partial name, first call `brain_list` to find candidates and
-ask which one to delete (use AskUserQuestion). Once confirmed, call `brain_forget(path=<absolute or relative>)`.
+Confirm the path that was written. Keep summaries tight — 6-15 bullets.
 
-## /brain list [type] [project]
+## List / forget
 
-List memories. Call `brain_list(type=<type if given>, project=<project if given>)` and render as a
-short bulleted list grouped by type.
+```
+brain list [--type <type>] [--project <basename>]
+brain forget <path-from-recall-or-list>
+```
+
+For `/brain forget` with a partial name: `brain list` first, ask the user which
+candidate to delete (AskUserQuestion), then forget the confirmed path.
+
+## Health
+
+```
+brain stats
+brain doctor [--project <basename>] --quiet
+```
+
+Run `doctor` when the Brain feels stale or broken (missing context, recall
+returning nothing, save errors).
+
+## /brain command mapping
+
+- `/brain save <type> <name or phrase>` → infer a short name if given a bare
+  phrase, body from the rest → `brain save`
+- `/brain recall <topic>` → `brain recall`, surface hits grouped by type; if
+  nothing matches say so in one sentence
+- `/brain checkpoint` → compose the summary, `brain checkpoint <cwd basename>`
+- `/brain list [type] [project]` → `brain list`, render as a short bulleted list
+- `/brain forget <path or pattern>` → confirm-then-delete flow above
+
+## Say = do
+
+If you tell the user you're saving or checkpointing, the matching `brain save`
+/ `brain checkpoint` command must run **in the same turn** (a Stop-hook gate
+enforces this). Prefer: run the command first, then mention it in past tense.
