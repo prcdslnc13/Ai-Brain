@@ -111,7 +111,10 @@ server as before.
    having to embed escaped quotes in `settings.json`.
 7. Merges `templates/settings.hooks.win.json` into `<config>\settings.json`, replacing
    `__BRAIN_LAUNCH__` with the full path to the generated `brain-launch.cmd`. Each hook
-   command ends up as just `<config>\brain-launch.cmd <hook-name>`.
+   command ends up as just `<config>\brain-launch.cmd <hook-name>`. Also merges a
+   `permissions.allow` rule (`Bash(<config>/brain.cmd:*)`) so model-initiated `brain`
+   CLI calls never hit permission prompts; stale rules pointing at old wrapper paths
+   are pruned on re-run.
 8. MCP registration: with `-WithMcp`, registers the brain MCP server at user scope via
    `claude mcp add brain --scope user -e BRAIN_VAULT=<vault> -- <venv-python> -m brain_mcp`.
    Without it (the default), removes any existing user-scope `brain` registration.

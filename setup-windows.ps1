@@ -201,7 +201,7 @@ $HooksTemplate = Join-Path $TemplatesDir 'settings.hooks.win.json'
 
 $mergeScript = @'
 import json, sys
-settings_path, template_path, brain_launch = sys.argv[1:4]
+settings_path, template_path, brain_launch, brain_cmd = sys.argv[1:5]
 
 with open(settings_path, "r", encoding="utf-8") as f:
     try:
@@ -260,6 +260,25 @@ settings["hooks"] = existing
 for event, definition in hooks_block.items():
     settings["hooks"][event] = definition
 
+# Pre-approve the brain CLI wrapper so proactive saves/recalls don't hit
+# permission prompts even outside /brain skill turns. Windows renders
+# __BRAIN_CMD__ as the per-install brain.cmd wrapper path, so the prefix rule
+# is Bash(<config>/brain.cmd:*). Prune stale Brain-owned rules (older config
+# dirs / wrapper paths) before re-adding — same policy as the hooks block.
+perms = settings.get("permissions")
+if not isinstance(perms, dict):
+    perms = {}
+allow = perms.get("allow")
+if not isinstance(allow, list):
+    allow = []
+allow = [
+    r for r in allow
+    if not (isinstance(r, str) and r.startswith("Bash(") and "brain.cmd" in r.lower())
+]
+allow.append("Bash(%s:*)" % brain_cmd)
+perms["allow"] = allow
+settings["permissions"] = perms
+
 with open(settings_path, "w", encoding="utf-8") as f:
     json.dump(settings, f, indent=2)
     f.write("\n")
@@ -268,7 +287,7 @@ with open(settings_path, "w", encoding="utf-8") as f:
 $mergeScriptPath = Join-Path $env:TEMP "brain-merge-$PID.py"
 [System.IO.File]::WriteAllText($mergeScriptPath, $mergeScript)
 try {
-  & $VenvPython $mergeScriptPath $SettingsFile $HooksTemplate $LaunchCmd
+  & $VenvPython $mergeScriptPath $SettingsFile $HooksTemplate $LaunchCmd $BrainCmdToken
   if ($LASTEXITCODE -ne 0) { Write-Error "settings.json merge failed"; exit $LASTEXITCODE }
 } finally {
   Remove-Item -Force $mergeScriptPath -ErrorAction SilentlyContinue
