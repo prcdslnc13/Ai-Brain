@@ -115,14 +115,21 @@ The user said: *"I am awful at remembering to do things like this and you are he
 myself."* The cost of a missed save is high; a slightly redundant save is cheap. Lean toward saving
 — but never save things in the "do NOT save" list.
 
+Keep memory bodies tight: the rule or fact, plus the `**Why:**` and `**How to apply:**` lines — a
+few sentences each, not an essay. A memory is a pointer for a future session, not a report; when
+the details live in a file, commit, or doc, reference them instead of copying them in.
+
 ## When to recall (proactive triggers)
 
 Recall is cheap and capped — call it **before** acting, not after:
 
-- The user mentions a project, repo, person, company, tool, or service by name → recall it.
+- The user names a project, repo, person, company, tool, or service you may have history with,
+  in a way that bears on the task → recall it. A name mentioned only in passing, or one already
+  recalled this session, doesn't need another lookup.
 - The user asks *"what do you know about X"* / references prior work (*"last time we…"*).
-- Before suggesting a tool, library, pattern, or approach → recall `feedback` for the topic; prior
-  corrections exist to keep you from repeating mistakes.
+- Before recommending a tool, library, pattern, or approach in an area where the user has likely
+  given feedback before → recall `feedback`; prior corrections exist to keep you from repeating
+  mistakes.
 - Before starting work on a project not yet recalled this session (the preload covers only the
   *current* project — recall others when the user switches).
 - Before making a design or architecture recommendation → recall `project` context for constraints
@@ -136,7 +143,8 @@ automated PreCompact/SessionEnd hooks only produce a structural extract. Your `b
 is the primary mechanism, written while context is fresh. Treat it as incremental save, not a
 final save:
 
-- After every git commit.
+- After each git commit — though in a rapid sequence of commits within one unit of work, a
+  single checkpoint covering the unit is enough.
 - After any change to a plan, roadmap, or design document — direction changes are invisible in
   `git log` and the most valuable thing to capture.
 - After creating or substantially modifying files.
