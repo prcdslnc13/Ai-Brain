@@ -10,7 +10,17 @@ This repo holds the **code**: hooks, MCP server, templates, setup scripts. The a
 | Layer | Lives at | Synced via | Contains |
 |---|---|---|---|
 | Code | `~/src/Ai-Brain` (this repo) | git push/pull | hooks, MCP server, templates, setup |
-| Data | `~/Documents/Vaults/Ai-Brain` (Obsidian vault) | Obsidian Sync | `Brain/user/`, `Brain/feedback/`, `Brain/projects/`, etc. |
+| Data | `~/Vaults/Ai-Brain` (Obsidian vault) | Obsidian Sync | `Brain/user/`, `Brain/feedback/`, `Brain/projects/`, etc. |
+
+> **Choosing a vault location.** Obsidian Sync works from any folder, so pick one no OS
+> permission layer sits in front of. On macOS, avoid the TCC-protected folders —
+> `~/Documents`, `~/Desktop`, `~/Downloads`, and iCloud Drive. TCC grants access *per host
+> application*, and the failure mode is nasty: an ungranted terminal or agent host can still
+> *create* files in the vault, but gets `PermissionError` opening pre-existing ones — which
+> surfaces as failed overwrites and phantom `INDEX_CORRUPT` warnings while saves appear to
+> work. On Windows, avoid a OneDrive-redirected `Documents` folder (two sync engines fighting
+> over the same files). Recommended: `~/Vaults/Ai-Brain` (macOS/Linux) or
+> `%USERPROFILE%\Vaults\Ai-Brain` (Windows).
 
 The setup script wires the two together: it points the hooks block in your Claude Code
 `settings.json` at this repo, installs the `brain` CLI + skill (the default interface), and —
@@ -59,7 +69,7 @@ python3 ~/src/Ai-Brain/brain-setup.py
 ```
 
 Stdlib-only; works on macOS, Windows, and Linux. Auto-detects every `~/.claude*`
-config dir, prompts for the vault path (with `~/Documents/Vaults/Ai-Brain` as the
+config dir, prompts for the vault path (with `~/Vaults/Ai-Brain` as the
 default), and installs into your selection. Re-run any time to refresh — it's
 idempotent.
 
@@ -67,7 +77,7 @@ For scripted installs:
 
 ```bash
 python3 ~/src/Ai-Brain/brain-setup.py --non-interactive \
-    --vault ~/Documents/Vaults/Ai-Brain \
+    --vault ~/Vaults/Ai-Brain \
     --claude-dir ~/.claude-personal --claude-dir ~/.claude-work
 ```
 
@@ -79,16 +89,16 @@ The original shell installers are still here if you prefer them. Each one takes
 
 ```bash
 # macOS — single account (default config dir)
-~/src/Ai-Brain/setup-mac.sh ~/.claude ~/Documents/Vaults/Ai-Brain
+~/src/Ai-Brain/setup-mac.sh ~/.claude ~/Vaults/Ai-Brain
 
 # macOS — multiple accounts (re-run once per config dir)
-~/src/Ai-Brain/setup-mac.sh ~/.claude-personal ~/Documents/Vaults/Ai-Brain
-~/src/Ai-Brain/setup-mac.sh ~/.claude-work     ~/Documents/Vaults/Ai-Brain
+~/src/Ai-Brain/setup-mac.sh ~/.claude-personal ~/Vaults/Ai-Brain
+~/src/Ai-Brain/setup-mac.sh ~/.claude-work     ~/Vaults/Ai-Brain
 ```
 
 ```bash
 # Linux (Debian Trixie, Raspberry Pi OS, Ubuntu 22.04+)
-~/src/Ai-Brain/setup-linux.sh ~/.claude ~/Documents/Vaults/Ai-Brain
+~/src/Ai-Brain/setup-linux.sh ~/.claude ~/Vaults/Ai-Brain
 ```
 
 On Ubuntu 22.04 the default `python3` is 3.10 (too old). Install a newer
@@ -99,7 +109,7 @@ and only need `sudo apt install python3-venv`.
 ```powershell
 # Windows
 powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
-    "$env:USERPROFILE\.claude" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
+    "$env:USERPROFILE\.claude" "$env:USERPROFILE\Vaults\Ai-Brain"
 ```
 
 All three are idempotent. See `WINDOWS-SETUP.md` for Windows-specific guidance.
@@ -154,15 +164,15 @@ alias claude-work='CLAUDE_CONFIG_DIR=$HOME/.claude-work claude'
 Then install the Brain wiring into each:
 
 ```bash
-~/src/Ai-Brain/setup-mac.sh ~/.claude-personal ~/Documents/Vaults/Ai-Brain
-~/src/Ai-Brain/setup-mac.sh ~/.claude-work     ~/Documents/Vaults/Ai-Brain
+~/src/Ai-Brain/setup-mac.sh ~/.claude-personal ~/Vaults/Ai-Brain
+~/src/Ai-Brain/setup-mac.sh ~/.claude-work     ~/Vaults/Ai-Brain
 ```
 
 Or do both in one call with the cross-platform wizard:
 
 ```bash
 python3 ~/src/Ai-Brain/brain-setup.py \
-    --vault ~/Documents/Vaults/Ai-Brain \
+    --vault ~/Vaults/Ai-Brain \
     --claude-dir ~/.claude-personal \
     --claude-dir ~/.claude-work
 ```
@@ -199,9 +209,9 @@ Then install the Brain wiring into each:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
-    "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
+    "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Vaults\Ai-Brain"
 powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
-    "$env:USERPROFILE\.claude-work" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
+    "$env:USERPROFILE\.claude-work" "$env:USERPROFILE\Vaults\Ai-Brain"
 ```
 
 ### Notes
@@ -210,7 +220,7 @@ powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
   account at the same `BRAIN_VAULT`. That's the whole point — a memory written
   from your work account is readable from your personal account, and vice versa.
   If you want partitioned memories instead, pass a different vault path per
-  install (e.g. `~/Documents/Vaults/Ai-Brain-Work`).
+  install (e.g. `~/Vaults/Ai-Brain-Work`).
 - **The default `~/.claude` still works.** You don't have to use `CLAUDE_CONFIG_DIR`
   at all — single-account users can run `setup-mac.sh ~/.claude <vault>` and
   launch `claude` with no env var. The installer auto-detects whether the target

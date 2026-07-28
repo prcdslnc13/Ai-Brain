@@ -57,7 +57,15 @@ def die(msg: str, code: int = 1) -> None:
 # ---------- discovery ----------
 
 def default_vault() -> Path:
-    return Path.home() / "Documents" / "Vaults" / "Ai-Brain"
+    # Prefer a path outside macOS TCC-protected folders (~/Documents, ~/Desktop,
+    # ~/Downloads, iCloud Drive): per-host-app permission denials there surface as
+    # confusing selective PermissionErrors and phantom index corruption. Fall back
+    # to the legacy Documents location only when a vault already lives there.
+    preferred = Path.home() / "Vaults" / "Ai-Brain"
+    legacy = Path.home() / "Documents" / "Vaults" / "Ai-Brain"
+    if not preferred.exists() and legacy.exists():
+        return legacy
+    return preferred
 
 
 def discover_claude_dirs() -> list[Path]:
@@ -543,7 +551,7 @@ def main() -> None:
             "Examples:\n"
             "  python brain-setup.py\n"
             "  python brain-setup.py --vault D:\\Vaults\\Ai-Brain --claude-dir %USERPROFILE%\\.claude-personal\n"
-            "  python brain-setup.py --non-interactive --vault ~/Documents/Vaults/Ai-Brain \\\n"
+            "  python brain-setup.py --non-interactive --vault ~/Vaults/Ai-Brain \\\n"
             "                        --claude-dir ~/.claude-personal --claude-dir ~/.claude-work\n"
             "\n"
             "The --claude-dir value can be any path. Single-account users use ~/.claude;\n"

@@ -11,7 +11,7 @@ completes or the plan changes.
   running a real Claude Code session: SessionStart preload fires, `brain_*` tools appear in the
   tool list, proactive `brain_save` and `brain_recall` work without the user typing `/brain`.
   Code lives at `~/src/Ai-Brain`, memory content lives in the Obsidian vault at
-  `~/Documents/Vaults/Ai-Brain`.
+  `~/Vaults/Ai-Brain`.
 
 - **Phase 2 — Local model integration: 🟡 in progress.** 2A (LMStudio) verified end-to-end on
   macOS 2026-04-21 with Qwen3.5-9B-GGUF and Gemma 4 (31B-it, E4B-it). 2B (Windows setup script)
@@ -53,7 +53,7 @@ existing MCP server in LMStudio's settings UI — no code changes needed on our 
    - **Command:** `<home>/src/Ai-Brain/mcp-server/.venv/bin/python` (whatever the
      user's local path is — `setup-mac.sh` prints it at the end)
    - **Args:** `-m brain_mcp`
-   - **Env:** `BRAIN_VAULT=<home>/Documents/Vaults/Ai-Brain`
+   - **Env:** `BRAIN_VAULT=<home>/Vaults/Ai-Brain`
 3. Save and restart a chat. Load a tool-capable model (Qwen2.5-7B-Instruct, Llama 3.1+, etc.).
 4. In a chat, ask *"what do you know about me?"* — the model should call `brain_session_start`
    and surface the user profile.
@@ -81,7 +81,7 @@ Design notes:
 
 **What still needs to happen on a real Windows machine:**
 1. Clone the repo to `C:\src\Ai-Brain` (or wherever) and run:
-   `powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"`
+   `powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Vaults\Ai-Brain"`
 2. Confirm `claude mcp list` shows `brain: ✓ Connected`.
 3. Open a Claude Code session in a real project → SessionStart preload appears.
 4. Say *"what do you know about me?"* → model recalls Mac-written memories (proves Obsidian
@@ -130,7 +130,7 @@ identically on Windows given the right launcher command. Only `setup-mac.sh` is 
 
 **Verification:**
 
-1. On a Windows machine: `powershell -File C:\src\Ai-Brain\setup-windows.ps1 $env:USERPROFILE\.claude-personal "$env:USERPROFILE\Documents\Vaults\Ai-Brain"`
+1. On a Windows machine: `powershell -File C:\src\Ai-Brain\setup-windows.ps1 $env:USERPROFILE\.claude-personal "$env:USERPROFILE\Vaults\Ai-Brain"`
 2. Open a Claude Code session in any project → SessionStart preload appears.
 3. Run `claude mcp list` → `brain: ✓ Connected`.
 4. Say *"what do you know about me?"* → model recalls the Mac-written memories (proves Obsidian

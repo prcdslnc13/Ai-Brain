@@ -5,11 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this repo is
 
 This repo is the **code half** of a two-location memory system for Claude Code and local LLMs. The
-other half — the memory **content** — lives in an Obsidian vault at `~/Documents/Vaults/Ai-Brain`
+other half — the memory **content** — lives in an Obsidian vault at `~/Vaults/Ai-Brain`
 and is propagated across machines by Obsidian Sync.
 
 - `~/src/Ai-Brain` (this repo) — hooks, MCP server, templates, setup scripts. Synced via git.
-- `~/Documents/Vaults/Ai-Brain` — `Brain/user/`, `Brain/feedback/`, `Brain/projects/`, session
+- `~/Vaults/Ai-Brain` — `Brain/user/`, `Brain/feedback/`, `Brain/projects/`, session
   checkpoints, `_index.md`. Synced via Obsidian Sync.
 
 Do not store memory content in this repo. Do not put code in the vault. The split is the whole
@@ -115,16 +115,16 @@ The moving parts fit together as follows:
 # Re-install into a Claude Code config dir (idempotent) — macOS
 # The config dir can be any path. Single-account users typically use ~/.claude;
 # multi-account users pick their own names (e.g. ~/.claude-personal, ~/.claude-work).
-~/src/Ai-Brain/setup-mac.sh ~/.claude-personal ~/Documents/Vaults/Ai-Brain
-~/src/Ai-Brain/setup-mac.sh ~/.claude-work     ~/Documents/Vaults/Ai-Brain
+~/src/Ai-Brain/setup-mac.sh ~/.claude-personal ~/Vaults/Ai-Brain
+~/src/Ai-Brain/setup-mac.sh ~/.claude-work     ~/Vaults/Ai-Brain
 
 # Windows equivalent (PowerShell)
 # powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
-#     "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
+#     "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Vaults\Ai-Brain"
 
 # Exercise the brain CLI directly (the primary interface; same caps/rendering as MCP)
-BRAIN_VAULT=~/Documents/Vaults/Ai-Brain ~/src/Ai-Brain/mcp-server/.venv/bin/brain stats
-BRAIN_VAULT=~/Documents/Vaults/Ai-Brain ~/src/Ai-Brain/mcp-server/.venv/bin/brain recall lmstudio
+BRAIN_VAULT=~/Vaults/Ai-Brain ~/src/Ai-Brain/mcp-server/.venv/bin/brain stats
+BRAIN_VAULT=~/Vaults/Ai-Brain ~/src/Ai-Brain/mcp-server/.venv/bin/brain recall lmstudio
 # On Windows, use the generated wrapper instead: <config-dir>/brain.cmd stats
 
 # Verify the MCP server is registered and connected — only meaningful after a --with-mcp
@@ -132,7 +132,7 @@ BRAIN_VAULT=~/Documents/Vaults/Ai-Brain ~/src/Ai-Brain/mcp-server/.venv/bin/brai
 CLAUDE_CONFIG_DIR=~/.claude-personal claude mcp list
 
 # Smoke-test the MCP server over stdio (from any cwd)
-BRAIN_VAULT=~/Documents/Vaults/Ai-Brain ~/src/Ai-Brain/mcp-server/.venv/bin/python -m brain_mcp <<'EOF'
+BRAIN_VAULT=~/Vaults/Ai-Brain ~/src/Ai-Brain/mcp-server/.venv/bin/python -m brain_mcp <<'EOF'
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}
 {"jsonrpc":"2.0","method":"notifications/initialized"}
 {"jsonrpc":"2.0","id":2,"method":"tools/list"}
@@ -140,15 +140,15 @@ EOF
 
 # Dry-run the session_start hook against a fake payload
 echo '{"cwd":"/tmp/test","hook_event_name":"SessionStart","source":"startup"}' | \
-  BRAIN_VAULT=~/Documents/Vaults/Ai-Brain \
+  BRAIN_VAULT=~/Vaults/Ai-Brain \
   ~/src/Ai-Brain/mcp-server/.venv/bin/python ~/src/Ai-Brain/hooks/session_start.py
 
 # Dump the session-start bundle as markdown (useful for non-tool-calling models)
-BRAIN_VAULT=~/Documents/Vaults/Ai-Brain \
+BRAIN_VAULT=~/Vaults/Ai-Brain \
   ~/src/Ai-Brain/mcp-server/.venv/bin/brain-prep --project MyProject
 
 # Health check — run anytime, especially when the Brain feels stale or broken
-BRAIN_VAULT=~/Documents/Vaults/Ai-Brain \
+BRAIN_VAULT=~/Vaults/Ai-Brain \
   ~/src/Ai-Brain/mcp-server/.venv/bin/brain-doctor --project MyProject
 ```
 
@@ -222,6 +222,18 @@ BRAIN_VAULT=~/Documents/Vaults/Ai-Brain \
   the vault itself; now they live in this repo, which has no relationship to the vault path.
   Always read `BRAIN_VAULT` from env.
 
+- **Keep the vault out of macOS TCC-protected folders** (`~/Documents`, `~/Desktop`,
+  `~/Downloads`, iCloud Drive) — recommended location is `~/Vaults/Ai-Brain`
+  (2026-07-28 incident). TCC grants file access *per host application*, and an ungranted host
+  can still **create** vault files (macOS stamps them with a `com.apple.macl` xattr binding
+  the creator) while getting EPERM opening pre-existing ones. So saves and checkpoints keep
+  "working" while overwrites, xattr reads, and the sqlite vector index fail — the doctor
+  reports a phantom `INDEX_CORRUPT` and `brain save` over an existing file (e.g. an overview
+  stub) raises PermissionError, sandboxed or not. If those symptoms appear, check the vault
+  path and the host app's Full Disk Access before debugging `vault.py` or rebuilding the
+  index. `brain-setup.py`'s `default_vault()` prefers `~/Vaults/Ai-Brain` and only falls back
+  to the legacy `~/Documents/Vaults/Ai-Brain` when a vault already exists there.
+
 ## Testing
 
 There is no test suite yet. Verification is manual and lives in the README's verification matrix.
@@ -233,7 +245,7 @@ When making a non-trivial change:
 3. Exercise the CLI: `BRAIN_VAULT=... .venv/bin/brain recall <something>` and `... brain stats`.
 4. Open a fresh Claude Code session in a real project and confirm the brain context is preloaded
    and `/brain list` works (with a `--with-mcp` install, also confirm the `brain_*` tools appear).
-5. Say *"I prefer X over Y"* and confirm a new file appears in `~/Documents/Vaults/Ai-Brain/Brain/user/`.
+5. Say *"I prefer X over Y"* and confirm a new file appears in `~/Vaults/Ai-Brain/Brain/user/`.
 
 ## Memory system notes
 

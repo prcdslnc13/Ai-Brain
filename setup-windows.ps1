@@ -6,9 +6,9 @@
 #
 # Examples:
 #     powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
-#         "$env:USERPROFILE\.claude" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
+#         "$env:USERPROFILE\.claude" "$env:USERPROFILE\Vaults\Ai-Brain"
 #     powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
-#         "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
+#         "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Vaults\Ai-Brain"
 #
 # The config dir can be any path. Single-account users use %USERPROFILE%\.claude;
 # multi-account users pick their own names (anything starting with .claude is

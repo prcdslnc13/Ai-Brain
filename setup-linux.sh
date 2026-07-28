@@ -17,9 +17,9 @@
 #     ~/src/Ai-Brain/setup-linux.sh <claude-config-dir> <vault-path> [--with-mcp]
 #
 # Examples:
-#     ~/src/Ai-Brain/setup-linux.sh ~/.claude           ~/Documents/Vaults/Ai-Brain
-#     ~/src/Ai-Brain/setup-linux.sh ~/.claude-personal  ~/Documents/Vaults/Ai-Brain
-#     ~/src/Ai-Brain/setup-linux.sh ~/.claude-work      ~/Documents/Vaults/Ai-Brain --with-mcp
+#     ~/src/Ai-Brain/setup-linux.sh ~/.claude           ~/Vaults/Ai-Brain
+#     ~/src/Ai-Brain/setup-linux.sh ~/.claude-personal  ~/Vaults/Ai-Brain
+#     ~/src/Ai-Brain/setup-linux.sh ~/.claude-work      ~/Vaults/Ai-Brain --with-mcp
 #
 # The config dir can be any path. Single-account users use ~/.claude; multi-account
 # users pick their own names (anything starting with .claude is auto-discovered by
@@ -38,7 +38,7 @@ set -euo pipefail
 
 if [ $# -lt 2 ]; then
   echo "usage: $0 <claude-config-dir> <vault-path> [--with-mcp]" >&2
-  echo "example: $0 ~/.claude-personal ~/Documents/Vaults/Ai-Brain" >&2
+  echo "example: $0 ~/.claude-personal ~/Vaults/Ai-Brain" >&2
   exit 1
 fi
 

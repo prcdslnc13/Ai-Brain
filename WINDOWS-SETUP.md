@@ -14,9 +14,12 @@ and `setup-mac.sh`; this file is the Windows counterpart.
    on `PATH`.
 3. **Git** (for cloning — any recent version is fine).
 4. **Obsidian + Obsidian Sync** already set up and synced down to
-   `%USERPROFILE%\Documents\Vaults\Ai-Brain`. The vault must exist *before* running setup;
+   `%USERPROFILE%\Vaults\Ai-Brain`. The vault must exist *before* running setup;
    the script will refuse to continue if the path is missing. If the vault lives somewhere
-   else, pass its full path as the second argument.
+   else, pass its full path as the second argument. Avoid a OneDrive-redirected `Documents`
+   folder — OneDrive and Obsidian Sync fighting over the same files causes conflict copies —
+   which is why the recommended location is `%USERPROFILE%\Vaults`, not
+   `%USERPROFILE%\Documents`.
 
 ## Install
 
@@ -64,13 +67,13 @@ If you prefer a native PowerShell install:
 #    Arguments: <claude-config-dir> <vault-path>
 # Single account using the default config dir:
 powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
-    "$env:USERPROFILE\.claude" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
+    "$env:USERPROFILE\.claude" "$env:USERPROFILE\Vaults\Ai-Brain"
 
 # Multiple accounts — re-run once per config dir:
 powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
-    "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
+    "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Vaults\Ai-Brain"
 powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
-    "$env:USERPROFILE\.claude-work" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
+    "$env:USERPROFILE\.claude-work" "$env:USERPROFILE\Vaults\Ai-Brain"
 
 # Non-standard vault path (no $env: prefix needed for plain paths):
 powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
@@ -246,16 +249,16 @@ Run `setup-windows.ps1` (or the wizard) once per config dir:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
-    "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
+    "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Vaults\Ai-Brain"
 powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
-    "$env:USERPROFILE\.claude-work" "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
+    "$env:USERPROFILE\.claude-work" "$env:USERPROFILE\Vaults\Ai-Brain"
 ```
 
 Or in one `brain-setup.py` call:
 
 ```powershell
 python C:\src\Ai-Brain\brain-setup.py `
-    --vault "$env:USERPROFILE\Documents\Vaults\Ai-Brain" `
+    --vault "$env:USERPROFILE\Vaults\Ai-Brain" `
     --claude-dir "$env:USERPROFILE\.claude-personal" `
     --claude-dir "$env:USERPROFILE\.claude-work"
 ```

@@ -41,7 +41,7 @@ Use the full absolute paths for your machine:
 |---------|--------------------------------------------------------------------|------------------------------------------------------------------------------|
 | Command | `/Users/<you>/src/Ai-Brain/mcp-server/.venv/bin/python`             | `C:\src\Ai-Brain\mcp-server\.venv\Scripts\python.exe`                         |
 | Args    | `-m brain_mcp`                                                     | `-m brain_mcp`                                                               |
-| Env     | `BRAIN_VAULT=/Users/<you>/Documents/Vaults/Ai-Brain`               | `BRAIN_VAULT=C:\Users\<you>\Documents\Vaults\Ai-Brain`                       |
+| Env     | `BRAIN_VAULT=/Users/<you>/Vaults/Ai-Brain`                         | `BRAIN_VAULT=C:\Users\<you>\Vaults\Ai-Brain`                               |
 
 Both `setup-mac.sh` and `setup-windows.ps1` print these exact values at the end of a
 successful run — copy from there rather than retyping.
@@ -67,7 +67,7 @@ LMStudio build exposes.
       "command": "/Users/<you>/src/Ai-Brain/mcp-server/.venv/bin/python",
       "args": ["-m", "brain_mcp"],
       "env": {
-        "BRAIN_VAULT": "/Users/<you>/Documents/Vaults/Ai-Brain"
+        "BRAIN_VAULT": "/Users/<you>/Vaults/Ai-Brain"
       }
     }
   }
@@ -130,7 +130,7 @@ are wrong. Run the same stdio handshake yourself to isolate LMStudio from the MC
 macOS:
 
 ```bash
-BRAIN_VAULT=~/Documents/Vaults/Ai-Brain \
+BRAIN_VAULT=~/Vaults/Ai-Brain \
   ~/src/Ai-Brain/mcp-server/.venv/bin/python -m brain_mcp <<'EOF'
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}
 {"jsonrpc":"2.0","method":"notifications/initialized"}
@@ -141,7 +141,7 @@ EOF
 Windows (PowerShell):
 
 ```powershell
-$env:BRAIN_VAULT = "$env:USERPROFILE\Documents\Vaults\Ai-Brain"
+$env:BRAIN_VAULT = "$env:USERPROFILE\Vaults\Ai-Brain"
 @"
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}
 {"jsonrpc":"2.0","method":"notifications/initialized"}
@@ -167,8 +167,8 @@ entirely on the LMStudio side — check the paths in your `mcp.json` byte for by
 Your `BRAIN_VAULT` points at a real directory but it's either empty or not the vault. Verify:
 
 ```bash
-ls ~/Documents/Vaults/Ai-Brain/Brain/user     # macOS
-dir "%USERPROFILE%\Documents\Vaults\Ai-Brain\Brain\user"   # Windows
+ls ~/Vaults/Ai-Brain/Brain/user     # macOS
+dir "%USERPROFILE%\Vaults\Ai-Brain\Brain\user"   # Windows
 ```
 
 You should see at least `profile.md` and `preferred-ides.md`. If the directory is empty,
