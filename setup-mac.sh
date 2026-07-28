@@ -125,9 +125,9 @@ SETTINGS_FILE="$CLAUDE_DIR/settings.json"
 
 HOOKS_TEMPLATE="$TEMPLATES_DIR/settings.hooks.json"
 
-"$VENV_PYTHON" - "$SETTINGS_FILE" "$HOOKS_TEMPLATE" "$VENV_PYTHON" "$HOOKS_DIR" "$VAULT_ROOT" <<'PY'
+"$VENV_PYTHON" - "$SETTINGS_FILE" "$HOOKS_TEMPLATE" "$VENV_PYTHON" "$HOOKS_DIR" "$VAULT_ROOT" "$BRAIN_CMD" <<'PY'
 import json, sys
-settings_path, template_path, brain_python, brain_hooks, brain_vault = sys.argv[1:6]
+settings_path, template_path, brain_python, brain_hooks, brain_vault, brain_cmd = sys.argv[1:7]
 
 with open(settings_path, "r", encoding="utf-8") as f:
     try:
@@ -188,6 +188,25 @@ settings["hooks"] = existing
 
 for event, definition in hooks_block.items():
     settings["hooks"][event] = definition
+
+# Pre-approve the brain CLI so proactive saves/recalls don't hit permission
+# prompts even outside /brain skill turns. Prefix rule: the rendered BRAIN_CMD
+# (env prefix + quoted venv binary) followed by any arguments. Prune stale
+# Brain-owned rules (older vault/venv paths) before re-adding, same policy as
+# the hooks block above.
+perms = settings.get("permissions")
+if not isinstance(perms, dict):
+    perms = {}
+allow = perms.get("allow")
+if not isinstance(allow, list):
+    allow = []
+allow = [
+    r for r in allow
+    if not (isinstance(r, str) and r.startswith("Bash(BRAIN_VAULT=") and "/bin/brain" in r)
+]
+allow.append(f"Bash({brain_cmd}:*)")
+perms["allow"] = allow
+settings["permissions"] = perms
 
 with open(settings_path, "w", encoding="utf-8") as f:
     json.dump(settings, f, indent=2)

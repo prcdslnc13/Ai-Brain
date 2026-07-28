@@ -1,6 +1,7 @@
 ---
 name: brain
 description: Persistent cross-machine memory (the Brain). Use to save a preference/correction/decision, recall what is known about a project/person/tool, checkpoint a work session, or list/delete memories. Invoked by /brain or whenever a memory operation is needed and the exact CLI syntax is not already known.
+allowed-tools: Bash(__BRAIN_CMD__:*)
 ---
 
 # Brain memory — CLI reference

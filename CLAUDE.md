@@ -43,6 +43,13 @@ The moving parts fit together as follows:
     `BRAIN_STALE_CHECK=0`) and `PROMISE_GAP` (recent turns promised saves without fulfilling
     them). Surfacing these at the top of the session forces reconstruction instead of silent
     context loss.
+  - `subagent_start.py` — injects a *slim* bundle (index + user + feedback, no project
+    overview/checkpoint) into every subagent via the SubagentStart event. Claude 5-era models
+    delegate heavily, and the SessionStart preload reaches only the main session — without this,
+    delegated work runs without the user's behavioral rules. ~12KB per subagent by default;
+    `BRAIN_SUBAGENT_BUDGET_KB` tunes it, `BRAIN_SUBAGENT_PRELOAD=0` disables. Verified
+    2026-07-28: SubagentStart fires and injects on Claude Code 2.1.220, hook config picked up
+    mid-session, payload carries `agent_id`/`agent_type`.
   - `pre_compact.py` / `session_end.py` — share `_checkpoint.py`, which parses the transcript JSONL
     and writes a structural checkpoint to `Brain/projects/<project>/sessions/<timestamp>.md`. No
     LLM call — the next session's model will summarize/integrate when it sees the file.
@@ -97,7 +104,9 @@ The moving parts fit together as follows:
     the user per `PI-SETUP.md` (setup scripts don't know about pi installs).
 
 - **`setup-mac.sh`** — idempotent bootstrap. Installs brain-mcp into `mcp-server/.venv`, writes the
-  global CLAUDE.md and brain skill (with `__BRAIN_CMD__` substituted), and merges the hooks block
+  global CLAUDE.md and brain skill (with `__BRAIN_CMD__` substituted; the skill frontmatter
+  pre-approves the brain CLI via `allowed-tools`), merges a `permissions.allow` rule
+  (`Bash(<BRAIN_CMD>:*)`) so proactive CLI saves never hit permission prompts, and merges the hooks block
   into settings.json. Takes `<claude-config-dir> <vault-path> [--with-mcp]`. **MCP registration is
   opt-in**: only `--with-mcp` runs `claude mcp add`; without it, any existing user-scope `brain`
   registration is *removed* so the CLI-first token saving actually lands.
