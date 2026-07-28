@@ -56,7 +56,6 @@ from pathlib import Path
 
 from _common import (
     append_activity,
-    debug_payload,
     emit,
     now_stamp,
     project_basename,
@@ -272,7 +271,6 @@ def brain_tools_callable() -> bool:
 
 def main() -> None:
     payload = read_payload()
-    debug_payload("stop", payload)
     project = project_basename(payload) or "unknown"
     account = os.environ.get("BRAIN_ACCOUNT", "claude")
     transcript = payload.get("transcript_path")

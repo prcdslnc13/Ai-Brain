@@ -16,34 +16,6 @@ from pathlib import Path
 # with that venv's python, so brain_mcp imports without any sys.path tricks.
 
 
-# Phase 0 instrumentation (2026-07-28) — remove after the subagent-stop and
-# compact-source verification for the Fable 5 integration plan. Logs one JSON
-# line per hook invocation so we can see which events fire, with what payload
-# fields (agent_id/agent_type on subagent stops, source on SessionStart).
-# Disable with BRAIN_HOOK_DEBUG=0.
-def debug_payload(hook_name: str, payload: dict) -> None:
-    if os.environ.get("BRAIN_HOOK_DEBUG", "1") == "0":
-        return
-    try:
-        log = Path.home() / ".cache" / "ai-brain" / "hook-payload-debug.jsonl"
-        log.parent.mkdir(parents=True, exist_ok=True)
-        entry = {
-            "ts": datetime.now().isoformat(timespec="seconds"),
-            "hook": hook_name,
-            "event": payload.get("hook_event_name"),
-            "source": payload.get("source"),
-            "agent_id": payload.get("agent_id"),
-            "agent_type": payload.get("agent_type"),
-            "stop_hook_active": payload.get("stop_hook_active"),
-            "session_id": (payload.get("session_id") or "")[:8],
-            "keys": sorted(payload.keys()),
-        }
-        with log.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
-    except Exception:
-        pass  # instrumentation must never break a hook
-
-
 def read_payload() -> dict:
     raw = sys.stdin.read()
     if not raw.strip():

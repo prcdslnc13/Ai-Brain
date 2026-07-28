@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import sys
 
-from _common import debug_payload, emit, project_basename, read_payload
+from _common import emit, project_basename, read_payload
 
 
 def _import_failure_banner(component: str, err: Exception) -> str:
@@ -28,7 +28,6 @@ def _import_failure_banner(component: str, err: Exception) -> str:
 
 def main() -> None:
     payload = read_payload()
-    debug_payload("session_start", payload)
     project = project_basename(payload)
     project_cwd = payload.get("cwd")
 

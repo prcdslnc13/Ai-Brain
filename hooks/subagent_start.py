@@ -21,12 +21,11 @@ from __future__ import annotations
 import os
 import sys
 
-from _common import debug_payload, emit, read_payload
+from _common import emit, read_payload
 
 
 def main() -> None:
-    payload = read_payload()
-    debug_payload("subagent_start", payload)
+    read_payload()
 
     if os.environ.get("BRAIN_SUBAGENT_PRELOAD", "1") == "0":
         sys.exit(0)
