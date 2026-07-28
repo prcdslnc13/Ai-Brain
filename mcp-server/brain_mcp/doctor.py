@@ -182,7 +182,7 @@ def _check_fastembed() -> list[Finding]:
 
 
 _ACTIVITY_COLUMNS_RE = re.compile(
-    r"\[sig=([YN]) sav=([YN]) nud=([YN])(?: pro=([YN]))?(?: too=([YN]))?\]"
+    r"\[sig=([YN]) sav=([YN]) nud=([YN])(?: pro=([YN]))?(?: too=([YN]))?(?: sys=([YN]))?\]"
 )
 SAVE_GAP_WINDOW = 30  # tail of activity.md to examine
 SAVE_GAP_THRESHOLD = 3  # signal-without-save count that triggers a WARN
@@ -219,6 +219,9 @@ def _check_save_gap(brain: Path) -> list[Finding]:
             continue
         if m.group(5) == "N":
             continue  # brain tools weren't callable — a missed save was unsatisfiable
+        if m.group(6) == "Y":
+            continue  # system-generated turn (notification/skill expansion) —
+            # its "user text" wasn't typed by the user, so sig is meaningless
         audited += 1
         sig, sav, nud = m.group(1), m.group(2), m.group(3)
         if sig == "Y" and sav == "N":
@@ -262,6 +265,11 @@ def _check_promise_gap(brain: Path) -> list[Finding]:
     brain MCP server wasn't registered that session, so the promised save was
     physically uncallable) are also skipped — that's an infra failure, not a
     model bug. See the 2026-06-03 false positive this guards against.
+
+    Rows tagged `sys=Y` (system-generated turn) are deliberately NOT skipped
+    here, unlike in _check_save_gap: `pro` measures the *assistant's* text,
+    which is genuinely model-authored whatever triggered the turn, so an
+    unfulfilled promise on a notification turn is a real miss.
     """
     lines = _tail_activity(brain, SAVE_GAP_WINDOW)
     if not lines:

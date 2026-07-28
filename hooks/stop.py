@@ -13,7 +13,7 @@ Two jobs, in order:
    safety-net checkpoint fired — ~70 minutes of migration work lost.
 
 2. **Audit**: append a one-line breadcrumb to Brain/activity.md:
-     timestamp account project [sig=Y|N sav=Y|N nud=Y|N pro=Y|N too=Y|N] — snippet
+     timestamp account project [sig=Y|N sav=Y|N nud=Y|N pro=Y|N too=Y|N sys=Y|N] — snippet
    Columns:
      sig — did the user's last message match a save-signal pattern?
      sav — did a brain save happen this turn? Counts both the MCP tools
@@ -28,6 +28,15 @@ Two jobs, in order:
            2026-06-03 PROMISE_GAP false positive: the very session
            troubleshooting an unregistered brain promised a save the gate then
            demanded, but there was no tool to call.
+     sys — was the turn's "user message" system-generated (task notification,
+           skill/command expansion, local-command output) rather than typed by
+           the user? Such text can contain arbitrary phrases (skill bodies
+           match save-signal patterns), so SAVE_GAP skips sys=Y rows — sig
+           measured on them says nothing about the user. PROMISE_GAP still
+           counts them: pro measures *assistant* text, which is genuinely
+           model-authored whatever triggered the turn, and the gate applies
+           on sys=Y turns too. Found 2026-07-28: ~9% of rows were
+           notification turns, and a skill expansion scored a false sig=Y.
    `brain_doctor._check_save_gap` and `_check_promise_gap` read the tail of
    activity.md to surface long-run gaps.
 
@@ -47,6 +56,7 @@ from pathlib import Path
 
 from _common import (
     append_activity,
+    debug_payload,
     emit,
     now_stamp,
     project_basename,
@@ -180,6 +190,28 @@ def _analyze_last_turn(transcript_path: str | None) -> tuple[str, str, int]:
     return last_user_text, assistant_text, brain_tool_count
 
 
+# Prefixes that mark a transcript "user" message as system-generated rather than
+# typed by the user: background-task notifications, skill/command expansions,
+# and local-command output. These turns can contain arbitrary text (skill bodies
+# match save-signal phrases like "I want"; notifications quote assistant prose),
+# so sig measured on them says nothing about the user. Rows are tagged sys=Y
+# and doctor's SAVE_GAP check skips them. PROMISE_GAP does NOT skip them, and
+# the Stop-gate still applies: pro measures assistant text, which is genuinely
+# model-authored whatever triggered the turn.
+_SYSTEM_TURN_PREFIXES = (
+    "<task-notification>",
+    "[SYSTEM NOTIFICATION",
+    "<command-name>",
+    "<local-command-stdout>",
+    "Base directory for this skill:",
+    "<system-reminder>",
+)
+
+
+def is_system_turn(text: str) -> bool:
+    return text.lstrip().startswith(_SYSTEM_TURN_PREFIXES)
+
+
 def _yn(flag: bool) -> str:
     return "Y" if flag else "N"
 
@@ -240,6 +272,7 @@ def brain_tools_callable() -> bool:
 
 def main() -> None:
     payload = read_payload()
+    debug_payload("stop", payload)
     project = project_basename(payload) or "unknown"
     account = os.environ.get("BRAIN_ACCOUNT", "claude")
     transcript = payload.get("transcript_path")
@@ -252,11 +285,12 @@ def main() -> None:
     nudged = signal and nudge_enabled()
 
     tools_ok = brain_tools_callable()
+    system_turn = is_system_turn(last_user)
 
     snippet = last_user.replace("\n", " ")[:80]
     columns = (
         f"[sig={_yn(signal)} sav={_yn(saved)} nud={_yn(nudged)} "
-        f"pro={_yn(promised)} too={_yn(tools_ok)}]"
+        f"pro={_yn(promised)} too={_yn(tools_ok)} sys={_yn(system_turn)}]"
     )
     try:
         append_activity(f"{now_stamp()} {account} {project} {columns} — {snippet}")
