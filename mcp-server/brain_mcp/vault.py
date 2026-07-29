@@ -42,6 +42,55 @@ def project_basename(project_dir: str | None) -> str | None:
     return Path(project_dir).resolve().name
 
 
+def path_in_project(path: Path, project: str) -> bool:
+    """True when `path` lives under a `projects/<project>/` directory.
+
+    Compares path *components*, never a substring like `/projects/X/` — that
+    form silently never matches on Windows, where str(Path) uses backslashes
+    (2026-07-28: `recall --project` returned nothing on Windows for notes that
+    were right there)."""
+    parts = path.parts
+    for i in range(len(parts) - 1):
+        if parts[i] == "projects" and parts[i + 1] == project:
+            return True
+    return False
+
+
+def _frontmatter(fields: dict) -> str:
+    """Render a frontmatter block via the YAML dumper, never f-strings.
+
+    An interpolated title containing a colon (`name: F1 job path: .xf is a
+    tar`) is invalid YAML — the whole frontmatter fails to parse and the note
+    silently loses its type, dropping out of every filtered recall
+    (2026-07-28 Windows incident: four notes affected)."""
+    dumped = yaml.safe_dump(
+        fields,
+        sort_keys=False,
+        allow_unicode=True,
+        default_flow_style=False,
+        width=10_000,
+    )
+    return f"---\n{dumped}---\n\n"
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write via a same-directory temp file + os.replace so a mid-write
+    failure can never truncate an existing memory (2026-07-28: a
+    UnicodeEncodeError on Windows emptied three notes during overwrite).
+    The temp name doesn't end in .md, so vault globs, the embed index, and
+    Obsidian Sync never see it."""
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+
+
 @dataclass
 class Memory:
     path: Path
@@ -110,15 +159,11 @@ def write_memory(mtype: str, name: str, content: str, project: str | None = None
         body = content
     else:
         description = content.strip().split("\n", 1)[0][:150]
-        frontmatter = (
-            "---\n"
-            f"name: {name}\n"
-            f"description: {description}\n"
-            f"type: {mtype}\n"
-            "---\n\n"
-        )
-        body = frontmatter + content.strip() + "\n"
-    path.write_text(body, encoding="utf-8")
+        fields = {"name": name, "description": description, "type": mtype}
+        if mtype == "project":
+            fields["project"] = project
+        body = _frontmatter(fields) + content.strip() + "\n"
+    _atomic_write(path, body)
     _try_embed_upsert(path)
     return path
 
@@ -164,6 +209,8 @@ def list_memories(mtype: str | None = None, project: str | None = None) -> list[
         p for p in candidates
         if "_setup" not in p.parts and not p.name.startswith("_")
     ]
+    if project:
+        candidates = [p for p in candidates if path_in_project(p, project)]
     return [Memory.from_file(p) for p in sorted(set(candidates))]
 
 
@@ -237,7 +284,7 @@ def search_memories(query: str, mtype: str | None = None, project: str | None = 
     if mtype:
         candidates = [m for m in candidates if m.type == mtype]
     if project:
-        candidates = [m for m in candidates if f"/projects/{project}/" in str(m.path)]
+        candidates = [m for m in candidates if path_in_project(m.path, project)]
     return candidates
 
 
@@ -375,14 +422,14 @@ def ensure_project_overview_stub(project: str, project_dir: str | Path | None) -
             "— synthesize the overview from code exploration instead)_"
         )
 
-    content = (
-        "---\n"
-        "name: overview\n"
-        f"description: stub overview for {project} — awaiting upgrade on first model session\n"
-        "type: project\n"
-        "stub: true\n"
-        f"created: {today}\n"
-        "---\n\n"
+    content = _frontmatter({
+        "name": "overview",
+        "description": f"stub overview for {project} — awaiting upgrade on first model session",
+        "type": "project",
+        "project": project,
+        "stub": True,
+        "created": today,
+    }) + (
         f"# {project} — overview (STUB)\n\n"
         "> This is an auto-generated placeholder written by the SessionStart hook so the session\n"
         "> bundle has *something* for project context. **Action for the model that loads this:**\n"
@@ -395,7 +442,7 @@ def ensure_project_overview_stub(project: str, project_dir: str | Path | None) -
     )
 
     overview.parent.mkdir(parents=True, exist_ok=True)
-    overview.write_text(content, encoding="utf-8")
+    _atomic_write(overview, content)
     _try_embed_upsert(overview)
     return overview
 
@@ -426,16 +473,14 @@ def write_checkpoint(project: str, summary: str) -> Path:
     stamp = datetime.now().strftime("%Y-%m-%d-%H%M")
     path = target / f"{stamp}.md"
     if not summary.lstrip().startswith("---"):
-        summary = (
-            "---\n"
-            f"name: session checkpoint {stamp}\n"
-            f"description: automated session checkpoint for {project}\n"
-            "type: session\n"
-            f"project: {project}\n"
-            f"timestamp: {stamp}\n"
-            "---\n\n"
-        ) + summary.strip() + "\n"
-    path.write_text(summary, encoding="utf-8")
+        summary = _frontmatter({
+            "name": f"session checkpoint {stamp}",
+            "description": f"automated session checkpoint for {project}",
+            "type": "session",
+            "project": project,
+            "timestamp": stamp,
+        }) + summary.strip() + "\n"
+    _atomic_write(path, summary)
     return path
 
 

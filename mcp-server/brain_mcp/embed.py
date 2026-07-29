@@ -271,7 +271,7 @@ class EmbedIndex:
             paths: list[str] = []
             vectors: list = []
             for path, blob in conn.execute("SELECT path, vector FROM embeddings"):
-                if project_filter and f"/projects/{project_filter}/" not in path:
+                if project_filter and not vault.path_in_project(Path(path), project_filter):
                     continue
                 paths.append(path)
                 vectors.append(_blob_to_vec(blob))

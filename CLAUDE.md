@@ -169,6 +169,20 @@ BRAIN_VAULT=~/Vaults/Ai-Brain \
 
 ## Gotchas that will bite you
 
+- **Frontmatter is machine-written YAML — build it with `vault._frontmatter()` and write with
+  `vault._atomic_write()`, never f-strings + `write_text` (fixed 2026-07-29, Windows
+  incident).** Three failure modes were live at once: (1) an interpolated title or
+  auto-description containing a colon (`name: F1 job path: .xf is a tar`) is invalid YAML, so
+  the note silently lost its `type` and vanished from every type/project-filtered recall —
+  81 vault files were affected when the doctor check landed; (2) the CLI decoded stdin with
+  the platform default (cp1252 on Windows), turning UTF-8 em dashes into mojibake, and an
+  undecodable byte could kill a save *mid-`write_text`*, truncating the existing note —
+  `cli.py` now forces UTF-8 on stdin/stdout/stderr and all vault writes go through a
+  tmp-file + `os.replace`; (3) `--project` filtering matched the substring `/projects/X/`,
+  which never matches Windows backslash paths — use `vault.path_in_project()` (path
+  components) everywhere, including `embed.py`. `brain doctor` now flags
+  `MALFORMED_FRONTMATTER`; if it fires, re-save the note or fix the YAML.
+
 - **Recall/list output is deliberately capped — don't "fix" that by removing the caps
   (added 2026-07-11).** Before `render.py`, `brain_recall` honored a model-supplied `top_k`
   unbounded and `full_body=true` uncapped, and the result set merged *all* ripgrep substring

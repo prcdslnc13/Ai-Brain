@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+import yaml
+
 SEVERITY_ORDER = ("ok", "info", "warn", "error")
 
 
@@ -110,6 +112,66 @@ def _check_sync_conflicts(brain: Path) -> list[Finding]:
         f"{len(ordered)} Obsidian Sync conflict file(s) in vault: {sample}{more}",
         "Open the vault in Obsidian, reconcile each conflict by hand, then "
         "delete the losing copy. Until resolved, recall may return stale data.",
+    )]
+
+
+MEMORY_DIRS = ("user", "feedback", "references", "projects")
+KNOWN_TYPES = {"user", "feedback", "project", "reference", "session"}
+
+
+def _check_frontmatter(brain: Path) -> list[Finding]:
+    """Flag memory files whose frontmatter fails to parse or lacks a valid type.
+
+    Such files stay full-text searchable but silently drop out of every
+    type-filtered recall — the worst kind of failure, because saves appear to
+    work. Found 2026-07-28 (Windows): a colon in a save title produced
+    `name: F1 Ultra job path: .xf is a tar`, invalid YAML, and four notes
+    lost their type without any error surfacing anywhere.
+    """
+    bad: list[tuple[Path, str]] = []
+    for d in MEMORY_DIRS:
+        droot = brain / d
+        if not droot.exists():
+            continue
+        for p in droot.rglob("*.md"):
+            if any(part in ("archive", "_setup", ".index") for part in p.parts):
+                continue
+            if p.name.startswith("_"):
+                continue
+            try:
+                text = p.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if not text.startswith("---"):
+                bad.append((p, "no frontmatter"))
+                continue
+            end = text.find("\n---", 3)
+            if end == -1:
+                bad.append((p, "unterminated frontmatter"))
+                continue
+            try:
+                fm = yaml.safe_load(text[3:end])
+            except yaml.YAMLError:
+                bad.append((p, "frontmatter is not valid YAML"))
+                continue
+            if not isinstance(fm, dict):
+                bad.append((p, "frontmatter is not a mapping"))
+                continue
+            t = fm.get("type")
+            if t not in KNOWN_TYPES:
+                bad.append((p, f"type is {t!r}"))
+    if not bad:
+        return [Finding("ok", "FRONTMATTER_OK", "all memory frontmatter parses with a valid type")]
+    sample = "; ".join(
+        f"{p.relative_to(brain)} ({reason})" for p, reason in bad[:3]
+    )
+    more = f" (+{len(bad) - 3} more)" if len(bad) > 3 else ""
+    return [Finding(
+        "warn", "MALFORMED_FRONTMATTER",
+        f"{len(bad)} memory file(s) with broken/missing frontmatter: {sample}{more}",
+        "These notes are invisible to type/project-filtered recall. Re-save "
+        "each with `brain save` (same title minus any colon lands on the same "
+        "slug and overwrites in place), or fix the YAML by hand in Obsidian.",
     )]
 
 
@@ -466,6 +528,7 @@ def check(
     brain = Path(os.environ["BRAIN_VAULT"]).expanduser() / "Brain"
     findings.extend(_check_subdirs(brain))
     findings.extend(_check_sync_conflicts(brain))
+    findings.extend(_check_frontmatter(brain))
     findings.extend(_check_vector_index(brain))
     findings.extend(_check_editable_install())
     findings.extend(_check_fastembed())

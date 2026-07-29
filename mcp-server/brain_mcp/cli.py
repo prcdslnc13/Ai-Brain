@@ -170,9 +170,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    # Windows consoles/pipes default to cp1252; a memory containing any
-    # character outside it would crash print(). Force UTF-8 like the vault files.
-    for stream in (sys.stdout, sys.stderr):
+    # Windows consoles/pipes default to cp1252 — in BOTH directions. stdout
+    # would crash print()ing a memory with characters outside cp1252, and stdin
+    # would mangle a UTF-8 heredoc body into mojibake (2026-07-28: em dashes
+    # saved as `â€"`, and an undecodable 0x9D byte from a curly quote killed a
+    # save mid-command). Force UTF-8 end to end, like the vault files.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, OSError):
