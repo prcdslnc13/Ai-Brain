@@ -37,17 +37,30 @@ The moving parts fit together as follows:
     profile + feedback + project context in its system prompt at every session start. Also runs
     `brain_mcp.doctor.check(project, project_cwd)` and prepends a `## Brain Health` banner for any
     warn/error findings: silent failures like unset `BRAIN_VAULT`, Obsidian Sync conflict files,
-    corrupt vector index, accidental editable install, plus two stop-gap checks —
+    corrupt vector index, accidental editable install, plus these stop-gap checks —
     `STALE_UNCOMMITTED` (project has on-disk changes postdating the last checkpoint; prior session
     likely died before checkpointing — reads `project_cwd` from the hook payload, disable with
-    `BRAIN_STALE_CHECK=0`) and `PROMISE_GAP` (recent turns promised saves without fulfilling
-    them). Surfacing these at the top of the session forces reconstruction instead of silent
-    context loss.
+    `BRAIN_STALE_CHECK=0`), `PROMISE_GAP` (recent turns promised saves without fulfilling
+    them), `BUNDLE_SATURATED` and `OVERSIZED_MEMORIES` (below). Surfacing these at the top of the
+    session forces reconstruction instead of silent context loss.
+
+    **The preload budget is a silent-failure surface.** `session_start_bundle` adds user and
+    feedback files until `BRAIN_BUNDLE_BUDGET_KB` is exhausted, then *stops* — the overflow is
+    reported only as a small "skipped N feedback" note in the banner. On 2026-07-30 the default
+    (then 32 KB) was dropping 18 of 22 feedback memories from every session: saved correctly,
+    never loaded, so the rules they encoded silently stopped applying and read as the model
+    ignoring past corrections. Default is now 72 KB, `BUNDLE_SATURATED` warns whenever anything
+    is skipped, and `OVERSIZED_MEMORIES` (info) flags bodies over
+    `doctor.MEMORY_BODY_SOFT_LIMIT` so the corpus gets compacted rather than the budget raised
+    forever. Note the subagent path has its own, much smaller `BRAIN_SUBAGENT_BUDGET_KB`.
   - `subagent_start.py` — injects a *slim* bundle (index + user + feedback, no project
     overview/checkpoint) into every subagent via the SubagentStart event. Claude 5-era models
     delegate heavily, and the SessionStart preload reaches only the main session — without this,
-    delegated work runs without the user's behavioral rules. ~12KB per subagent by default;
-    `BRAIN_SUBAGENT_BUDGET_KB` tunes it, `BRAIN_SUBAGENT_PRELOAD=0` disables. Verified
+    delegated work runs without the user's behavioral rules. ~39KB per subagent by default — the
+    whole of user + feedback. `BRAIN_SUBAGENT_BUDGET_KB` tunes it, but note the bundle fills with
+    `user/` *before* `feedback/`, so lowering it drops the behavioral rules first: the old 12 KB
+    default delivered 11 user entries and zero feedback, defeating the hook's entire purpose
+    (found 2026-07-30). `BRAIN_SUBAGENT_PRELOAD=0` disables. Verified
     2026-07-28: SubagentStart fires and injects on Claude Code 2.1.220, hook config picked up
     mid-session, payload carries `agent_id`/`agent_type`.
   - `pre_compact.py` / `session_end.py` — share `_checkpoint.py`, which parses the transcript JSONL

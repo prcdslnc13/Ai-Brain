@@ -291,15 +291,20 @@ def search_memories(query: str, mtype: str | None = None, project: str | None = 
 def session_start_bundle(project: str | None = None) -> dict:
     """Return the standard preload bundle: index + user + feedback + project context.
 
-    Honours BRAIN_BUNDLE_BUDGET_KB (default 32). The index, project overview, and latest
+    Honours BRAIN_BUNDLE_BUDGET_KB (default 72). The index, project overview, and latest
     session checkpoint are always included — they're small and load-bearing. User profile
     entries and feedback files are added in priority order until the budget is exhausted.
+
+    The default was 32 KB until 2026-07-30, by which point the corpus had outgrown it and
+    18 of 22 feedback memories were being dropped from every preload — saved correctly but
+    never loaded, so their rules silently stopped applying. `brain doctor` now reports
+    BUNDLE_SATURATED when that happens again; raising this default only buys headroom.
     """
     root = vault_root()
     try:
-        budget_kb = float(os.environ.get("BRAIN_BUNDLE_BUDGET_KB", "32"))
+        budget_kb = float(os.environ.get("BRAIN_BUNDLE_BUDGET_KB", "72"))
     except ValueError:
-        budget_kb = 32.0
+        budget_kb = 72.0
     budget_bytes = int(budget_kb * 1024)
 
     bundle: dict = {
