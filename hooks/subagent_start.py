@@ -12,8 +12,14 @@ No doctor run and no overview-stub logic here — those are once-per-session
 jobs that belong to session_start.py.
 
 Knobs: BRAIN_SUBAGENT_PRELOAD=0 disables the injection entirely;
-BRAIN_SUBAGENT_BUDGET_KB (default 12) caps the bundle, reusing the
+BRAIN_SUBAGENT_BUDGET_KB (default 44) caps the bundle, reusing the
 BRAIN_BUNDLE_BUDGET_KB mechanism in vault.session_start_bundle.
+
+The default was 12 KB until 2026-07-30, which was self-defeating: the bundle fills
+with `user/` before it reaches `feedback/`, so a 12 KB cap delivered 11 user entries
+and **zero** feedback — the behavioral rules this hook exists to propagate. 44 KB fits
+the whole of user + feedback with headroom. If you lower it, lower it knowing feedback
+is what gets dropped first.
 """
 
 from __future__ import annotations
@@ -30,7 +36,7 @@ def main() -> None:
     if os.environ.get("BRAIN_SUBAGENT_PRELOAD", "1") == "0":
         sys.exit(0)
 
-    budget = os.environ.get("BRAIN_SUBAGENT_BUDGET_KB", "12")
+    budget = os.environ.get("BRAIN_SUBAGENT_BUDGET_KB", "44")
     os.environ["BRAIN_BUNDLE_BUDGET_KB"] = budget
 
     try:

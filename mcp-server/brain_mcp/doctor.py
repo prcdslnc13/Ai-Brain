@@ -514,6 +514,74 @@ def _check_stale_checkpoint(brain: Path, project: str | None) -> list[Finding]:
     return [Finding("ok", "CHECKPOINT_FRESH", f"newest checkpoint for '{project}' is {int(age_days)}d old")]
 
 
+# Bytes, whole file including frontmatter. Set from the 2026-07-30 compaction pass: a tight
+# rule + Why + How-to-apply lands at 1.0-1.5 KB, while the bodies that had actually bloated the
+# preload were 1.7-3.5 KB. Flagging at 1500 catches essays without nagging about near-misses.
+MEMORY_BODY_SOFT_LIMIT = 1500
+
+
+def _check_bundle_budget(project: str | None) -> list[Finding]:
+    """The SessionStart preload drops entries once it hits its byte budget — silently.
+
+    A skipped memory is indistinguishable from one the model chose to ignore, so this
+    failure mode reads as "the model stopped following my corrections".
+    """
+    try:
+        from . import vault
+        bundle = vault.session_start_bundle(project)
+    except Exception as exc:  # never let a health check break the session banner
+        return [Finding(
+            "info", "BUNDLE_CHECK_FAILED",
+            f"Could not build the preload bundle to size it: {exc}",
+        )]
+
+    limit = bundle.get("budget_limit_kb")
+    used = bundle.get("budget_consumed_kb")
+    skipped = bundle.get("skipped_sections") or {}
+    if skipped:
+        detail = ", ".join(f"{n} {label}" for label, n in sorted(skipped.items()))
+        return [Finding(
+            "warn", "BUNDLE_SATURATED",
+            f"SessionStart preload hit its {limit} KB budget and skipped {detail}.",
+            "Those memories are saved but never loaded, so their rules stop applying with no "
+            "visible failure. Raise BRAIN_BUNDLE_BUDGET_KB, or compact oversized memories.",
+        )]
+    return [Finding("ok", "BUNDLE_BUDGET_OK", f"preload {used}/{limit} KB, nothing skipped")]
+
+
+def _check_memory_sizes(brain: Path) -> list[Finding]:
+    """Oversized user/feedback bodies crowd the preload budget and push others out."""
+    oversized: list[tuple[int, str]] = []
+    for sub in ("user", "feedback"):
+        d = brain / sub
+        if not d.exists():
+            continue
+        for f in sorted(d.rglob("*.md")):
+            try:
+                size = f.stat().st_size
+            except OSError:
+                continue
+            if size > MEMORY_BODY_SOFT_LIMIT:
+                oversized.append((size, f"{sub}/{f.name}"))
+
+    if not oversized:
+        return [Finding(
+            "ok", "MEMORY_SIZES_OK",
+            f"all user/feedback memories within the {MEMORY_BODY_SOFT_LIMIT} B soft limit",
+        )]
+
+    oversized.sort(reverse=True)
+    total_kb = sum(s for s, _ in oversized) / 1024.0
+    worst = ", ".join(name for _, name in oversized[:3])
+    return [Finding(
+        "info", "OVERSIZED_MEMORIES",
+        f"{len(oversized)} memories exceed the {MEMORY_BODY_SOFT_LIMIT} B soft limit "
+        f"({total_kb:.1f} KB total); largest: {worst}.",
+        "global-CLAUDE.md asks for the rule plus Why / How-to-apply, a few sentences each. "
+        "Reference the file, commit or doc instead of copying its detail into the memory.",
+    )]
+
+
 def check(
     project: str | None = None,
     project_cwd: str | Path | None = None,
@@ -529,6 +597,8 @@ def check(
     findings.extend(_check_subdirs(brain))
     findings.extend(_check_sync_conflicts(brain))
     findings.extend(_check_frontmatter(brain))
+    findings.extend(_check_bundle_budget(project))
+    findings.extend(_check_memory_sizes(brain))
     findings.extend(_check_vector_index(brain))
     findings.extend(_check_editable_install())
     findings.extend(_check_fastembed())
