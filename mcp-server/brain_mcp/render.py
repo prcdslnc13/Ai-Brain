@@ -109,6 +109,7 @@ def recall_payload(
             "path": rel,
             "name": m.name,
             "type": m.type,
+            "machine": m.machine,
             "body": body,
             "body_truncated": clipped,
         })
@@ -154,7 +155,10 @@ def render_recall(payload: dict) -> str:
                 if not payload["full_body"]
                 else "  [truncated at body cap — read the file for the rest]"
             )
-        lines.append(f"### {r['path']}  [{r['type']}]{suffix}")
+        tag = r["type"]
+        if r.get("machine"):
+            tag += f" @ {r['machine']}"
+        lines.append(f"### {r['path']}  [{tag}]{suffix}")
         lines.append(r["body"])
 
     if payload["overflow_paths"]:
@@ -189,6 +193,7 @@ def list_payload(
             {
                 "path": str(m.path.relative_to(root_parent)),
                 "type": m.type,
+                "machine": m.machine,
                 "description": m.description,
             }
             for m in memories
@@ -209,5 +214,6 @@ def render_list(payload: dict) -> str:
         lines.append(f"## {t}")
         for m in by_type[t]:
             desc = f" — {m['description']}" if m["description"] else ""
-            lines.append(f"- {m['path']}{desc}")
+            machine = f" [{m['machine']}]" if m.get("machine") else ""
+            lines.append(f"- {m['path']}{machine}{desc}")
     return "\n".join(lines)

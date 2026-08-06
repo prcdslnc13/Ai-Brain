@@ -27,6 +27,12 @@ The moving parts fit together as follows:
     (`brain_session_start`, `brain_recall`, `brain_save`, `brain_list`, `brain_forget`,
     `brain_checkpoint`, `brain_stats`, `brain_doctor`) for MCP clients: LMStudio, MCP-aware
     Ollama frontends, or Claude Code when setup ran with `--with-mcp`.
+  - Every save and checkpoint is stamped with the originating machine
+    (`vault.machine_name()`: `BRAIN_MACHINE` override → macOS LocalHostName → hostname).
+    Checkpoints carry it in the *filename* (`2026-08-06-1249-joes-macbook-pro-3.md`) so
+    uncommitted work is traceable to the machine it lives on; recall/list render it as
+    `[type @ machine]`. Nothing parses checkpoint filenames (consumers sort by mtime) —
+    keep it that way.
   - Core logic lives in `brain_mcp/vault.py` (search, write, frontmatter, session bundle);
     recall/list payload caps and compact-markdown rendering in `brain_mcp/render.py` (shared by
     both frontends — keep it that way); health checks in `brain_mcp/doctor.py`. Everything reads

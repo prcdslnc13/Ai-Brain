@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -34,6 +35,38 @@ def slugify(text: str) -> str:
     text = text.strip().lower()
     text = re.sub(r"[^a-z0-9]+", "-", text)
     return text.strip("-") or "untitled"
+
+
+_machine_name_cache: str | None = None
+
+
+def machine_name() -> str:
+    """Short identifier for the machine this process runs on.
+
+    Stamped into every memory's frontmatter and every checkpoint filename so
+    the user — who works across several machines — can tell where a piece of
+    work happened when it never got committed or finished. `BRAIN_MACHINE`
+    overrides for hosts whose name is unhelpful (corp asset tags). On macOS the
+    Bonjour LocalHostName (`Joes-MacBook-Pro-3`) is preferred because the plain
+    hostname is often a generic `Mac.localdomain`; elsewhere it's the hostname
+    with any domain suffix stripped."""
+    global _machine_name_cache
+    if _machine_name_cache is not None:
+        return _machine_name_cache
+    raw = (os.environ.get("BRAIN_MACHINE") or "").strip()
+    if not raw and sys.platform == "darwin":
+        try:
+            raw = subprocess.run(
+                ["scutil", "--get", "LocalHostName"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            raw = ""
+    if not raw:
+        raw = (platform.node() or "").strip()
+    host = raw.split(".", 1)[0]
+    _machine_name_cache = slugify(host) if host else "unknown-host"
+    return _machine_name_cache
 
 
 def project_basename(project_dir: str | None) -> str | None:
@@ -98,6 +131,7 @@ class Memory:
     description: str
     type: str
     body: str
+    machine: str = ""
 
     @classmethod
     def from_file(cls, path: Path) -> "Memory":
@@ -105,6 +139,7 @@ class Memory:
         name = path.stem
         description = ""
         mtype = "unknown"
+        machine = ""
         body = text
         if text.startswith("---"):
             end = text.find("\n---", 3)
@@ -114,10 +149,12 @@ class Memory:
                     name = fm.get("name", name)
                     description = fm.get("description", "")
                     mtype = fm.get("type", mtype)
+                    machine = str(fm.get("machine") or "")
                     body = text[end + 4 :].lstrip()
                 except yaml.YAMLError:
                     pass
-        return cls(path=path, name=name, description=description, type=mtype, body=body)
+        return cls(path=path, name=name, description=description, type=mtype,
+                   body=body, machine=machine)
 
     def to_dict(self, body_chars: int | None = None) -> dict:
         """Serialize. When body_chars is set, truncate the body to that many chars
@@ -132,6 +169,7 @@ class Memory:
             "name": self.name,
             "description": self.description,
             "type": self.type,
+            "machine": self.machine,
             "body": body,
         }
 
@@ -159,7 +197,8 @@ def write_memory(mtype: str, name: str, content: str, project: str | None = None
         body = content
     else:
         description = content.strip().split("\n", 1)[0][:150]
-        fields = {"name": name, "description": description, "type": mtype}
+        fields = {"name": name, "description": description, "type": mtype,
+                  "machine": machine_name()}
         if mtype == "project":
             fields["project"] = project
         body = _frontmatter(fields) + content.strip() + "\n"
@@ -476,14 +515,20 @@ def write_checkpoint(project: str, summary: str) -> Path:
     target = root / "projects" / project / "sessions"
     target.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y-%m-%d-%H%M")
-    path = target / f"{stamp}.md"
+    # The machine suffix in the filename is deliberate: it's how the user spots
+    # where unfinished/uncommitted work lives when scanning sessions/ (they hop
+    # between machines). Everything that consumes these files picks them by
+    # mtime, never by parsing the name, so the suffix is safe to carry.
+    machine = machine_name()
+    path = target / f"{stamp}-{machine}.md"
     if not summary.lstrip().startswith("---"):
         summary = _frontmatter({
-            "name": f"session checkpoint {stamp}",
-            "description": f"automated session checkpoint for {project}",
+            "name": f"session checkpoint {stamp} ({machine})",
+            "description": f"automated session checkpoint for {project} on {machine}",
             "type": "session",
             "project": project,
             "timestamp": stamp,
+            "machine": machine,
         }) + summary.strip() + "\n"
     _atomic_write(path, summary)
     return path

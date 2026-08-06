@@ -103,6 +103,7 @@ def render_checkpoint(parsed: dict, *, source: str, project: str | None) -> str:
     lines.append(f"# Session checkpoint ({source})")
     lines.append("")
     lines.append(f"- project: {project or 'unknown'}")
+    lines.append(f"- machine: {_vault.machine_name()}")
     lines.append(f"- captured: {datetime.now().isoformat(timespec='seconds')}")
     lines.append(f"- user turns: {len(user_msgs)}")
     lines.append(f"- assistant turns: {len(assistant_msgs)}")
