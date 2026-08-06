@@ -55,6 +55,16 @@ The moving parts fit together as follows:
     them), `BUNDLE_SATURATED` and `OVERSIZED_MEMORIES` (below). Surfacing these at the top of the
     session forces reconstruction instead of silent context loss.
 
+    Doctor also runs three **corpus-hygiene checks** (added 2026-08-06 after a manual dedup
+    audit found ~30 stale/duplicate entries polluting recall): `STUB_SHADOWED_OVERVIEW` (warn —
+    a stub `overview.md` coexists with a sibling memory named like the real overview, so the
+    stub preloads while the real context never does), `STUB_ONLY_PROJECTS` (info — project dirs
+    holding only a 30-day-stale stub, the fingerprint of wrong-cwd session launches), and
+    `NEAR_DUPLICATE_MEMORIES` (info — memory pairs with cosine ≥ `BRAIN_DUP_THRESHOLD`,
+    default 0.92, computed from vectors already in the embedding index; no model load).
+    These catch the mechanical duplication classes only — semantic supersession (entry A
+    corrects entry B) still needs a periodic model-driven review pass.
+
     **The preload budget is a silent-failure surface.** `session_start_bundle` adds user and
     feedback files until `BRAIN_BUNDLE_BUDGET_KB` is exhausted, then *stops* — the overflow is
     reported only as a small "skipped N feedback" note in the banner. On 2026-07-30 the default

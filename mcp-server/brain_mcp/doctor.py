@@ -608,6 +608,170 @@ def _check_memory_sizes(brain: Path) -> list[Finding]:
     )]
 
 
+# --- Corpus-hygiene checks -------------------------------------------------
+# Added 2026-08-06 after the first manual dedup audit found ~30 stale or
+# duplicate entries polluting recall (the "bad information pulled into
+# context" failure). These catch the *mechanical* classes automatically;
+# semantic supersession still needs a periodic model-driven review pass.
+
+STUB_ONLY_STALE_DAYS = 30
+NEAR_DUP_THRESHOLD_DEFAULT = 0.92
+NEAR_DUP_MAX_REPORTED = 5
+NON_MEMORY_NAMES = {"_index.md", "activity.md", "README.md"}
+
+
+def _check_shadowed_overviews(brain: Path) -> list[Finding]:
+    """A stub overview.md coexisting with a sibling memory named like an
+    overview means a save landed under the wrong name: the stub keeps
+    preloading while the real context never does. Found 2026-08-06 —
+    machiner-calcs' real overview was saved as `machiner-calcs-overview`,
+    so every session there got the stub for months."""
+    from brain_mcp import vault
+
+    projects = brain / "projects"
+    if not projects.exists():
+        return []
+    hits: list[str] = []
+    for proj in sorted(p for p in projects.iterdir() if p.is_dir()):
+        ov = proj / "overview.md"
+        if not ov.exists() or not vault.is_overview_stub(ov):
+            continue
+        for sib in sorted(proj.glob("*.md")):
+            if sib.name != "overview.md" and "overview" in sib.stem.lower():
+                hits.append(f"projects/{proj.name}/{sib.name}")
+                break
+    if not hits:
+        return [Finding("ok", "OVERVIEW_SHADOW_OK", "no stub overview is shadowing a misnamed real one")]
+    return [Finding(
+        "warn", "STUB_SHADOWED_OVERVIEW",
+        f"{len(hits)} project(s) have a stub overview.md beside what looks like "
+        f"the real overview under another name: {', '.join(hits[:3])}"
+        + (f" (+{len(hits) - 3} more)" if len(hits) > 3 else "") + ".",
+        "The stub is what preloads. Re-save the real body with "
+        "`brain save project overview --project <X>` (overwrites the stub), "
+        "then `brain forget` the misnamed file.",
+    )]
+
+
+def _check_stub_only_projects(brain: Path) -> list[Finding]:
+    """Projects containing nothing but an old stub overview are almost always
+    wrong-cwd launches (a session started in ~, ~/src, a scratch dir), not
+    real projects — 7 such dirs were found in the 2026-08-06 audit. Only
+    flagged once both the stub and the newest session checkpoint are older
+    than STUB_ONLY_STALE_DAYS, so genuinely new projects never appear."""
+    from brain_mcp import vault
+
+    projects = brain / "projects"
+    if not projects.exists():
+        return []
+    now = datetime.now().timestamp()
+    cutoff = now - STUB_ONLY_STALE_DAYS * 86400
+    hits: list[str] = []
+    for proj in sorted(p for p in projects.iterdir() if p.is_dir()):
+        ov = proj / "overview.md"
+        if not ov.exists() or not vault.is_overview_stub(ov):
+            continue
+        memories = [
+            p for p in proj.rglob("*.md")
+            if "sessions" not in p.relative_to(proj).parts and p != ov
+        ]
+        if memories:
+            continue
+        try:
+            newest = ov.stat().st_mtime
+        except OSError:
+            continue
+        for s in proj.glob("sessions/*.md"):
+            try:
+                newest = max(newest, s.stat().st_mtime)
+            except OSError:
+                continue
+        if newest < cutoff:
+            hits.append(proj.name)
+    if not hits:
+        return []
+    return [Finding(
+        "info", "STUB_ONLY_PROJECTS",
+        f"{len(hits)} project dir(s) contain only a stale stub overview "
+        f"(no memories, nothing touched in {STUB_ONLY_STALE_DAYS}+ days): "
+        f"{', '.join(hits[:5])}" + (f" (+{len(hits) - 5} more)" if len(hits) > 5 else "") + ".",
+        "Usually a session launched in the wrong directory — "
+        "`brain forget Brain/projects/<name>/overview.md` cleans each up. "
+        "A real-but-dormant project can be left alone; its stub upgrades on the next session there.",
+    )]
+
+
+def _check_near_duplicates(brain: Path) -> list[Finding]:
+    """Flag memory pairs whose stored embedding vectors are nearly identical —
+    the fingerprint of duplicate saves, superseded-entry buildup, or the same
+    fact recorded in two scopes. Reads vectors already in the index (no model
+    load, no embedding); silently skips when the index or numpy is absent."""
+    if os.environ.get("BRAIN_EMBED", "1") == "0":
+        return []
+    idx = brain / ".index" / "embeddings.sqlite"
+    if not idx.exists():
+        return []
+    try:
+        import numpy as np
+
+        from brain_mcp import vault
+
+        threshold = float(os.environ.get("BRAIN_DUP_THRESHOLD", NEAR_DUP_THRESHOLD_DEFAULT))
+
+        paths: list[Path] = []
+        vectors: list = []
+        conn = sqlite3.connect(f"file:{idx}?mode=ro", uri=True)
+        try:
+            for raw_path, blob in conn.execute("SELECT path, vector FROM embeddings"):
+                p = Path(raw_path)
+                try:
+                    rel = p.relative_to(brain)
+                except ValueError:
+                    continue  # foreign-machine absolute path; index self-heals on sync
+                if not p.exists():
+                    continue  # deleted since last index sync
+                if "sessions" in rel.parts or p.name in NON_MEMORY_NAMES or p.name.startswith("_"):
+                    continue
+                if p.name == "overview.md" and vault.is_overview_stub(p):
+                    continue  # stubs are boilerplate — they all match each other
+                paths.append(rel)
+                vectors.append(np.frombuffer(blob, dtype="<f4"))
+        finally:
+            conn.close()
+
+        if len(paths) < 2:
+            return []
+        mat = np.vstack(vectors)
+        norms = np.linalg.norm(mat, axis=1)
+        norms[norms == 0] = 1.0
+        mat = mat / norms[:, None]
+        sims = mat @ mat.T
+        iu = np.triu_indices(len(paths), k=1)
+        flat = sims[iu]
+        over = np.nonzero(flat >= threshold)[0]
+        if over.size == 0:
+            return [Finding(
+                "ok", "NEAR_DUP_OK",
+                f"no memory pairs above cosine {threshold} among {len(paths)} indexed memories",
+            )]
+        ranked = over[np.argsort(-flat[over])]
+        pairs = [
+            f"{paths[iu[0][i]]} ~ {paths[iu[1][i]]} ({flat[i]:.2f})"
+            for i in ranked[:NEAR_DUP_MAX_REPORTED]
+        ]
+        more = f" (+{over.size - NEAR_DUP_MAX_REPORTED} more)" if over.size > NEAR_DUP_MAX_REPORTED else ""
+        return [Finding(
+            "info", "NEAR_DUPLICATE_MEMORIES",
+            f"{over.size} memory pair(s) with cosine similarity >= {threshold}: "
+            + "; ".join(pairs) + more + ".",
+            "Likely duplicates or superseded chains — review each pair and merge or "
+            "`brain forget` the stale one. Deliberate per-project twins can be ignored; "
+            "tune with BRAIN_DUP_THRESHOLD.",
+        )]
+    except Exception:
+        return []  # hygiene check must never break the session banner
+
+
 def check(
     project: str | None = None,
     project_cwd: str | Path | None = None,
@@ -625,6 +789,9 @@ def check(
     findings.extend(_check_frontmatter(brain))
     findings.extend(_check_bundle_budget(project))
     findings.extend(_check_memory_sizes(brain))
+    findings.extend(_check_shadowed_overviews(brain))
+    findings.extend(_check_stub_only_projects(brain))
+    findings.extend(_check_near_duplicates(brain))
     findings.extend(_check_vector_index(brain))
     findings.extend(_check_editable_install())
     findings.extend(_check_fastembed())
