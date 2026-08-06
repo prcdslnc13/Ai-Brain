@@ -521,41 +521,67 @@ MEMORY_BODY_SOFT_LIMIT = 1500
 
 
 def _check_bundle_budget(project: str | None) -> list[Finding]:
-    """The SessionStart preload drops entries once it hits its byte budget — silently.
+    """Both preload paths drop entries once they hit their byte budget — silently.
 
     A skipped memory is indistinguishable from one the model chose to ignore, so this
-    failure mode reads as "the model stopped following my corrections".
+    failure mode reads as "the model stopped following my corrections". The session and
+    subagent budgets are sized independently: on 2026-08-06 the corpus had grown past
+    the 44 KB subagent budget (3 feedback rules dropped from every subagent) while this
+    check — then sizing only the 72 KB session budget — reported OK.
     """
-    try:
-        from . import vault
-        bundle = vault.session_start_bundle(project)
-    except Exception as exc:  # never let a health check break the session banner
-        return [Finding(
-            "info", "BUNDLE_CHECK_FAILED",
-            f"Could not build the preload bundle to size it: {exc}",
-        )]
+    from . import vault
 
-    limit = bundle.get("budget_limit_kb")
-    used = bundle.get("budget_consumed_kb")
-    skipped = bundle.get("skipped_sections") or {}
-    if skipped:
-        detail = ", ".join(f"{n} {label}" for label, n in sorted(skipped.items()))
-        return [Finding(
-            "warn", "BUNDLE_SATURATED",
-            f"SessionStart preload hit its {limit} KB budget and skipped {detail}.",
-            "Those memories are saved but never loaded, so their rules stop applying with no "
-            "visible failure. Raise BRAIN_BUNDLE_BUDGET_KB, or compact oversized memories.",
-        )]
-    return [Finding("ok", "BUNDLE_BUDGET_OK", f"preload {used}/{limit} KB, nothing skipped")]
+    findings: list[Finding] = []
+
+    def size_one(label: str, warn_code: str, ok_code: str, knob: str,
+                 bundle_project: str | None, budget_kb: float | None,
+                 slim: bool = False) -> Finding:
+        try:
+            bundle = vault.session_start_bundle(bundle_project, budget_kb=budget_kb, slim=slim)
+        except Exception as exc:  # never let a health check break the session banner
+            return Finding(
+                "info", "BUNDLE_CHECK_FAILED",
+                f"Could not build the {label} preload bundle to size it: {exc}",
+            )
+        limit = bundle.get("budget_limit_kb")
+        used = bundle.get("budget_consumed_kb")
+        skipped = bundle.get("skipped_sections") or {}
+        if skipped:
+            detail = ", ".join(f"{n} {sec}" for sec, n in sorted(skipped.items()))
+            return Finding(
+                "warn", warn_code,
+                f"{label} preload hit its {limit} KB budget and skipped {detail}.",
+                "Those memories are saved but never loaded, so their rules stop applying with "
+                f"no visible failure. Raise {knob}, or compact oversized memories.",
+            )
+        return Finding("ok", ok_code, f"{label} preload {used}/{limit} KB, nothing skipped")
+
+    findings.append(size_one(
+        "SessionStart", "BUNDLE_SATURATED", "BUNDLE_BUDGET_OK",
+        "BRAIN_BUNDLE_BUDGET_KB", project, None))
+    if os.environ.get("BRAIN_SUBAGENT_PRELOAD", "1") != "0":
+        # Mirror the SubagentStart hook exactly: slim bundle (project feedback but no
+        # overview/checkpoint), subagent budget.
+        findings.append(size_one(
+            "SubagentStart", "SUBAGENT_BUNDLE_SATURATED", "SUBAGENT_BUNDLE_OK",
+            "BRAIN_SUBAGENT_BUDGET_KB", project, vault.subagent_budget_kb(), slim=True))
+    return findings
 
 
 def _check_memory_sizes(brain: Path) -> list[Finding]:
-    """Oversized user/feedback bodies crowd the preload budget and push others out."""
+    """Oversized user/feedback bodies crowd the preload budget and push others out.
+
+    Scans project-scoped feedback (projects/*/feedback/) too — it fills the same
+    bundles as global feedback, just for fewer sessions."""
     oversized: list[tuple[int, str]] = []
-    for sub in ("user", "feedback"):
-        d = brain / sub
+    dirs = [brain / "user", brain / "feedback"]
+    projects = brain / "projects"
+    if projects.exists():
+        dirs += sorted(p for p in projects.glob("*/feedback") if p.is_dir())
+    for d in dirs:
         if not d.exists():
             continue
+        sub = str(d.relative_to(brain))
         for f in sorted(d.rglob("*.md")):
             try:
                 size = f.stat().st_size

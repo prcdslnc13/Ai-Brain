@@ -135,9 +135,11 @@ async def list_tools() -> list[Tool]:
                     "project": {
                         "type": "string",
                         "description": (
-                            "REQUIRED only when type='project'. The basename of the project DIRECTORY "
-                            "(e.g. 'Ai-Brain' for ~/src/Ai-Brain), NOT a category or topic name. Omit "
-                            "this field for type='user', 'feedback', or 'reference'."
+                            "REQUIRED when type='project'. The basename of the project DIRECTORY "
+                            "(e.g. 'Ai-Brain' for ~/src/Ai-Brain), NOT a category or topic name. "
+                            "OPTIONAL for type='feedback': set it when the rule only applies to one "
+                            "project — the rule then preloads only in that project's sessions. Omit "
+                            "for feedback that should apply everywhere, and always for 'user'/'reference'."
                         ),
                     },
                 },
