@@ -182,12 +182,14 @@ def write_memory(mtype: str, name: str, content: str, project: str | None = None
         if not project:
             raise ValueError("project memories require a project name")
         target_dir = root / "projects" / project
+    elif mtype == "feedback":
+        # Global by default. `--project X` scopes the rule to one project: it lands in
+        # projects/X/feedback/ and preloads only in that project's sessions. Added
+        # 2026-08-06, when ~40% of the global feedback corpus turned out to be
+        # project-specific advice loading into every session of every project.
+        target_dir = (root / "projects" / project / "feedback") if project else (root / "feedback")
     else:
-        target_dir = root / (mtype + "s" if mtype != "feedback" else "feedback")
-        if mtype == "user":
-            target_dir = root / "user"
-        elif mtype == "reference":
-            target_dir = root / "references"
+        target_dir = root / ("user" if mtype == "user" else "references")
     target_dir.mkdir(parents=True, exist_ok=True)
     slug = slugify(name)
     path = target_dir / f"{slug}.md"
@@ -199,7 +201,7 @@ def write_memory(mtype: str, name: str, content: str, project: str | None = None
         description = content.strip().split("\n", 1)[0][:150]
         fields = {"name": name, "description": description, "type": mtype,
                   "machine": machine_name()}
-        if mtype == "project":
+        if project and mtype in ("project", "feedback"):
             fields["project"] = project
         body = _frontmatter(fields) + content.strip() + "\n"
     _atomic_write(path, body)
@@ -236,6 +238,10 @@ def list_memories(mtype: str | None = None, project: str | None = None) -> list[
         candidates += list((root / "user").rglob("*.md"))
     elif mtype == "feedback":
         candidates += list((root / "feedback").rglob("*.md"))
+        # Project-scoped feedback lives under projects/<p>/feedback/ (added 2026-08-06).
+        proj_root = root / "projects"
+        if proj_root.exists():
+            candidates += list(proj_root.glob("*/feedback/**/*.md"))
     elif mtype == "reference":
         candidates += list((root / "references").rglob("*.md"))
     elif mtype == "project":
@@ -327,10 +333,40 @@ def search_memories(query: str, mtype: str | None = None, project: str | None = 
     return candidates
 
 
-def session_start_bundle(project: str | None = None) -> dict:
+# Default byte budget for the slim SubagentStart bundle. Lives here (not in the hook)
+# so doctor can size the bundle with the same number the hook actually uses — on
+# 2026-08-06 the subagent path had silently re-saturated while doctor reported OK,
+# because doctor only checked the session budget. 44 KB was sized to "fit everything"
+# on 2026-07-30 and the corpus outgrew it within a week; 56 KB is the same stopgap
+# with headroom, and SUBAGENT_BUNDLE_SATURATED now fires when it runs out. The real
+# fix is relevance-scoping the preload, not raising this number forever.
+SUBAGENT_BUDGET_DEFAULT_KB = 56.0
+
+
+def subagent_budget_kb() -> float:
+    try:
+        return float(os.environ.get("BRAIN_SUBAGENT_BUDGET_KB", str(SUBAGENT_BUDGET_DEFAULT_KB)))
+    except ValueError:
+        return SUBAGENT_BUDGET_DEFAULT_KB
+
+
+def session_start_bundle(project: str | None = None, budget_kb: float | None = None,
+                         slim: bool = False) -> dict:
     """Return the standard preload bundle: index + user + feedback + project context.
 
-    Honours BRAIN_BUNDLE_BUDGET_KB (default 72). The index, project overview, and latest
+    Honours BRAIN_BUNDLE_BUDGET_KB (default 72) unless the caller passes an explicit
+    `budget_kb` (the SubagentStart hook and doctor's subagent-sized check do, so the
+    subagent budget never has to be smuggled through the session env var).
+
+    `slim=True` is the subagent shape: it skips the project overview and latest
+    checkpoint (the delegating agent passes task context in the subagent prompt) but
+    still loads the project's scoped feedback — behavioral rules apply to delegated
+    work just as much as to the main session.
+
+    Elastic sections fill in priority order — project-scoped feedback, then user,
+    then global feedback — so under a tight budget, global feedback is what gets
+    dropped first. The index,
+    project overview, and latest
     session checkpoint are always included — they're small and load-bearing. User profile
     entries and feedback files are added in priority order until the budget is exhausted.
 
@@ -340,10 +376,11 @@ def session_start_bundle(project: str | None = None) -> dict:
     BUNDLE_SATURATED when that happens again; raising this default only buys headroom.
     """
     root = vault_root()
-    try:
-        budget_kb = float(os.environ.get("BRAIN_BUNDLE_BUDGET_KB", "72"))
-    except ValueError:
-        budget_kb = 72.0
+    if budget_kb is None:
+        try:
+            budget_kb = float(os.environ.get("BRAIN_BUNDLE_BUDGET_KB", "72"))
+        except ValueError:
+            budget_kb = 72.0
     budget_bytes = int(budget_kb * 1024)
 
     bundle: dict = {
@@ -400,14 +437,21 @@ def session_start_bundle(project: str | None = None) -> dict:
     if project:
         proj_dir = root / "projects" / project
         if proj_dir.exists():
-            overview = proj_dir / "overview.md"
-            if overview.exists():
-                add_pinned(f"project:{project}:overview", overview)
-            sessions_dir = proj_dir / "sessions"
-            if sessions_dir.exists():
-                latest = sorted(sessions_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
-                if latest:
-                    add_pinned(f"project:{project}:latest-session", latest[0])
+            if not slim:
+                overview = proj_dir / "overview.md"
+                if overview.exists():
+                    add_pinned(f"project:{project}:overview", overview)
+                sessions_dir = proj_dir / "sessions"
+                if sessions_dir.exists():
+                    latest = sorted(sessions_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+                    if latest:
+                        add_pinned(f"project:{project}:latest-session", latest[0])
+            proj_feedback = proj_dir / "feedback"
+            if proj_feedback.exists():
+                add_elastic(
+                    f"project:{project}:feedback",
+                    sorted(proj_feedback.rglob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True),
+                )
 
     user_dir = root / "user"
     if user_dir.exists():

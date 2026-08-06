@@ -33,6 +33,11 @@ The moving parts fit together as follows:
     uncommitted work is traceable to the machine it lives on; recall/list render it as
     `[type @ machine]`. Nothing parses checkpoint filenames (consumers sort by mtime) —
     keep it that way.
+  - Feedback can be **project-scoped** (2026-08-06): `brain save feedback --project X` lands in
+    `projects/X/feedback/` and preloads only in that project's sessions (and its subagents —
+    the slim bundle includes project feedback but not overview/checkpoint). Global feedback
+    stays in `feedback/`. Bundle fill order is project-feedback → user → global feedback, so a
+    tight budget drops global feedback first.
   - Core logic lives in `brain_mcp/vault.py` (search, write, frontmatter, session bundle);
     recall/list payload caps and compact-markdown rendering in `brain_mcp/render.py` (shared by
     both frontends — keep it that way); health checks in `brain_mcp/doctor.py`. Everything reads
@@ -58,7 +63,10 @@ The moving parts fit together as follows:
     ignoring past corrections. Default is now 72 KB, `BUNDLE_SATURATED` warns whenever anything
     is skipped, and `OVERSIZED_MEMORIES` (info) flags bodies over
     `doctor.MEMORY_BODY_SOFT_LIMIT` so the corpus gets compacted rather than the budget raised
-    forever. Note the subagent path has its own, much smaller `BRAIN_SUBAGENT_BUDGET_KB`.
+    forever. The subagent path has its own, much smaller `BRAIN_SUBAGENT_BUDGET_KB` —
+    doctor sizes that bundle too (`SUBAGENT_BUNDLE_SATURATED`), because on 2026-08-06 the
+    corpus outgrew the subagent budget and 3 feedback rules were silently dropped from
+    every subagent while the session-budget check reported OK.
   - `subagent_start.py` — injects a *slim* bundle (index + user + feedback, no project
     overview/checkpoint) into every subagent via the SubagentStart event. Claude 5-era models
     delegate heavily, and the SessionStart preload reaches only the main session — without this,

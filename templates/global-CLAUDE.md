@@ -67,7 +67,11 @@ Exactly four types. Save things if and only if they fit one:
   working style, tools. Useful, not judgmental.
 - **feedback** — behavior corrections AND validated approaches (a non-obvious choice the user
   accepted is a quiet "yes"). Lead with the rule, then `**Why:**` and `**How to apply:**` lines —
-  knowing why lets you judge edge cases.
+  knowing why lets you judge edge cases. **Scope it**: if the rule only makes sense in one
+  project/repo (its tooling, test strategy, domain), save with `--project <basename>` so it
+  preloads only there; save without `--project` only for rules that apply everywhere. When a
+  correction arrives inside a project and you're unsure, prefer project-scoped — a rule can be
+  promoted to global later, but a global misfire in the wrong project reads as bad judgment.
 - **project** — ongoing-initiative context you cannot derive from the code or git log: decisions,
   deadlines, incidents, stakeholders, rejected approaches. Convert relative dates to absolute.
   Same `**Why:**` / `**How to apply:**` structure.

@@ -44,9 +44,11 @@ EOF
 ```
 
 - `type` is one of: `user` (facts about the user), `feedback` (behavior rules —
-  lead with the rule, then `**Why:**` and `**How to apply:**` lines), `project`
-  (ongoing-work context not derivable from the code; requires `--project` with
-  the project *directory basename*), `reference` (pointer to an external system).
+  lead with the rule, then `**Why:**` and `**How to apply:**` lines; add
+  `--project` when the rule only applies to one project, so it preloads only in
+  that project's sessions), `project` (ongoing-work context not derivable from
+  the code; requires `--project` with the project *directory basename*),
+  `reference` (pointer to an external system).
 - Short one-liners can use `--content "..."` instead of stdin.
 - Confirm afterwards in one short sentence: `Saved as <path>.`
 
