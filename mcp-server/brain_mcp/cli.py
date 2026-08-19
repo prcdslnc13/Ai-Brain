@@ -16,6 +16,9 @@ Reads BRAIN_VAULT from the environment, like everything else in this package.
     brain list [--type T] [--project P] [--include-sessions] [--json]
     brain forget <path>
     brain checkpoint <project> [--summary TEXT | --file PATH]  (stdin fallback)
+    brain checkpoint [project] --from-cherryd DB [--session N]
+                     [--all-sessions] [--list-sessions] [--force]
+        (project is inferred from the session's cwd when omitted)
     brain stats
     brain doctor [--project P] [--json] [--quiet]
 """
@@ -25,8 +28,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from . import render, vault
+from ._console import force_utf8_stdio
 
 
 def _read_body(args: argparse.Namespace, flag_value: str | None) -> str:
@@ -86,9 +91,56 @@ def _cmd_forget(args: argparse.Namespace) -> int:
 
 
 def _cmd_checkpoint(args: argparse.Namespace) -> int:
+    if args.from_cherryd:
+        return _cmd_checkpoint_cherryd(args)
+    if not args.project:
+        raise SystemExit("error: checkpoint needs a project (or --from-cherryd DB)")
     summary = _read_body(args, args.summary)
     path = vault.write_checkpoint(args.project, summary)
     print(f"checkpoint: {path}")
+    return 0
+
+
+def _cmd_checkpoint_cherryd(args: argparse.Namespace) -> int:
+    """Checkpoint straight out of a harness's own event log.
+
+    For harnesses with no hook system, this is the only mechanism that
+    survives the model running out of context: the log is already on disk, so
+    a timer can capture the session without the model having to remember.
+    """
+    from . import transcript
+
+    db = Path(args.from_cherryd).expanduser()
+    try:
+        if args.list_sessions:
+            rows = transcript.cherryd_sessions(db)
+            if args.json:
+                print(json.dumps(rows, default=str))
+            else:
+                print(f"{len(rows)} session(s) in {db}")
+                for r in rows:
+                    print(f"  session {r['id']}  events={r['event_count']}  "
+                          f"last={r['last_ts'] or '-'}  cwd={r['cwd'] or '-'}")
+            return 0
+        results = transcript.checkpoint_cherryd(
+            db,
+            session_id=args.session,
+            project=args.project,
+            all_sessions=args.all_sessions,
+            force=args.force,
+        )
+    except transcript.CherrydError as e:
+        raise SystemExit(f"error: {e}")
+
+    if args.json:
+        print(json.dumps(results, default=str))
+        return 0
+    for r in results:
+        if r["written"]:
+            print(f"checkpoint: {r['written']}  (session {r['session_id']}, "
+                  f"project {r['project']})")
+        else:
+            print(f"skipped session {r['session_id']}: {r['reason']}")
     return 0
 
 
@@ -151,9 +203,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=_cmd_forget)
 
     p = sub.add_parser("checkpoint", help="write a session checkpoint")
-    p.add_argument("project", help="project directory basename")
+    p.add_argument("project", nargs="?",
+                   help="project directory basename (inferred from the session cwd "
+                        "when --from-cherryd is used)")
     p.add_argument("--summary", "-s", help="checkpoint body; omit to read stdin")
     p.add_argument("--file", "-f", help="read the summary from a file")
+    p.add_argument("--from-cherryd", metavar="DB",
+                   help="build the checkpoint from a cherryd SQLite event log "
+                        "instead of stdin (for harnesses with no hooks)")
+    p.add_argument("--session", type=int,
+                   help="cherryd session id; default is the most recently active")
+    p.add_argument("--all-sessions", action="store_true",
+                   help="checkpoint every cherryd session with new activity")
+    p.add_argument("--list-sessions", action="store_true",
+                   help="list the sessions in the event log and exit")
+    p.add_argument("--force", action="store_true",
+                   help="write even when nothing new happened since the last run")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
     p.set_defaults(func=_cmd_checkpoint)
 
     p = sub.add_parser("stats", help="vault telemetry")
@@ -170,16 +236,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    # Windows consoles/pipes default to cp1252 — in BOTH directions. stdout
-    # would crash print()ing a memory with characters outside cp1252, and stdin
-    # would mangle a UTF-8 heredoc body into mojibake (2026-07-28: em dashes
-    # saved as `â€"`, and an undecodable 0x9D byte from a curly quote killed a
-    # save mid-command). Force UTF-8 end to end, like the vault files.
-    for stream in (sys.stdin, sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, OSError):
-            pass
+    # Windows consoles/pipes default to cp1252 in BOTH directions; see
+    # _console.py for what that broke. stdin matters here because save bodies
+    # arrive through a heredoc.
+    force_utf8_stdio(include_stdin=True)
     args = build_parser().parse_args(argv)
     try:
         sys.exit(args.func(args))

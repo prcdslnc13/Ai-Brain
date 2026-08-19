@@ -28,6 +28,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import vault
+from ._console import force_utf8_stdio
 
 DAILY_AGE_MIN = timedelta(days=7)
 WEEKLY_AGE_MIN = timedelta(days=30)
@@ -163,6 +164,7 @@ def _compact_project(project_dir: Path, archive_root: Path, dry_run: bool) -> Co
 
 
 def main() -> None:
+    force_utf8_stdio()
     parser = argparse.ArgumentParser(
         description="Roll up old session checkpoints into daily/weekly/archive buckets."
     )
