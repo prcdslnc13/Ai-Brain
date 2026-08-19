@@ -47,6 +47,17 @@ MARKER = "<!-- managed-by: ai-brain -->"
 
 # ---------- output helpers ----------
 
+# Same cp1252 hazard as brain-setup.py: this script prints check marks and
+# box-drawing rules, and a Windows console or pipe defaulting to cp1252 turns
+# the first one into a UnicodeEncodeError mid-uninstall. Force UTF-8 where the
+# stream allows it, degrade to replacement characters otherwise.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
+
+
 def info(msg: str) -> None:
     print(msg)
 
