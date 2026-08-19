@@ -40,6 +40,20 @@ _VERSION_GATE = f"import sys; sys.exit(0 if sys.version_info >= {MIN_PY} else 1)
 
 # ---------- output helpers ----------
 
+# Windows consoles and pipes still default to cp1252, and this script prints
+# box-drawing rules, arrows and a check mark. On 2026-08-18 (Windows 11,
+# Python 3.14) a bare print() of the "installing into ..." rule died with
+# UnicodeEncodeError *after* the venv install succeeded but *before* any config
+# dir was written -- a half-done install that reported a traceback instead of a
+# reason. Force UTF-8 where the stream allows it and degrade to replacement
+# characters otherwise; an installer must never abort over a glyph.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
+
+
 def info(msg: str) -> None:
     print(msg)
 
