@@ -62,6 +62,16 @@ EOF
 
 Confirm the path that was written. Keep summaries tight — 6-15 bullets.
 
+To capture a session from a harness that has no hooks (cherryd/llama.cpp), read
+its event log instead of composing a summary:
+
+```
+brain checkpoint --from-cherryd ~/.local/state/cherryd/cherryd.db [--all-sessions]
+```
+
+Repeat runs with no new events are a no-op, so this is safe on a timer. See
+`LOCAL-HARNESS-SETUP.md` in the Ai-Brain repo.
+
 ## List / forget
 
 ```

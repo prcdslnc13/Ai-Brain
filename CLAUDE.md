@@ -87,9 +87,12 @@ The moving parts fit together as follows:
     (found 2026-07-30). `BRAIN_SUBAGENT_PRELOAD=0` disables. Verified
     2026-07-28: SubagentStart fires and injects on Claude Code 2.1.220, hook config picked up
     mid-session, payload carries `agent_id`/`agent_type`.
-  - `pre_compact.py` / `session_end.py` — share `_checkpoint.py`, which parses the transcript JSONL
-    and writes a structural checkpoint to `Brain/projects/<project>/sessions/<timestamp>.md`. No
-    LLM call — the next session's model will summarize/integrate when it sees the file.
+  - `pre_compact.py` / `session_end.py` — share `_checkpoint.py`, a thin wrapper over
+    `brain_mcp.transcript`, which parses the transcript JSONL and writes a structural checkpoint
+    to `Brain/projects/<project>/sessions/<timestamp>.md`. No LLM call — the next session's model
+    will summarize/integrate when it sees the file. The parsing/rendering lives in the package
+    rather than in `hooks/` because the `brain checkpoint --from-cherryd` CLI path produces
+    byte-identical checkpoints for harnesses that have no hooks; keep them sharing one renderer.
   - `stop.py` — two jobs. (1) Gate: when the assistant's final message contains a save-promise
     phrase (*"I'll save this to brain"*, *"checkpointing now"*, etc.) and no brain save occurred
     in the turn, emit `{decision: "block", reason: …}` so Claude Code feeds the reason back to the
@@ -123,7 +126,8 @@ The moving parts fit together as follows:
     Stateless, no marker files, no pending-saves dir. Disable per-install with `BRAIN_NUDGE=0` in
     the hook env (e.g., to keep prompts tight for local-model sessions, though hooks only fire
     under Claude Code anyway).
-  - `_common.py` / `_checkpoint.py` / `_savesig.py` — shared helpers. All read `BRAIN_VAULT` from
+  - `_common.py` / `_checkpoint.py` / `_savesig.py` — shared helpers (`_checkpoint.py` now just
+    re-exports from `brain_mcp.transcript`). All read `BRAIN_VAULT` from
     env, never from the filesystem layout. `_savesig.py` is named with a prefix because `_signal`
     is a CPython builtin module that shadows local imports.
 
@@ -156,10 +160,11 @@ The moving parts fit together as follows:
   venv's `brain.exe`. Uses `templates/settings.hooks.win.json` as the template. Python hooks and
   server/CLI code are unchanged between platforms.
 
-- **`WINDOWS-SETUP.md`, `LMSTUDIO-SETUP.md`, `PI-SETUP.md`** — user-facing install guides for the
-  Windows bring-up, the LMStudio MCP registration, and the pi (pi.dev) CLI wiring. Keep these in
-  sync with `setup-windows.ps1`, the MCP server command/env contract, and the `brain` CLI surface
-  respectively.
+- **`WINDOWS-SETUP.md`, `LMSTUDIO-SETUP.md`, `PI-SETUP.md`, `LOCAL-HARNESS-SETUP.md`** —
+  user-facing install guides for the Windows bring-up, the LMStudio MCP registration, the pi
+  (pi.dev) CLI wiring, and llama.cpp/cherryd (bundle sizing plus timer-driven checkpoints for
+  harnesses with no hooks). Keep these in sync with `setup-windows.ps1`, the MCP server
+  command/env contract, the `brain` CLI surface, and `brain_mcp/transcript.py` respectively.
 
 ## Common commands
 

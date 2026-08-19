@@ -257,6 +257,11 @@ machines just churns disk and bandwidth. The archive is large but rarely read.
 
 ## Local model integration
 
+- **llama.cpp / cherryd / any harness without hooks**: see `LOCAL-HARNESS-SETUP.md`. Two
+  problems, two fixes — size the preload to the context window (`brain-prep --slim --budget-kb N`),
+  and checkpoint from the harness's own session log on a timer
+  (`brain checkpoint --from-cherryd <db> --all-sessions`) so a context overflow can't take the
+  session with it. Nothing there depends on the model remembering to save.
 - **pi** ([pi.dev](https://pi.dev)): pi has no MCP support by design — use the `brain` CLI via
   pi's shell tool. See `PI-SETUP.md`.
 - **LMStudio**: register the MCP server in LMStudio's settings (see `LMSTUDIO-SETUP.md`):

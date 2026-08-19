@@ -27,6 +27,8 @@ from pathlib import Path
 
 import yaml
 
+from ._console import force_utf8_stdio
+
 SEVERITY_ORDER = ("ok", "info", "warn", "error")
 
 
@@ -831,6 +833,7 @@ def render_banner(findings: list[dict], min_severity: str = "warn") -> str:
 
 
 def main() -> None:
+    force_utf8_stdio()
     parser = argparse.ArgumentParser(description="Run Ai-Brain health checks.")
     parser.add_argument("--project", help="project basename for stale-checkpoint check")
     parser.add_argument(
