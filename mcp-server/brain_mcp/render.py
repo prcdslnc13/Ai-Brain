@@ -54,7 +54,7 @@ def max_total_chars() -> int:
 
 
 def _is_session_checkpoint(m: vault.Memory) -> bool:
-    return "sessions" in m.path.parts or m.type == "session"
+    return vault.is_session_path(m.path) or m.type == "session"
 
 
 def _clip(text: str, limit: int) -> tuple[str, bool]:

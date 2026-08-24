@@ -22,6 +22,7 @@ import sqlite3
 import struct
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -161,6 +162,150 @@ _SYNC_LOCK = threading.Lock()
 _MATRIX_CACHE: dict = {"key": None, "paths": None, "mat": None}
 
 
+# Optional bound on checkpoint indexing, OFF by default. Session checkpoints are
+# 68.7% of the vault's files (measured 2026-08-24: 616 of 897) and grow by one per
+# session while hand-written memories grow slowly, so an unbounded index trends
+# toward being nothing but checkpoints — hence the knob.
+#
+# It defaults to 0 (index everything) because dropping a file's vector currently
+# makes it near-unfindable, not merely un-ranked: search_memories appends *all*
+# ripgrep hits after *all* 20 vector hits, so a file with no vector lands at the
+# bottom no matter how well it matches. Measured 2026-08-24 on a synthetic vault:
+# a query whose literal text appeared in exactly one aged-out checkpoint ranked
+# that checkpoint 21st of 21, invisible at any sane top_k. Until ripgrep-only hits
+# are ranked fairly, set this only if you accept that trade.
+SESSION_INDEX_DAYS_DEFAULT = 0
+
+
+def _session_index_cutoff() -> float | None:
+    raw = os.environ.get("BRAIN_INDEX_SESSION_DAYS", "")
+    if not raw:
+        days = SESSION_INDEX_DAYS_DEFAULT
+    else:
+        try:
+            days = float(raw)
+        except ValueError:
+            days = SESSION_INDEX_DAYS_DEFAULT
+    if days <= 0:
+        return None
+    return time.time() - days * 86400.0
+
+
+def _indexable(root: Path) -> dict[str, float]:
+    """Path -> mtime for every file that *should* carry a vector.
+
+    Single source of truth for sync() and backlog(): if these two disagreed,
+    backlog() would report work sync() refuses to do and INDEX_STALE would warn
+    forever.
+    """
+    cutoff = _session_index_cutoff()
+    out: dict[str, float] = {}
+    for p in vault.iter_indexable_md(root):
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            continue
+        if cutoff is not None and mtime < cutoff and vault.is_session_path(p):
+            continue
+        out[str(p)] = mtime
+    return out
+
+
+# A reindex outlives the hook that starts it, so the guard against concurrent
+# passes has to be cross-process (a threading.Lock only covers _SYNC_LOCK's
+# process). Treat a lock older than this as abandoned by a killed process.
+REINDEX_LOCK_STALE_S = 1800
+
+
+def _reindex_lock_path() -> Path:
+    return vault.vault_root() / ".index" / "reindex.lock"
+
+
+def reindex_lock_held() -> bool:
+    try:
+        lock = _reindex_lock_path()
+        if not lock.exists():
+            return False
+        if time.time() - lock.stat().st_mtime > REINDEX_LOCK_STALE_S:
+            return False
+    except OSError:
+        return False
+    return True
+
+
+def acquire_reindex_lock() -> bool:
+    """Best-effort cross-process lock. O_EXCL create, with stale-lock takeover."""
+    try:
+        lock = _reindex_lock_path()
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        if lock.exists() and time.time() - lock.stat().st_mtime > REINDEX_LOCK_STALE_S:
+            lock.unlink(missing_ok=True)
+        fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return False
+    except OSError:
+        # Can't lock (read-only vault, permissions) — don't block the reindex.
+        return True
+    try:
+        os.write(fd, str(os.getpid()).encode())
+    finally:
+        os.close(fd)
+    return True
+
+
+def release_reindex_lock() -> None:
+    try:
+        _reindex_lock_path().unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def spawn_background_reindex(min_backlog: int = 1) -> bool:
+    """Kick `brain reindex` as a detached process; return True if one was started.
+
+    Deliberately a *process*, not a thread: the callers are hooks and the CLI,
+    both of which exit in seconds, and a daemon thread dies with them — the whole
+    point is that the catch-up pass outlives its launcher. Never raises; a failure
+    to reindex in the background must not take a session start down with it.
+    """
+    if os.environ.get("BRAIN_EMBED", "1") == "0":
+        return False
+    if os.environ.get("BRAIN_AUTO_REINDEX", "1") == "0":
+        return False
+    try:
+        if reindex_lock_held():
+            return False
+        if backlog_count() < max(1, min_backlog):
+            return False
+        import subprocess
+
+        kwargs: dict = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+            "cwd": str(Path(sys.executable).parent),
+            "env": os.environ.copy(),
+        }
+        if os.name == "nt":
+            # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP — no console window,
+            # survives the parent.
+            kwargs["creationflags"] = 0x00000008 | 0x00000200
+        else:
+            kwargs["start_new_session"] = True
+        subprocess.Popen(
+            [sys.executable, "-m", "brain_mcp.cli", "reindex"], **kwargs
+        )
+        return True
+    except Exception:
+        return False
+
+
+def backlog_count() -> int:
+    """Module-level alias for EmbedIndex.backlog() — usable before the class body
+    is referenced, and the natural name for hook/doctor call sites."""
+    return EmbedIndex.backlog()
+
+
 class EmbedIndex:
     """Vector index over the vault. Self-healing: rebuilds missing rows on sync()."""
 
@@ -172,15 +317,54 @@ class EmbedIndex:
         except EmbedUnavailable as e:
             print(f"brain embed warm-up skipped: {e}", file=sys.stderr)
 
+    # A foreground recall must not block on a large backlog. Embedding cost is
+    # ~fixed per document (measured 2026-08-24: ~400 ms/doc for bge-small on CPU,
+    # independent of body length — fastembed pads every input to the model's
+    # 512-token window, so truncating bodies buys nothing), which means the only
+    # way to bound recall latency is to bound the document count per pass.
+    # Small: the deadline is only checked between chunks, so chunk size is the
+    # overshoot granularity. Batching buys almost nothing here (measured: 464
+    # ms/doc at batch=1 vs 419 at batch=32), so keeping it low is nearly free.
+    SYNC_CHUNK = 4
+    SYNC_BUDGET_DEFAULT = 5.0
+
     @classmethod
-    def sync(cls) -> int:
+    def _budget_seconds(cls) -> float:
+        raw = os.environ.get("BRAIN_SYNC_MAX_SECONDS", "")
+        if not raw:
+            return cls.SYNC_BUDGET_DEFAULT
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            return cls.SYNC_BUDGET_DEFAULT
+
+    @classmethod
+    def sync(cls, budget_seconds: float | None = None) -> int:
         """Walk the vault, upsert stale/missing rows, drop rows for deleted files.
+
+        Time-boxed by default: embeds newest-first until `budget_seconds` is spent
+        (`BRAIN_SYNC_MAX_SECONDS`, default 5s; 0 or `budget_seconds=0` means
+        unlimited, which is what `brain reindex` and the background warmup use).
+        Always makes at least one chunk of progress, and commits per chunk, so a
+        truncated pass keeps its work and the next call resumes where it stopped
+        rather than starting over.
+
+        A *time-boxed* pass also skips session checkpoints outright. Default recall
+        filters checkpoints out of its results, so a foreground recall spending its
+        slice on one is pure waste — checkpoints get their vectors from the
+        unbounded passes instead (`brain reindex`, the MCP warmup, the SessionStart
+        background kick), where nobody is waiting on the result.
 
         Returns the number of rows upserted. Raises EmbedUnavailable if the embedder
         cannot load. Serialized by a process-wide lock so the background startup
         warmup and a foreground recall don't both embed the same stale files.
         """
         with _SYNC_LOCK:
+            if budget_seconds is None:
+                budget_seconds = cls._budget_seconds()
+            deadline = None if budget_seconds <= 0 else time.monotonic() + budget_seconds
+            foreground = deadline is not None
+
             root = vault.vault_root()
             conn = _connect()
             try:
@@ -188,44 +372,88 @@ class EmbedIndex:
                 for path, mtime in conn.execute("SELECT path, mtime FROM embeddings"):
                     existing[path] = mtime
 
-                current: dict[str, float] = {}
-                for p in vault.iter_indexable_md(root):
-                    try:
-                        current[str(p)] = p.stat().st_mtime
-                    except OSError:
-                        continue
+                # Aged-out checkpoints drop out of `current` and are therefore
+                # deleted below, alongside genuinely removed files — which is what
+                # keeps the index bounded as sessions accumulate.
+                current = _indexable(root)
 
                 stale = [p for p in existing if p not in current]
                 if stale:
                     conn.executemany("DELETE FROM embeddings WHERE path = ?", ((p,) for p in stale))
+                    conn.commit()
 
-                to_upsert: list[tuple[str, float, str]] = []
+                pending: list[tuple[str, float]] = []
                 for path, mtime in current.items():
                     prior = existing.get(path)
                     if prior is None or mtime > prior + 1e-6:
+                        if foreground and vault.is_session_path(Path(path)):
+                            continue
+                        pending.append((path, mtime))
+
+                # Hand-written memories before checkpoints, newest first within each
+                # group. Only bites on unbounded passes (a foreground one has already
+                # dropped every checkpoint above), where it still matters: an
+                # interrupted reindex should have finished the memories first.
+                pending.sort(key=lambda pm: (vault.is_session_path(Path(pm[0])), -pm[1]))
+
+                done = 0
+                for i in range(0, len(pending), cls.SYNC_CHUNK):
+                    # `and done` guarantees forward progress even on a zero budget.
+                    if deadline is not None and done and time.monotonic() >= deadline:
+                        break
+                    batch: list[tuple[str, float, str]] = []
+                    for path, mtime in pending[i:i + cls.SYNC_CHUNK]:
                         try:
-                            text = Path(path).read_text(encoding="utf-8")
+                            batch.append((path, mtime, Path(path).read_text(encoding="utf-8")))
                         except OSError:
                             continue
-                        to_upsert.append((path, mtime, text))
-
-                if to_upsert:
-                    texts = [t for (_, _, t) in to_upsert]
-                    vectors = _EMBEDDER.embed_many(texts)
-                    rows = [
-                        (path, mtime, _vec_to_blob(vec))
-                        for (path, mtime, _), vec in zip(to_upsert, vectors)
-                    ]
+                    if not batch:
+                        continue
+                    vectors = _EMBEDDER.embed_many([t for (_, _, t) in batch])
                     conn.executemany(
                         "INSERT INTO embeddings(path, mtime, vector) VALUES (?, ?, ?) "
                         "ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, vector=excluded.vector",
-                        rows,
+                        [(pa, mt, _vec_to_blob(v)) for (pa, mt, _), v in zip(batch, vectors)],
                     )
+                    # Commit per chunk, not once at the end: a time-boxed pass must
+                    # keep its progress or successive recalls redo the same work.
+                    conn.commit()
+                    done += len(batch)
 
-                conn.commit()
-                return len(to_upsert)
+                return done
             finally:
                 conn.close()
+
+    @classmethod
+    def backlog(cls) -> int:
+        """Count files whose embedding is missing or stale.
+
+        Stat-only — no model load, no embedding — so doctor and the session-start
+        hook can call it to decide whether a reindex is worth kicking off.
+        """
+        try:
+            root = vault.vault_root()
+        except Exception:
+            return 0
+        idx = root / ".index" / "embeddings.sqlite"
+        if not idx.exists():
+            return len(_indexable(root))
+        existing: dict[str, float] = {}
+        try:
+            conn = sqlite3.connect(f"file:{idx}?mode=ro", uri=True)
+            try:
+                for path, mtime in conn.execute("SELECT path, mtime FROM embeddings"):
+                    existing[path] = mtime
+            finally:
+                conn.close()
+        except sqlite3.DatabaseError:
+            return 0
+        n = 0
+        for path, mtime in _indexable(root).items():
+            prior = existing.get(path)
+            if prior is None or mtime > prior + 1e-6:
+                n += 1
+        return n
 
     @classmethod
     def upsert(cls, path: Path) -> None:

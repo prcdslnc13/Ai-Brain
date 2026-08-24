@@ -22,7 +22,7 @@ The moving parts fit together as follows:
 - **`mcp-server/`** — the `brain_mcp` Python package with two thin frontends over one core:
   - **`brain_mcp/cli.py`** → the `brain` console script, the **primary interface**. Claude Code
     (via the brain skill + global CLAUDE.md) and pi run `brain recall|save|list|forget|checkpoint|
-    stats|doctor` through their shell tool. Costs no context tokens until invoked.
+    stats|reindex|doctor` through their shell tool. Costs no context tokens until invoked.
   - **`pi/extensions/brain.ts`** → the third frontend: a pi (pi.dev) extension that shells
     out to the same CLI. See below.
   - **`brain_mcp/server.py`** → stdio MCP server exposing the same operations as typed tools
@@ -54,7 +54,8 @@ The moving parts fit together as follows:
     `STALE_UNCOMMITTED` (project has on-disk changes postdating the last checkpoint; prior session
     likely died before checkpointing — reads `project_cwd` from the hook payload, disable with
     `BRAIN_STALE_CHECK=0`), `PROMISE_GAP` (recent turns promised saves without fulfilling
-    them), `BUNDLE_SATURATED` and `OVERSIZED_MEMORIES` (below). Surfacing these at the top of the
+    them), `BUNDLE_SATURATED` and `OVERSIZED_MEMORIES` (below), plus `INDEX_STALE`
+    (vector-index backlog — see the recall-sync gotcha). Surfacing these at the top of the
     session forces reconstruction instead of silent context loss.
 
     Doctor also runs three **corpus-hygiene checks** (added 2026-08-06 after a manual dedup
@@ -235,12 +236,72 @@ BRAIN_VAULT=~/Vaults/Ai-Brain \
 # Exercise the pi extension end to end (loads, preloads, checkpoints on exit)
 BRAIN_VAULT=~/Vaults/Ai-Brain pi -e ~/src/Ai-Brain -p "Say only: brain ok"
 
+# Drain the vector-index backlog (recall only syncs a 5s slice per call)
+BRAIN_VAULT=~/Vaults/Ai-Brain ~/src/Ai-Brain/mcp-server/.venv/bin/brain reindex
+
 # Health check — run anytime, especially when the Brain feels stale or broken
 BRAIN_VAULT=~/Vaults/Ai-Brain \
   ~/src/Ai-Brain/mcp-server/.venv/bin/brain-doctor --project MyProject
 ```
 
 ## Gotchas that will bite you
+
+- **Recall's index sync is time-boxed on purpose — don't make it unbounded again
+  (fixed 2026-08-24).** `vault.search_memories()` calls `EmbedIndex.sync()` in the
+  foreground on every recall. It used to embed the *entire* backlog before returning a
+  single result, so an index six weeks behind turned one `brain recall` into a **2m45s**
+  stall (897 files). The MCP server had a `_background_embed_warmup` thread and so never
+  showed it; the CLI — the primary interface — had no equivalent and paid it inline.
+  `sync()` now embeds **newest-mtime first**, in `SYNC_CHUNK`-sized batches, **committing
+  per chunk**, until `BRAIN_SYNC_MAX_SECONDS` (default 5s) is spent; `budget_seconds=0`
+  means unlimited and is what `brain reindex` and the MCP warmup pass. Per-chunk commit is
+  load-bearing: without it a truncated pass keeps no progress and every recall redoes the
+  same work. Chunk size is the overshoot granularity, since the deadline is only checked
+  between chunks — batching buys almost nothing here (464 ms/doc at batch=1 vs 419 at
+  batch=32), so keep it small.
+
+  Embedding cost scales with **token count up to the model's 512-token cap**, then flattens
+  — bodies past ~1500 chars all cost the same ~420 ms. Anything that shortens what actually
+  reaches the model is the real lever (a representative slice, not a blind truncation);
+  `batch_size`/`threads`/`parallel` are all noise. Catch-up runs via `brain reindex`
+  (cross-process lock at `.index/reindex.lock`, stale after 30 min) and the SessionStart
+  hook's `spawn_background_reindex()` — a **detached process**, not a thread, because hooks
+  exit in seconds and a daemon thread dies with them. `BRAIN_AUTO_REINDEX=0` disables it;
+  doctor's `INDEX_STALE` warns at >=50 pending so the latency can't hide again.
+
+  A time-boxed (foreground) sync also **skips session checkpoints entirely** — they are
+  68.7% of the vault's files (616 of 897) and `render.recall_payload` filters them out of
+  default recall anyway, so a recall spending its slice on one buys nothing. They get their
+  vectors from the unbounded passes instead. `_indexable()` is the single source of truth
+  for what deserves a vector; `sync()` and `backlog()` must both go through it or
+  `INDEX_STALE` will warn about work `sync()` refuses to do.
+
+- **Lexical-only hits get a reserved slot every 3rd position — don't "simplify" that back to
+  appending them (fixed 2026-08-24).** `search_memories` used to append *all* ripgrep hits
+  after *all* 20 vector hits, so a file with no vector sorted to the bottom however well it
+  matched: a query whose literal text appeared in exactly one un-vectorized file ranked it
+  **21st of 21**, invisible at any sane `top_k`. `_merge_lexical` now weaves lexical-only
+  hits in at `LEXICAL_SLOT_EVERY` (3, chosen because `DEFAULT_TOP_K` is 3 — so the best
+  literal match is always visible in a default recall while positions 1–2 stay pure vector
+  ranking). Only the first `LEXICAL_MERGE_CAP` (20) participate; the rest still append, so
+  total match counts don't change and a broad query can't hand a third of the ranking to
+  files that merely mention the word — that was the 2026-07-11 blowup, and it would come
+  straight back through this door.
+
+  Two things had to be fixed alongside it, both of which only became visible once lexical
+  hits stopped sorting last: `EXCLUDE_FILES` keeps `activity.md` (the Stop-hook audit log)
+  and `_index.md` out of both the index and the search results — `activity.md` surfaced as
+  the #3 hit for "windows setup" — and `_ripgrep_search` now returns **occurrence counts**
+  (`rg -c`) instead of bare paths, because ordering lexical hits by mtime put "most recently
+  touched file that mentions the word once" ahead of "file that is largely about the word".
+
+- **`BRAIN_INDEX_SESSION_DAYS` still defaults to 0 (off), even though ranking is fixed.** It
+  bounds index growth (checkpoints accrue ~1/session forever; hand-written memories don't),
+  and an excluded checkpoint is now *findable* — the reserved slot guarantees that. But it is
+  only findable **lexically**: a query that is semantically related without literally
+  matching won't reach it at all. Measured benefit today is ~15% of files on a one-time
+  indexing cost; the cost is a permanent loss of semantic reach over old checkpoints. Turn it
+  on deliberately, for a vault where index size actually hurts.
 
 - **Frontmatter is machine-written YAML — build it with `vault._frontmatter()` and write with
   `vault._atomic_write()`, never f-strings + `write_text` (fixed 2026-07-29, Windows

@@ -21,6 +21,7 @@ Reads BRAIN_VAULT from the environment, like everything else in this package.
     brain checkpoint [project] --from-pi SESSION.jsonl [--source TAG] [--force]
         (project is inferred from the session's cwd when omitted)
     brain stats
+    brain reindex [--json]
     brain doctor [--project P] [--json] [--quiet]
 """
 
@@ -28,7 +29,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
 from . import render, vault
@@ -185,6 +188,45 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_reindex(args: argparse.Namespace) -> int:
+    """Embed the whole backlog in one unbounded pass.
+
+    Recall only ever syncs a 5s slice (see EmbedIndex.sync), so without a periodic
+    full pass a long gap between sessions leaves a backlog that every recall pays
+    a piece of. Run this from a timer, a hook, or by hand after a bulk vault edit.
+    """
+    from . import embed
+
+    if os.environ.get("BRAIN_EMBED", "1") == "0":
+        raise SystemExit("error: BRAIN_EMBED=0 — vector search is disabled")
+
+    if not embed.acquire_reindex_lock():
+        print("reindex already running (see .index/reindex.lock)")
+        return 0
+
+    pending = embed.EmbedIndex.backlog()
+    t0 = time.monotonic()
+    try:
+        done = embed.EmbedIndex.sync(budget_seconds=0)
+    except embed.EmbedUnavailable as e:
+        raise SystemExit(f"error: embedder unavailable: {e}")
+    finally:
+        embed.release_reindex_lock()
+    elapsed = time.monotonic() - t0
+
+    if args.json:
+        print(json.dumps({
+            "pending": pending,
+            "indexed": done,
+            "remaining": embed.EmbedIndex.backlog(),
+            "elapsed_s": round(elapsed, 1),
+        }))
+    else:
+        print(f"reindexed {done} file(s) in {elapsed:.1f}s "
+              f"({pending} were stale at start)")
+    return 0
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     from . import doctor
 
@@ -266,6 +308,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("stats", help="vault telemetry")
     p.set_defaults(func=_cmd_stats)
+
+    p = sub.add_parser("reindex", help="embed the full vector-index backlog")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=_cmd_reindex)
 
     p = sub.add_parser("doctor", help="run health checks")
     p.add_argument("--project")
