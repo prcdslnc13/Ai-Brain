@@ -1,6 +1,7 @@
 # Plan: a Brain extension for pi
 
-_Written 2026-08-23. Implementation not started — this is the design to work from._
+_Written 2026-08-23. **M0–M3 built and verified the same day** (see "Status" at the bottom);
+M4 (packaging/tag) and M5 (say=do gate) remain._
 
 ## Why
 
@@ -185,14 +186,19 @@ afterward and run it on the same timer as the cherryd one.
 
 ## Milestones
 
-- [ ] **M0 — skeleton.** Root `package.json` manifest, `pi/extensions/brain.ts`,
-      CLI resolution + `exec` wrapper, self-disable path. Verify
-      `pi -e ~/src/Ai-Brain` loads it and `/help` shows nothing broken.
-- [ ] **M1 — tools.** Five tools with prompt snippets and guidelines. Verify a
-      local model can recall and save unprompted.
-- [ ] **M2 — preload.** `brain-prep` injection, budget setting, `AGENTS.md`
-      duplicate detection.
-- [ ] **M3 — checkpoints.** All three triggers, idempotence, no approval prompt.
+- [x] **M0 — skeleton.** Root `package.json` manifest, `pi/extensions/brain.ts`,
+      CLI resolution + `exec` wrapper, self-disable path.
+- [x] **M1 — tools.** Five tools with prompt snippets and guidelines. Verified with
+      qwen3.6-27b on LMStudio: `brain_recall` and `brain_save` both called and
+      landed correctly (a project-scoped feedback memory, right frontmatter).
+- [x] **M2 — preload.** `brain-prep --slim --budget-kb` injected as a hidden
+      `brain-bundle` custom message on the first turn; guidance read from
+      `templates/AGENTS-brain.md` and skipped when that snippet is already a
+      loaded context file.
+- [x] **M3 — checkpoints.** All three triggers wired, dedup via the shared
+      `harness-checkpoints.json`, no approval prompt. Cadence and shutdown observed
+      firing (and deduping against each other); **`session_before_compact` is wired
+      but has not yet been seen firing** — see the note below.
 - [ ] **M4 — packaging.** Tag, `pi install git:…@<tag>` on a second machine,
       confirm it loads under PI WEB and under Paseo-driven pi.
 - [ ] **M5 — say=do gate.** Optional.
@@ -222,3 +228,49 @@ afterward and run it on the same timer as the cherryd one.
   produce two sets of instructions in the prompt.
 - Is there a reason to keep the pi extension in step with `brain-mcp`'s tool
   descriptions automatically, rather than by hand?
+
+## Status (2026-08-23)
+
+Built: `pi/extensions/brain.ts`, the root `package.json` manifest, and
+`brain checkpoint --from-pi` (`transcript.parse_pi_session` /
+`transcript.checkpoint_pi`).
+
+Answers to the open questions above, as resolved by building it:
+
+- **`session_shutdown` fires on process exit** — verified in print mode, where the
+  checkpoint lands with `reason: "quit"`. The TUI exit path (Ctrl+C/Ctrl+D) is the
+  same event and pi documents it, but it has not been exercised by hand yet.
+- **Settings are environment variables only.** pi has no per-extension settings
+  block, and every other component here reads its configuration from the env.
+  Table in `PI-SETUP.md`. One trap: `BRAIN_CMD` is a *shell string* in the Claude
+  Code templates and `pi.exec` spawns without a shell, so it is honoured only when
+  it has no whitespace; `BRAIN_PI_CMD` is the unambiguous knob.
+- **Complement the `AGENTS.md` snippet, don't refuse to load.** The extension
+  reads its guidance from `templates/AGENTS-brain.md` and skips injecting it when
+  the same file is already loaded as a context file (matched on the
+  `managed-by: ai-brain` marker), so the two never produce two copies.
+- **Tool descriptions stay in step by construction**, not by hand: the extension
+  is a frontend over the same CLI, and the parts that must not drift — the
+  checkpoint format and the behavioural guidance — are read from Python and from
+  the template rather than restated in TypeScript.
+
+Also learned while verifying:
+
+- The **first** `brain_recall` on a machine builds the embedding index for the whole
+  vault and blew a 20s timeout, which surfaced to the model as an empty
+  `brain error:`. The timeout now defaults to 60s and a killed command reports
+  "timed out", not an empty string.
+- **Forcing an auto-compaction from configuration did not work** and is a dead end
+  worth not repeating. Setting `compaction.reserveTokens` just under the model's
+  context window (project settings with `-a`, then user settings) never produced a
+  compaction entry in print mode, even with the session context at ~11.7k against a
+  ~5.1k threshold; a helper extension calling `ctx.compact()` from `agent_settled`
+  hung rather than completing. The cheap verification is `/compact` in an
+  interactive session — one command, real event, `reason: "manual"` — and that is
+  what to do before calling this trigger verified.
+
+The alternative reader described above turned out to be the *implementation*
+rather than an alternative: `--from-pi` parses pi's own session JSONL, so the same
+flag serves the extension (which supplies the trigger) and any future timer
+(which would supply its own). Running it on a timer over `~/.pi/agent/sessions`
+still needs nothing more than a cron entry.

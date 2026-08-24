@@ -2,7 +2,19 @@
 
 [pi](https://pi.dev) ships without MCP support on purpose — MCP tool schemas are too
 token-heavy for a minimal agent. That's fine: the Brain's primary interface is the `brain`
-CLI, and pi has a shell tool. No extension required.
+CLI, and pi has a shell tool.
+
+There are two ways to wire it up, and they compose:
+
+- **The CLI route** (below) — an `AGENTS.md` snippet telling the model the `brain` CLI
+  exists. Nothing to install beyond the venv. Everything depends on the model volunteering.
+- **The extension** ([jump](#the-extension-preload-tools-and-automatic-checkpoints)) — a pi
+  extension in this repo that preloads memory, registers `brain_*` tools, and checkpoints on
+  compaction, on a turn cadence, and at shutdown. This is what closes the gap the CLI route
+  leaves: *nothing is written unless the model decides to write it.*
+
+If you install the extension, you can keep the `AGENTS.md` snippet or drop it — the extension
+detects the snippet and skips injecting its own copy of the same instructions.
 
 ## Prerequisites
 
@@ -55,3 +67,101 @@ sed "s|__BRAIN_CMD__|BRAIN_VAULT=\"$HOME/Vaults/Ai-Brain\" \"$HOME/src/Ai-Brain/
   [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter) proxies MCP servers through
   one compact tool; point it at `python -m brain_mcp` with `BRAIN_VAULT` set. The plain CLI
   is simpler and cheaper, though.
+
+## The extension: preload, tools, and automatic checkpoints
+
+The CLI route leaves the same gap `LOCAL-HARNESS-SETUP.md` opens with: no preload, no
+checkpoint before the context overflows, no session-end write. pi's extension API closes all
+three, and on better triggers than a timer — `session_before_compact` fires with
+`reason: threshold | overflow | manual` (PreCompact parity), and `session_shutdown` fires on
+exit.
+
+The extension lives in this repo (`pi/extensions/brain.ts`), and shells out to the same
+`brain` CLI everything else uses. It renders nothing itself: checkpoint bodies come from
+`brain checkpoint --from-pi`, so a pi checkpoint is byte-identical to one written by the
+Claude Code hooks.
+
+### Install
+
+```bash
+pi install ~/src/Ai-Brain                            # local checkout
+pi install git:github.com/prcdslnc13/Ai-Brain@<tag>  # pinned, any machine
+pi -e ~/src/Ai-Brain                                 # try it for one run
+```
+
+`pi install` writes the path into `~/.pi/agent/settings.json` (`-l` for project settings).
+The repo root carries the `package.json` manifest that points pi at `pi/extensions/` — a
+subdirectory of a git repo is not addressable on its own, which is why the manifest sits at
+the top.
+
+The extension needs the venv from any of the setup paths (`brain-setup.py`, `setup-mac.sh`,
+`setup-linux.sh`, `setup-windows.ps1`) — it resolves `mcp-server/.venv/bin/brain` inside its
+own package directory. **If `BRAIN_VAULT` is unset and `~/Vaults/Ai-Brain` has no `Brain/`
+directory, the extension disables itself with one notice**, so a machine that has never synced
+the vault still runs pi normally.
+
+### What it does
+
+| Trigger | What happens |
+|---|---|
+| First turn of a session | Injects the memory bundle (`brain-prep --slim --budget-kb 12`) as a hidden message, and appends the Brain usage rules to the system prompt unless an `AGENTS-brain.md` snippet is already loaded |
+| Model calls a tool | `brain_recall`, `brain_save`, `brain_checkpoint`, `brain_list`, `brain_forget` |
+| `session_before_compact` | Checkpoints before the context is summarized away |
+| Every 3 settled turns | Cadence checkpoint (`agent_settled`, so retries and queued follow-ups don't count as turns) |
+| `session_shutdown` | Checkpoint on exit, `/new`, `/resume`, `/fork` |
+| `/brain status\|checkpoint\|recall <q>\|list` | Manual escape hatches |
+
+Consecutive triggers do **not** write duplicate checkpoints: the dedup key is the session's
+leaf entry id, held in `Brain/.state/harness-checkpoints.json` — the same state file the
+`--from-cherryd` timer path uses. A cadence checkpoint followed immediately by a shutdown
+checkpoint writes one file.
+
+Automatic checkpoints never route through tool dispatch, so they never raise an approval
+prompt: autosave is the operator's policy executing, not the model asking.
+
+### Configuration
+
+pi has no per-extension settings block, so everything is environment variables — the same
+place the rest of this repo reads its configuration from:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `BRAIN_VAULT` | `~/Vaults/Ai-Brain` if it exists | Vault path |
+| `BRAIN_PI_CMD` | venv `brain` in the package | Path to the `brain` executable |
+| `BRAIN_BUNDLE_BUDGET_KB` | `12` | Preload budget (≈3k tokens; 6 KB ≈ 1.5k, 16 KB ≈ 4k) |
+| `BRAIN_PI_SLIM` | on | `0` preloads the full bundle (project overview + last checkpoint) |
+| `BRAIN_PI_PRELOAD` | on | `0` skips the preload |
+| `BRAIN_PI_CHECKPOINT` | on | `0` skips automatic checkpoints |
+| `BRAIN_PI_CHECKPOINT_EVERY` | `3` | Settled turns between cadence checkpoints |
+| `BRAIN_PI_TIMEOUT_MS` | `60000` | Per-invocation timeout |
+| `BRAIN_PI_EXTENSION` | on | `0` disables the extension entirely |
+
+`BRAIN_CMD` is also honoured, but only when it is a bare path: in the Claude Code templates it
+is a *shell string* (`BRAIN_VAULT=… /path/to/brain`) and pi spawns without a shell. Use
+`BRAIN_PI_CMD` when in doubt.
+
+**The budget is the setting that matters.** At the 12 KB default the bundle carries the index,
+the user profile, and as much feedback as fits — on a large corpus that means some feedback is
+skipped (the bundle fills `user/` before `feedback/`). Raise it if the model's window can
+afford it; the same trade-off is described in `LOCAL-HARNESS-SETUP.md`.
+
+### Verifying
+
+```bash
+# Loads, preloads, and checkpoints on exit — check the vault afterwards
+BRAIN_VAULT=~/Vaults/Ai-Brain pi -e ~/src/Ai-Brain -p "Say only: brain ok"
+ls -t ~/Vaults/Ai-Brain/Brain/projects/<project>/sessions/ | head -1
+
+# The checkpoint header names the trigger that wrote it
+grep "^# Session checkpoint" ~/Vaults/Ai-Brain/Brain/projects/<project>/sessions/*.md | tail -3
+```
+
+A checkpoint whose header reads `(pi:shutdown:quit)`, `(pi:cadence)`, or
+`(pi:compact:threshold)` came from the extension. `(pi:manual)` came from `/brain checkpoint`.
+To exercise the compaction trigger deliberately, run `/compact` in an interactive session and
+look for a `(pi:compact:manual)` header — that is the one trigger not covered by the print-mode
+run above.
+
+The first `brain_recall` on a machine can take much longer than later ones — it builds the
+embedding index for the whole vault. That is why the timeout defaults to 60s; if a recall
+still times out, run `brain recall something` once from a shell to warm the index.
