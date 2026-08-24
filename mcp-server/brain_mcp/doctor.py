@@ -208,6 +208,39 @@ def _check_vector_index(brain: Path) -> list[Finding]:
     )]
 
 
+INDEX_BACKLOG_WARN = 50
+
+
+def _check_index_stale(brain: Path) -> list[Finding]:
+    """Backlog of un-embedded files.
+
+    Recall syncs only a time-boxed slice, so a backlog is not a correctness bug —
+    it is a latency bug that hides. On 2026-08-24 an index six weeks behind turned
+    a single `brain recall` into a 2m45s stall, and nothing anywhere said so.
+    """
+    if os.environ.get("BRAIN_EMBED", "1") == "0":
+        return []
+    try:
+        from . import embed
+        pending = embed.EmbedIndex.backlog()
+    except Exception:
+        return []
+    if pending == 0:
+        return [Finding("ok", "INDEX_FRESH", "vector index up to date")]
+    cmd = "brain reindex"
+    if pending >= INDEX_BACKLOG_WARN:
+        return [Finding(
+            "warn", "INDEX_STALE",
+            f"{pending} file(s) missing from the vector index.",
+            f"Recall embeds only a {embed.EmbedIndex.SYNC_BUDGET_DEFAULT:.0f}s slice per call, "
+            f"so this backlog slows every recall until it clears. Run `{cmd}`.",
+        )]
+    return [Finding(
+        "info", "INDEX_STALE",
+        f"{pending} file(s) pending embedding; recall will absorb them incrementally.",
+    )]
+
+
 def _check_editable_install() -> list[Finding]:
     try:
         import brain_mcp
@@ -795,6 +828,7 @@ def check(
     findings.extend(_check_stub_only_projects(brain))
     findings.extend(_check_near_duplicates(brain))
     findings.extend(_check_vector_index(brain))
+    findings.extend(_check_index_stale(brain))
     findings.extend(_check_editable_install())
     findings.extend(_check_fastembed())
     findings.extend(_check_project_overview(brain, project))

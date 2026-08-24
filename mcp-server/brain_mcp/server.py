@@ -334,7 +334,9 @@ def _background_embed_warmup() -> None:
         return
     try:
         from . import embed
-        embed.EmbedIndex.sync()
+        # Off the critical path already — take the whole backlog, not the
+        # 5s foreground slice a recall would get.
+        embed.EmbedIndex.sync(budget_seconds=0)
     except Exception as e:
         print(f"brain embed background warmup: {e}", file=sys.stderr)
 

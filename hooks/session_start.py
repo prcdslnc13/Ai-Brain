@@ -60,6 +60,15 @@ def main() -> None:
             })
         sys.exit(0)
 
+    # Kick the vector-index catch-up before building the bundle. Detached, so
+    # it runs through the session instead of making the first recall pay for it;
+    # BRAIN_AUTO_REINDEX=0 disables.
+    try:
+        from brain_mcp import embed
+        embed.spawn_background_reindex(min_backlog=embed.EmbedIndex.SYNC_CHUNK)
+    except Exception as e:
+        sys.stderr.write(f"brain session_start reindex: {e}\n")
+
     try:
         from brain_mcp import vault
         from brain_mcp.brain_prep import render

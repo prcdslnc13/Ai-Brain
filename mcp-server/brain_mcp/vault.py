@@ -259,36 +259,93 @@ def list_memories(mtype: str | None = None, project: str | None = None) -> list[
     return [Memory.from_file(p) for p in sorted(set(candidates))]
 
 
-def _ripgrep_search(query: str, root: Path) -> set[Path]:
+def _ripgrep_search(query: str, root: Path) -> dict[Path, int]:
+    """Literal (case-insensitive) matches -> occurrence count.
+
+    Counts, not just paths: they are the only relevance signal a lexical-only hit
+    has, and ordering those hits by recency alone put "most recently touched file
+    that mentions the word once" ahead of "file that is largely about the word".
+    """
     rg = shutil.which("rg")
-    matches: set[Path] = set()
+    matches: dict[Path, int] = {}
     if rg:
         try:
             out = subprocess.run(
-                [rg, "-l", "-i", "--type", "md", query, str(root)],
+                [rg, "-c", "-i", "--type", "md", query, str(root)],
                 capture_output=True, text=True, check=False,
             )
             for line in out.stdout.splitlines():
-                if line.strip():
-                    matches.add(Path(line.strip()))
+                line = line.strip()
+                if not line:
+                    continue
+                # "path:count" — rsplit, because Windows paths contain colons.
+                path, _, count = line.rpartition(":")
+                if not path:
+                    continue
+                try:
+                    matches[Path(path)] = int(count)
+                except ValueError:
+                    matches[Path(path)] = 1
         except Exception:
             pass
     else:
         q = query.lower()
         for p in root.rglob("*.md"):
             try:
-                if q in p.read_text(encoding="utf-8").lower():
-                    matches.add(p)
+                n = p.read_text(encoding="utf-8").lower().count(q)
             except Exception:
                 continue
-    return {p for p in matches
-            if "_setup" not in p.parts
-            and ".index" not in p.parts
-            and "archive" not in p.parts}
+            if n:
+                matches[p] = n
+    return {p: n for p, n in matches.items()
+            if not any(part in EXCLUDE_DIRS for part in p.parts)
+            and p.name not in EXCLUDE_FILES}
+
+
+# How often a lexical-only hit gets a slot in the merged ranking: every Nth
+# position, 1-based. 3 is deliberate — DEFAULT_TOP_K is 3, so the best file that
+# matches the query literally but carries no vector is always visible in a default
+# recall, while positions 1 and 2 stay pure vector ranking.
+LEXICAL_SLOT_EVERY = 3
+
+# Only this many lexical-only hits are woven into the head; the rest keep the old
+# append-at-the-end behavior. Without the cap, a broad query (a project name appears
+# in every checkpoint for that project) would hand a third of the ranking to
+# whatever merely mentions the word — the 2026-07-11 blowup, re-entered through the
+# front door.
+LEXICAL_MERGE_CAP = 20
+
+
+def _merge_lexical(vector_hits: list[Path], lexical_hits: list[Path]) -> list[Path]:
+    """Weave lexical-only hits into the vector ranking, one every LEXICAL_SLOT_EVERY.
+
+    A file with no vector used to sort below *every* vector hit, which made it
+    unreachable rather than merely lower-ranked: measured 2026-08-24, a query whose
+    literal text appeared in exactly one un-vectorized file ranked it 21st of 21.
+    Reserving a slot bounds that at "never worse than position 3".
+    """
+    out: list[Path] = []
+    vi = li = 0
+    while vi < len(vector_hits) or li < len(lexical_hits):
+        want_lexical = (len(out) + 1) % LEXICAL_SLOT_EVERY == 0
+        if li < len(lexical_hits) and (want_lexical or vi >= len(vector_hits)):
+            out.append(lexical_hits[li])
+            li += 1
+        elif vi < len(vector_hits):
+            out.append(vector_hits[vi])
+            vi += 1
+        else:
+            out.append(lexical_hits[li])
+            li += 1
+    return out
 
 
 def search_memories(query: str, mtype: str | None = None, project: str | None = None) -> list[Memory]:
-    """Hybrid search: vector top-K first (if available), then any extra ripgrep hits.
+    """Hybrid search: vector top-K and literal ripgrep hits, merged.
+
+    Vector hits carry the ranking; lexical-only hits (files ripgrep matched that have
+    no vector — aged-out checkpoints, or anything the index hasn't reached yet) are
+    woven in every LEXICAL_SLOT_EVERY slots so an exact match can't be buried.
 
     Disabled by setting BRAIN_EMBED=0. On any embed failure (missing dep, model load,
     sqlite error) falls back transparently to ripgrep substring search.
@@ -321,9 +378,14 @@ def search_memories(query: str, mtype: str | None = None, project: str | None = 
             print(f"brain embed unavailable, falling back to ripgrep: {e}", file=sys.stderr)
 
     rg_hits = _ripgrep_search(query, root)
-    extras = sorted(rg_hits - seen, key=lambda p: p.stat().st_mtime, reverse=True)
-    for p in extras:
-        ordered_paths.append(p)
+    extras = sorted(
+        (p for p in rg_hits if p not in seen),
+        key=lambda p: (-rg_hits[p], -p.stat().st_mtime),
+    )
+    # Only the head participates in the merge; the tail still just appends, so the
+    # total match count a caller sees is unchanged.
+    ordered_paths = _merge_lexical(ordered_paths, extras[:LEXICAL_MERGE_CAP])
+    ordered_paths.extend(extras[LEXICAL_MERGE_CAP:])
 
     candidates = [Memory.from_file(p) for p in ordered_paths]
     if mtype:
@@ -579,6 +641,11 @@ def write_checkpoint(project: str, summary: str) -> Path:
 
 
 EXCLUDE_DIRS = frozenset({"archive", "_setup", ".index"})
+# Bookkeeping files that live at the Brain/ root and are not memories: the Stop-hook
+# audit log and the vault's table of contents. They were being embedded *and* returned
+# as recall hits — `activity.md` surfaced as the #3 result for "windows setup" once
+# lexical hits stopped sorting last (2026-08-24).
+EXCLUDE_FILES = frozenset({"activity.md", "_index.md"})
 
 
 def iter_indexable_md(root: Path):
@@ -588,7 +655,19 @@ def iter_indexable_md(root: Path):
     for p in root.rglob("*.md"):
         if any(part in EXCLUDE_DIRS for part in p.relative_to(root).parts):
             continue
+        if p.name in EXCLUDE_FILES:
+            continue
         yield p
+
+
+def is_session_path(path: Path) -> bool:
+    """Path-only test for a session checkpoint.
+
+    Path-based rather than frontmatter-based so callers that only hold a path
+    (the embed index) classify a file identically to callers that hold a parsed
+    Memory (render's recall filter) without paying a file read.
+    """
+    return "sessions" in Path(path).parts
 
 
 def read_frontmatter_type(path: Path) -> str | None:
