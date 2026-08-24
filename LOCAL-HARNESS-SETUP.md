@@ -101,6 +101,21 @@ Properties that matter for unattended use:
   an actual exchange in it — opening a fresh session in the TUI does not shadow the long-running
   one holding the work.
 
+### pi
+
+pi persists each session as a JSONL file under `~/.pi/agent/sessions/`, so the same reader
+works there:
+
+```bash
+# Newest session under a directory (a session file also works)
+brain checkpoint --from-pi ~/.pi/agent/sessions
+```
+
+The same dedup state file applies, so this is safe to put on the timer alongside the cherryd
+line. **For an attended pi session, install the extension instead** — it checkpoints on the
+real compaction event and at shutdown rather than up to one timer interval late. See
+`PI-SETUP.md`. The two do not conflict: both write through the same dedup key.
+
 ### Run it on a timer
 
 The whole point is that this happens without anyone remembering. A user-level systemd timer,

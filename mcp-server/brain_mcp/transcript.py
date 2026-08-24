@@ -6,7 +6,10 @@ callers need the same output format:
 * Claude Code's PreCompact / SessionEnd hooks, which read a transcript JSONL
   (`hooks/_checkpoint.py` is now a thin wrapper over this module);
 * harnesses with no hook system at all -- `brain checkpoint --from-cherryd`
-  reads cherryd's SQLite event log directly.
+  reads cherryd's SQLite event log directly, and `brain checkpoint --from-pi`
+  reads a pi (pi.dev) session JSONL. The pi extension in `pi/extensions/`
+  decides *when* to checkpoint and shells out to that flag rather than
+  rendering anything itself, so there is still exactly one renderer.
 
 The second case is why this module exists. A harness that cannot call us back
 loses everything when the model hits its context ceiling, and the local-model
@@ -225,6 +228,128 @@ def parse_cherryd_session(db_path: Path, session_id: int) -> dict:
     }
 
 
+# ---------- pi (pi.dev) session JSONL ----------
+
+class PiSessionError(RuntimeError):
+    """The session file is missing, unreadable, or not a pi session log."""
+
+
+def _pi_text(content) -> str:
+    """pi content is either a bare string or a list of typed blocks."""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = [c.get("text", "") for c in content
+                 if isinstance(c, dict) and c.get("type") == "text" and c.get("text")]
+        return " ".join(parts).strip()
+    return ""
+
+
+def pi_session_file(path: Path) -> Path:
+    """Resolve a session file, a session *directory*, or pi's sessions root.
+
+    A directory argument picks its newest .jsonl by mtime (recursively), which
+    is what a timer or an operator typing the sessions dir actually means.
+    """
+    path = path.expanduser()
+    if path.is_dir():
+        candidates = sorted(path.rglob("*.jsonl"), key=lambda p: p.stat().st_mtime,
+                            reverse=True)
+        if not candidates:
+            raise PiSessionError(f"no .jsonl session files under {path}")
+        return candidates[0]
+    if not path.exists():
+        raise PiSessionError(f"no such session file: {path}")
+    return path
+
+
+def parse_pi_session(path: Path) -> dict:
+    """Same shape parse_claude_transcript returns, plus pi session metadata.
+
+    pi stores entries as a *tree* (`id`/`parentId`), so the active conversation
+    is the parent chain of the last entry in the file, not the file order --
+    after a `/tree` navigation the file still holds the abandoned branch. Tool
+    *calls* drive the histogram rather than toolResult entries, for the same
+    reason as cherryd: a session killed mid-call has the call but no result.
+    """
+    path = pi_session_file(path)
+    header: dict = {}
+    entries: dict[str, dict] = {}
+    last_id: str | None = None
+
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if obj.get("type") == "session":
+                header = obj
+                continue
+            eid = obj.get("id")
+            if not isinstance(eid, str):
+                continue
+            entries[eid] = obj
+            last_id = eid
+
+    if not header and not entries:
+        raise PiSessionError(f"{path} is not a pi session log (no entries)")
+
+    # Walk the parent chain back from the leaf, then reverse into time order.
+    branch: list[dict] = []
+    seen: set[str] = set()
+    cursor = last_id
+    while cursor and cursor in entries and cursor not in seen:
+        seen.add(cursor)
+        entry = entries[cursor]
+        branch.append(entry)
+        parent = entry.get("parentId")
+        cursor = parent if isinstance(parent, str) else None
+    branch.reverse()
+
+    user_msgs: list[str] = []
+    assistant_msgs: list[str] = []
+    tool_calls: list[str] = []
+    for entry in branch:
+        if entry.get("type") != "message":
+            continue
+        msg = entry.get("message") or {}
+        role = msg.get("role")
+        if role == "user":
+            text = _pi_text(msg.get("content"))
+            if text:
+                user_msgs.append(text)
+        elif role == "assistant":
+            for c in msg.get("content") or []:
+                if not isinstance(c, dict):
+                    continue
+                if c.get("type") == "text" and c.get("text"):
+                    assistant_msgs.append(c["text"].strip())
+                elif c.get("type") == "toolCall":
+                    tool_calls.append(c.get("name") or "?")
+        elif role == "bashExecution":
+            # The operator's own `!command`, not a model tool call -- kept in
+            # the histogram under a distinct name so the two never blur.
+            tool_calls.append("bash!")
+
+    cwd = header.get("cwd") or ""
+    return {
+        "user_msgs": user_msgs,
+        "assistant_msgs": assistant_msgs,
+        "tool_calls": tool_calls,
+        "session_id": header.get("id"),
+        "created_at": header.get("timestamp"),
+        "cwd": cwd,
+        "project": Path(cwd).name if cwd else None,
+        "session_file": str(path),
+        "last_entry_id": last_id,
+        "entry_count": len(branch),
+    }
+
+
 # ---------- checkpoint rendering ----------
 
 def render_checkpoint(parsed: dict, *, source: str, project: str | None) -> str:
@@ -363,3 +488,38 @@ def checkpoint_cherryd(db_path: Path, *, session_id: int | None = None,
         results.append(result)
     _save_state(state)
     return results
+
+
+def checkpoint_pi(session_path: Path, *, project: str | None = None,
+                  source: str = "pi", force: bool = False) -> dict:
+    """Write a checkpoint for one pi session, skipping when nothing is new.
+
+    Shares `harness-checkpoints.json` with the cherryd path: both are the same
+    problem (a timer or a lifecycle event firing more often than work happens),
+    and one state file keeps that answer in one place. The dedup key is the
+    leaf entry id -- pi appends entries, so an unchanged leaf means an
+    unchanged conversation.
+    """
+    parsed = parse_pi_session(session_path)
+    state = _load_state()
+    key = f"pi::{Path(parsed['session_file']).resolve()}"
+    result = {
+        "session_id": parsed["session_id"],
+        "session_file": parsed["session_file"],
+        "source": source,
+        "project": project or parsed["project"] or "unknown",
+        "last_entry_id": parsed["last_entry_id"],
+        "written": None,
+        "reason": None,
+    }
+    if not force and state.get(key) == parsed["last_entry_id"]:
+        result["reason"] = "no new entries since last checkpoint"
+        return result
+    if not _worth_checkpointing(parsed):
+        result["reason"] = "no completed exchange yet"
+        return result
+    body = render_checkpoint(parsed, source=source, project=result["project"])
+    result["written"] = _vault.write_checkpoint(result["project"], body)
+    state[key] = parsed["last_entry_id"]
+    _save_state(state)
+    return result
