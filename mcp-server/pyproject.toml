@@ -4,10 +4,19 @@ version = "0.1.0"
 description = "MCP server exposing the Ai-Brain Obsidian vault as memory tools"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp>=1.0.0",
-    "pyyaml>=6.0",
-    "fastembed>=0.3.0",
-    "numpy>=1.24",
+    # mcp 2.0 removed the decorator API (@server.list_tools/@server.call_tool)
+    # from the low-level Server; server.py is written against 1.x. Porting is a
+    # separate change — keep the range pinned until then.
+    "mcp>=1.0.0,<2",
+    # No 7.x exists yet; cap the major so a rebuild can't jump to one.
+    "pyyaml>=6.0,<7",
+    # fastembed is 0.x — minor bumps are breaking. embed.py's offline-first
+    # model load is written against 0.8 behavior (no `local_files_only` knob,
+    # `cache_dir` kwarg, hub round-trip on every TextEmbedding construction).
+    "fastembed>=0.3.0,<0.9",
+    # Only basic array ops are used (frombuffer/vstack/linalg.norm/argsort),
+    # stable across 1.x and 2.x — cap the major so a rebuild can't jump to 3.
+    "numpy>=1.24,<3",
 ]
 
 [project.scripts]
