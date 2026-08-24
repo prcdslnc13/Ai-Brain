@@ -23,6 +23,8 @@ The moving parts fit together as follows:
   - **`brain_mcp/cli.py`** → the `brain` console script, the **primary interface**. Claude Code
     (via the brain skill + global CLAUDE.md) and pi run `brain recall|save|list|forget|checkpoint|
     stats|doctor` through their shell tool. Costs no context tokens until invoked.
+  - **`pi/extensions/brain.ts`** → the third frontend: a pi (pi.dev) extension that shells
+    out to the same CLI. See below.
   - **`brain_mcp/server.py`** → stdio MCP server exposing the same operations as typed tools
     (`brain_session_start`, `brain_recall`, `brain_save`, `brain_list`, `brain_forget`,
     `brain_checkpoint`, `brain_stats`, `brain_doctor`) for MCP clients: LMStudio, MCP-aware
@@ -91,8 +93,9 @@ The moving parts fit together as follows:
     `brain_mcp.transcript`, which parses the transcript JSONL and writes a structural checkpoint
     to `Brain/projects/<project>/sessions/<timestamp>.md`. No LLM call — the next session's model
     will summarize/integrate when it sees the file. The parsing/rendering lives in the package
-    rather than in `hooks/` because the `brain checkpoint --from-cherryd` CLI path produces
-    byte-identical checkpoints for harnesses that have no hooks; keep them sharing one renderer.
+    rather than in `hooks/` because the `brain checkpoint --from-cherryd` and
+    `--from-pi` CLI paths produce byte-identical checkpoints for harnesses that have no hooks;
+    keep them all sharing one renderer.
   - `stop.py` — two jobs. (1) Gate: when the assistant's final message contains a save-promise
     phrase (*"I'll save this to brain"*, *"checkpointing now"*, etc.) and no brain save occurred
     in the turn, emit `{decision: "block", reason: …}` so Claude Code feeds the reason back to the
@@ -130,6 +133,31 @@ The moving parts fit together as follows:
     re-exports from `brain_mcp.transcript`). All read `BRAIN_VAULT` from
     env, never from the filesystem layout. `_savesig.py` is named with a prefix because `_signal`
     is a CPython builtin module that shadows local imports.
+
+- **`pi/extensions/brain.ts`** — the Brain as a [pi](https://pi.dev) extension, with the
+  `package.json` manifest at the repo root (pi cannot address a subdirectory of a git repo, so
+  the manifest must sit at the top and point inward). pi has no MCP support by design, so this
+  is a TypeScript extension shelling out to the `brain` CLI, not a server registration. It
+  supplies the three things the `AGENTS.md`-snippet route cannot: a session preload
+  (`brain-prep --slim --budget-kb`, injected as a hidden `brain-bundle` message on the first
+  turn), five `brain_*` tools, and automatic checkpoints on `session_before_compact` (PreCompact
+  parity — pi hands us `reason: threshold|overflow|manual` rather than cherryd's guess from a
+  token count), on a settled-turn cadence, and on `session_shutdown`. Rules that matter:
+  - **It renders nothing.** Checkpoint bodies come from `brain checkpoint --from-pi`, which
+    parses pi's session JSONL in `brain_mcp.transcript`. cherryd rendering its own checkpoints
+    in another repo needed a commit to regain byte parity down to a trailing newline; one
+    renderer is how that stays fixed.
+  - **Dedup lives in the shared state file** (`Brain/.state/harness-checkpoints.json`), keyed
+    by the session's leaf entry id, so a cadence checkpoint immediately followed by a shutdown
+    checkpoint writes one file, not two.
+  - **Automatic checkpoints never go through tool dispatch** — autosave is the operator's
+    policy, not the model asking, so it must never raise an approval prompt.
+  - **Behavioural guidance is read from `templates/AGENTS-brain.md`** at load, with the CLI
+    syntax block and the "no automatic preload" paragraph stripped, and is skipped entirely
+    when that snippet is already loaded as a context file. Two mechanisms, one source of truth.
+  - Configuration is environment-only (pi has no per-extension settings block); `PI-SETUP.md`
+    holds the table. `BRAIN_CMD` is only honoured when it is a bare path — in the Claude Code
+    templates it is a shell string, and `pi.exec` spawns without a shell.
 
 - **`templates/`**:
   - `global-CLAUDE.md` — the load-bearing proactive-memory directives. Copied to
@@ -203,6 +231,9 @@ echo '{"cwd":"/tmp/test","hook_event_name":"SessionStart","source":"startup"}' |
 # Dump the session-start bundle as markdown (useful for non-tool-calling models)
 BRAIN_VAULT=~/Vaults/Ai-Brain \
   ~/src/Ai-Brain/mcp-server/.venv/bin/brain-prep --project MyProject
+
+# Exercise the pi extension end to end (loads, preloads, checkpoints on exit)
+BRAIN_VAULT=~/Vaults/Ai-Brain pi -e ~/src/Ai-Brain -p "Say only: brain ok"
 
 # Health check — run anytime, especially when the Brain feels stale or broken
 BRAIN_VAULT=~/Vaults/Ai-Brain \

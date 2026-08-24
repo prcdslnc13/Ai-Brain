@@ -1,0 +1,11 @@
+{
+  "name": "ai-brain",
+  "version": "0.1.0",
+  "description": "The Ai-Brain memory system as a pi extension: session preload, memory tools, and automatic checkpoints",
+  "keywords": ["pi-package"],
+  "license": "MIT",
+  "private": true,
+  "pi": {
+    "extensions": ["./pi/extensions"]
+  }
+}

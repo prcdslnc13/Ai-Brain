@@ -262,8 +262,12 @@ machines just churns disk and bandwidth. The archive is large but rarely read.
   and checkpoint from the harness's own session log on a timer
   (`brain checkpoint --from-cherryd <db> --all-sessions`) so a context overflow can't take the
   session with it. Nothing there depends on the model remembering to save.
-- **pi** ([pi.dev](https://pi.dev)): pi has no MCP support by design — use the `brain` CLI via
-  pi's shell tool. See `PI-SETUP.md`.
+- **pi** ([pi.dev](https://pi.dev)): pi has no MCP support by design, so there are two routes,
+  and they compose. The cheap one is the `brain` CLI via pi's shell tool plus the `AGENTS.md`
+  snippet. The complete one is the extension in `pi/extensions/` (`pi install ~/src/Ai-Brain`),
+  which preloads the bundle, registers five `brain_*` tools, and checkpoints on compaction, on a
+  turn cadence, and at shutdown — the three things that otherwise depend on the model
+  volunteering. See `PI-SETUP.md`.
 - **LMStudio**: register the MCP server in LMStudio's settings (see `LMSTUDIO-SETUP.md`):
   - command: `~/src/Ai-Brain/mcp-server/.venv/bin/python`
   - args: `-m brain_mcp`

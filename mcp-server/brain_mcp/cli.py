@@ -18,6 +18,7 @@ Reads BRAIN_VAULT from the environment, like everything else in this package.
     brain checkpoint <project> [--summary TEXT | --file PATH]  (stdin fallback)
     brain checkpoint [project] --from-cherryd DB [--session N]
                      [--all-sessions] [--list-sessions] [--force]
+    brain checkpoint [project] --from-pi SESSION.jsonl [--source TAG] [--force]
         (project is inferred from the session's cwd when omitted)
     brain stats
     brain doctor [--project P] [--json] [--quiet]
@@ -91,8 +92,12 @@ def _cmd_forget(args: argparse.Namespace) -> int:
 
 
 def _cmd_checkpoint(args: argparse.Namespace) -> int:
+    if args.from_cherryd and args.from_pi:
+        raise SystemExit("error: --from-cherryd and --from-pi are mutually exclusive")
     if args.from_cherryd:
         return _cmd_checkpoint_cherryd(args)
+    if args.from_pi:
+        return _cmd_checkpoint_pi(args)
     if not args.project:
         raise SystemExit("error: checkpoint needs a project (or --from-cherryd DB)")
     summary = _read_body(args, args.summary)
@@ -141,6 +146,37 @@ def _cmd_checkpoint_cherryd(args: argparse.Namespace) -> int:
                   f"project {r['project']})")
         else:
             print(f"skipped session {r['session_id']}: {r['reason']}")
+    return 0
+
+
+def _cmd_checkpoint_pi(args: argparse.Namespace) -> int:
+    """Checkpoint straight out of a pi session file.
+
+    The pi extension calls this on compaction, on a turn cadence, and on
+    shutdown; a timer can call it on a session file nobody is attending. Either
+    way the parsing and rendering stay here, so a pi checkpoint is
+    byte-identical to one written by the Claude Code hooks.
+    """
+    from . import transcript
+
+    try:
+        result = transcript.checkpoint_pi(
+            Path(args.from_pi),
+            project=args.project,
+            source=args.source or "pi",
+            force=args.force,
+        )
+    except transcript.PiSessionError as e:
+        raise SystemExit(f"error: {e}")
+
+    if args.json:
+        print(json.dumps(result, default=str))
+        return 0
+    if result["written"]:
+        print(f"checkpoint: {result['written']}  (pi session "
+              f"{result['session_id']}, project {result['project']})")
+    else:
+        print(f"skipped: {result['reason']}")
     return 0
 
 
@@ -211,6 +247,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--from-cherryd", metavar="DB",
                    help="build the checkpoint from a cherryd SQLite event log "
                         "instead of stdin (for harnesses with no hooks)")
+    p.add_argument("--from-pi", metavar="SESSION",
+                   help="build the checkpoint from a pi session JSONL (or a "
+                        "directory, whose newest session is used) instead of stdin")
+    p.add_argument("--source", metavar="TAG",
+                   help="label for the checkpoint header, e.g. pi:compact "
+                        "(--from-pi only; default 'pi')")
     p.add_argument("--session", type=int,
                    help="cherryd session id; default is the most recently active")
     p.add_argument("--all-sessions", action="store_true",
