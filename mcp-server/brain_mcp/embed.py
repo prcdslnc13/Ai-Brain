@@ -162,6 +162,134 @@ _SYNC_LOCK = threading.Lock()
 _MATRIX_CACHE: dict = {"key": None, "paths": None, "mat": None}
 
 
+# What actually gets embedded. Embedding cost scales with token count up to the
+# model's 512-token cap (~1500 chars) and is flat above it, so anything past the cap
+# is paid for and then discarded by the tokenizer — the tail of a long memory never
+# reached the model to begin with. Feeding a bounded, higher-signal slice instead of
+# the raw file is therefore cheaper *and* strictly more informative per token:
+#
+#   - the raw file leads with YAML (`type:`, `machine:`, `project:`) that is pure
+#     noise in the vector space, and it is what the first tokens get spent on;
+#   - `name` and `description` are the most query-like text a memory has, so they go
+#     first, unwrapped;
+#   - the body lead carries the substance. The rest was never embedded anyway unless
+#     the whole file fit under the cap.
+#
+# Budget picked by measurement, not taste. Full rebuild of the 903-file vault, and
+# tail-query retrieval (151 queries drawn from text past every cap):
+#
+#     full raw file   433s        r@1 40.4%   MRR 0.553
+#     slice 1500      415s  -4%   r@1 41.1%   MRR 0.564
+#     slice 1200      364s -16%   r@1 40.4%   MRR 0.552
+#     slice 1000      315s -27%   r@1 40.4%   MRR 0.550   <- default
+#     slice  800      258s -40%   r@1 35.8%   MRR 0.516
+#
+# Title-query retrieval was ~98% r@1 and 100% r@3 for every budget including 400, so
+# the tail is the only axis that discriminates. The quality cliff is between 1000 and
+# 800; 1000 is the fastest budget that is still indistinguishable from embedding the
+# whole file. Going lower is a real trade, not a free win.
+#
+# BRAIN_EMBED_CHARS tunes the budget; 0 restores embedding the full raw file.
+EMBED_TEXT_CHARS_DEFAULT = 1000
+
+
+def _embed_text_budget() -> int:
+    raw = os.environ.get("BRAIN_EMBED_CHARS", "")
+    if not raw:
+        return EMBED_TEXT_CHARS_DEFAULT
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return EMBED_TEXT_CHARS_DEFAULT
+
+
+# Bump when embed_text() changes what it feeds the model. Vectors built by a
+# different recipe are not comparable with new ones, and the mtime-based staleness
+# check cannot notice — the files did not change, the *recipe* did — so the index
+# would silently mix two vector spaces forever. The budget is part of the identity
+# for the same reason: re-tuning BRAIN_EMBED_CHARS invalidates every vector.
+EMBED_TEXT_VERSION = 2
+
+
+def _text_recipe_id() -> str:
+    return f"v{EMBED_TEXT_VERSION}:{_embed_text_budget()}:{EMBED_MODEL}"
+
+
+def stored_text_recipe(conn=None) -> str | None:
+    own = conn is None
+    if own:
+        try:
+            idx = _index_path()
+            if not idx.exists():
+                return None
+            conn = sqlite3.connect(f"file:{idx}?mode=ro", uri=True)
+        except sqlite3.DatabaseError:
+            return None
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key='text_recipe'").fetchone()
+    except sqlite3.DatabaseError:
+        return None
+    finally:
+        if own:
+            conn.close()
+    return row[0] if row else None
+
+
+def text_recipe_changed(conn=None) -> bool:
+    """True when the index was built by a different embed_text() recipe.
+
+    An empty index counts as unchanged — there is nothing to invalidate, and the
+    first sync stamps the current recipe.
+    """
+    if conn is not None:
+        try:
+            if conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0] == 0:
+                return False
+        except sqlite3.DatabaseError:
+            return False
+    return stored_text_recipe(conn) != _text_recipe_id()
+
+
+def _rebuild_for_recipe(conn) -> None:
+    conn.execute("DELETE FROM embeddings")
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES('text_recipe', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (_text_recipe_id(),),
+    )
+    conn.commit()
+
+
+def embed_text(path: Path) -> str:
+    """The text to embed for `path`: title + description + body lead, budget-capped.
+
+    Falls back to the raw file whenever the frontmatter can't be parsed, so a
+    malformed note still gets indexed rather than silently embedding an empty
+    string (doctor's MALFORMED_FRONTMATTER exists precisely because those happen).
+    """
+    budget = _embed_text_budget()
+    raw_text = Path(path).read_text(encoding="utf-8")
+    if budget <= 0:
+        return raw_text
+    try:
+        mem = vault.Memory.from_file(Path(path))
+    except Exception:
+        return raw_text[:budget]
+    parts = [mem.name or Path(path).stem]
+    body = (mem.body or "").strip()
+    desc = (mem.description or "").strip()
+    # write_memory derives description from the body's first line, so for most
+    # memories it is already a prefix of the body — repeating it would burn budget
+    # on a duplicate rather than buying any signal.
+    if desc and not body.startswith(desc[:80]):
+        parts.append(desc)
+    if body:
+        parts.append("")
+        parts.append(body)
+    text = "\n".join(parts).strip()
+    return text[:budget] if text else raw_text[:budget]
+
+
 # Optional bound on checkpoint indexing, OFF by default. Session checkpoints are
 # 68.7% of the vault's files (measured 2026-08-24: 616 of 897) and grow by one per
 # session while hand-written memories grow slowly, so an unbounded index trends
@@ -368,6 +496,17 @@ class EmbedIndex:
             root = vault.vault_root()
             conn = _connect()
             try:
+                if text_recipe_changed(conn):
+                    # Wiping mid-recall would leave the rest of the session querying a
+                    # near-empty index — worse than briefly serving old-recipe vectors,
+                    # which are at least self-consistent. Let an unbounded pass (reindex,
+                    # MCP warmup, the SessionStart kick) do the transition instead.
+                    if foreground:
+                        return 0
+                    print("brain embed: embedding recipe changed, rebuilding index",
+                          file=sys.stderr)
+                    _rebuild_for_recipe(conn)
+
                 existing: dict[str, float] = {}
                 for path, mtime in conn.execute("SELECT path, mtime FROM embeddings"):
                     existing[path] = mtime
@@ -404,7 +543,7 @@ class EmbedIndex:
                     batch: list[tuple[str, float, str]] = []
                     for path, mtime in pending[i:i + cls.SYNC_CHUNK]:
                         try:
-                            batch.append((path, mtime, Path(path).read_text(encoding="utf-8")))
+                            batch.append((path, mtime, embed_text(Path(path))))
                         except OSError:
                             continue
                     if not batch:
@@ -459,7 +598,7 @@ class EmbedIndex:
     def upsert(cls, path: Path) -> None:
         """Single-file upsert. Silently no-ops if the embedder is unavailable."""
         try:
-            text = Path(path).read_text(encoding="utf-8")
+            text = embed_text(Path(path))
             mtime = Path(path).stat().st_mtime
             vec = _EMBEDDER.embed_one(text)
         except (OSError, EmbedUnavailable):
