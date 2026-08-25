@@ -1,7 +1,7 @@
 ---
 name: brain
 description: Persistent cross-machine memory (the Brain). Use to save a preference/correction/decision, recall what is known about a project/person/tool, checkpoint a work session, or list/delete memories. Invoked by /brain or whenever a memory operation is needed and the exact CLI syntax is not already known.
-allowed-tools: Bash(__BRAIN_CMD__:*)
+allowed-tools: Bash(__BRAIN_CMD__ recall:*), Bash(__BRAIN_CMD__ save:*), Bash(__BRAIN_CMD__ list:*), Bash(__BRAIN_CMD__ forget:*), Bash(__BRAIN_CMD__ checkpoint:*), Bash(__BRAIN_CMD__ stats:*), Bash(__BRAIN_CMD__ doctor:*)
 ---
 
 # Brain memory — CLI reference
@@ -62,15 +62,12 @@ EOF
 
 Confirm the path that was written. Keep summaries tight — 6-15 bullets.
 
-To capture a session from a harness that has no hooks (cherryd/llama.cpp), read
-its event log instead of composing a summary:
-
-```
-brain checkpoint --from-cherryd ~/.local/state/cherryd/cherryd.db [--all-sessions]
-```
-
-Repeat runs with no new events are a no-op, so this is safe on a timer. See
-`LOCAL-HARNESS-SETUP.md` in the Ai-Brain repo.
+Capturing a session from a harness with no hooks (cherryd/llama.cpp, pi) uses
+`--from-cherryd` / `--from-pi`, which read an event log off disk. Those are
+**operator** flags: the invocation above is pre-approved to run unattended, so it
+refuses any option that reads an arbitrary local file. Run them from the venv's
+`brain` executable instead — see `LOCAL-HARNESS-SETUP.md` in the Ai-Brain repo.
+There is nothing for you to do here; a timer or the pi extension drives them.
 
 ## List / forget
 

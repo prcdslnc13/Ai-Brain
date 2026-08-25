@@ -25,7 +25,6 @@ summarizes it when the preload surfaces it.
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 from collections import Counter
 from datetime import datetime
@@ -429,9 +428,10 @@ def _load_state() -> dict:
 def _save_state(state: dict) -> None:
     p = _state_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(state, indent=1, sort_keys=True), encoding="utf-8")
-    os.replace(tmp, p)
+    # Through vault's writer, not a hand-rolled `<name>.tmp`: two harness timers
+    # firing at once (a cadence checkpoint and a shutdown checkpoint) shared that
+    # fixed temp name and could interleave their JSON into it.
+    _vault._atomic_write(p, json.dumps(state, indent=1, sort_keys=True))
 
 
 def checkpoint_cherryd(db_path: Path, *, session_id: int | None = None,

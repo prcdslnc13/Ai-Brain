@@ -32,7 +32,11 @@
 # so the token saving actually lands.
 #
 # Idempotent: re-running updates the global CLAUDE.md, skill, hook block, and MCP
-# registration in place without disturbing other settings.
+# registration in place. Other settings.json keys are left alone, and so are
+# third-party hooks registered for the same events -- the Brain hook groups are
+# APPENDED to whatever is already there, not assigned over the event. If
+# settings.json cannot be parsed, the merge REFUSES and this script exits 3 rather
+# than replace the file.
 
 set -euo pipefail
 
@@ -60,7 +64,14 @@ VENV_PYTHON="$MCP_SERVER_DIR/.venv/bin/python"
 VENV_BRAIN="$MCP_SERVER_DIR/.venv/bin/brain"
 # The exact invocation substituted for __BRAIN_CMD__ in the templates: env
 # prefix + absolute path, so the model can run it from any cwd via Bash.
-BRAIN_CMD="BRAIN_VAULT=\"$VAULT_ROOT\" \"$VENV_BRAIN\""
+#
+# BRAIN_AGENT_SURFACE=1 leads the prefix and is load-bearing. This string is what
+# setup pre-approves in permissions.allow, and pre-approval is a PREFIX match --
+# so every unattended invocation carries the flag, and the CLI refuses --file,
+# --from-pi and --from-cherryd under it. Without that, a prompt-injected model
+# could read any local file into the vault and recall it back, with no human in
+# the loop. Operators (and pi) call "$VENV_BRAIN" directly and keep the full CLI.
+BRAIN_CMD="BRAIN_AGENT_SURFACE=1 BRAIN_VAULT=\"$VAULT_ROOT\" \"$VENV_BRAIN\""
 
 if [ ! -d "$VAULT_ROOT" ]; then
   echo "ERROR: vault path does not exist: $VAULT_ROOT" >&2
@@ -150,99 +161,39 @@ echo "[3/6] writing $CLAUDE_DIR/skills/brain/SKILL.md"
 sed "s|__BRAIN_CMD__|$BRAIN_CMD|g" \
   "$TEMPLATES_DIR/skills/brain/SKILL.md" > "$CLAUDE_DIR/skills/brain/SKILL.md"
 
-# 6. Merge hooks block into settings.json (in-place, preserving other keys)
+# 6. Merge the Brain hook block into settings.json.
+#    The merge itself lives in brain_settings_merge.py — the ONE implementation
+#    shared by all four installers and all four uninstallers, so this algorithm
+#    cannot fork again. It APPENDS our hook groups to whatever third-party hooks
+#    already exist for the same events (assigning over the event silently deleted
+#    a user's own SessionStart/Stop/PreCompact hook), REFUSES to rewrite an
+#    unparseable settings.json instead of replacing it with {}, takes a timestamped
+#    backup, and writes atomically. Exit 3 means "refused, file untouched".
 echo "[4/6] merging hooks into $CLAUDE_DIR/settings.json"
 SETTINGS_FILE="$CLAUDE_DIR/settings.json"
-[ -f "$SETTINGS_FILE" ] || echo '{}' > "$SETTINGS_FILE"
-
 HOOKS_TEMPLATE="$TEMPLATES_DIR/settings.hooks.json"
 
-"$VENV_PYTHON" - "$SETTINGS_FILE" "$HOOKS_TEMPLATE" "$VENV_PYTHON" "$HOOKS_DIR" "$VAULT_ROOT" "$BRAIN_CMD" <<'PY'
-import json, sys
-settings_path, template_path, brain_python, brain_hooks, brain_vault, brain_cmd = sys.argv[1:7]
-
-with open(settings_path, "r", encoding="utf-8") as f:
-    try:
-        settings = json.load(f)
-    except json.JSONDecodeError:
-        settings = {}
-
-with open(template_path, "r", encoding="utf-8") as f:
-    template = f.read()
-
-template = (
-    template.replace("__BRAIN_PYTHON__", brain_python)
-            .replace("__BRAIN_HOOKS__", brain_hooks)
-            .replace("__BRAIN_VAULT__", brain_vault)
-)
-hooks_block = json.loads(template)["hooks"]
-
-
-def _is_brain_command(cmd: str) -> bool:
-    """Detect hook commands we own, so stale entries (e.g. a UserPromptSubmit
-    pointing at a deleted script) get pruned when the template shrinks."""
-    if not isinstance(cmd, str):
-        return False
-    return (
-        f"BRAIN_VAULT={brain_vault}" in cmd
-        or "BRAIN_VAULT=" in cmd and brain_hooks in cmd
-        or brain_hooks in cmd
-    )
-
-
-# Prune any Brain-owned hook entries left over from older template versions
-# before re-applying the current template. Without this, settings.json
-# accumulates orphan events whose commands exec scripts that no longer exist.
-existing = settings.get("hooks", {}) or {}
-if not isinstance(existing, dict):
-    existing = {}
-for event in list(existing.keys()):
-    groups = existing.get(event) or []
-    if not isinstance(groups, list):
-        continue
-    pruned_groups = []
-    for group in groups:
-        if not isinstance(group, dict):
-            pruned_groups.append(group)
-            continue
-        inner = group.get("hooks") or []
-        kept = [h for h in inner if not (isinstance(h, dict) and _is_brain_command(h.get("command", "")))]
-        if kept:
-            new_group = dict(group)
-            new_group["hooks"] = kept
-            pruned_groups.append(new_group)
-    if pruned_groups:
-        existing[event] = pruned_groups
-    else:
-        del existing[event]
-settings["hooks"] = existing
-
-for event, definition in hooks_block.items():
-    settings["hooks"][event] = definition
-
-# Pre-approve the brain CLI so proactive saves/recalls don't hit permission
-# prompts even outside /brain skill turns. Prefix rule: the rendered BRAIN_CMD
-# (env prefix + quoted venv binary) followed by any arguments. Prune stale
-# Brain-owned rules (older vault/venv paths) before re-adding, same policy as
-# the hooks block above.
-perms = settings.get("permissions")
-if not isinstance(perms, dict):
-    perms = {}
-allow = perms.get("allow")
-if not isinstance(allow, list):
-    allow = []
-allow = [
-    r for r in allow
-    if not (isinstance(r, str) and r.startswith("Bash(BRAIN_VAULT=") and "/bin/brain" in r)
-]
-allow.append(f"Bash({brain_cmd}:*)")
-perms["allow"] = allow
-settings["permissions"] = perms
-
-with open(settings_path, "w", encoding="utf-8") as f:
-    json.dump(settings, f, indent=2)
-    f.write("\n")
-PY
+MERGE_ARGS=(merge
+  --settings "$SETTINGS_FILE"
+  --template "$HOOKS_TEMPLATE"
+  --brain-cmd "$BRAIN_CMD"
+  --brain-python "$VENV_PYTHON"
+  --brain-hooks "$HOOKS_DIR"
+  --brain-vault "$VAULT_ROOT")
+if ! "$VENV_PYTHON" "$REPO_DIR/brain_settings_merge.py" "${MERGE_ARGS[@]}"; then
+  echo >&2
+  echo "✗ PARTIAL INSTALLATION in $CLAUDE_DIR" >&2
+  echo "   These steps DID succeed:" >&2
+  echo "     - the venv and brain-mcp install" >&2
+  echo "     - $CLAUDE_DIR/CLAUDE.md" >&2
+  echo "     - $CLAUDE_DIR/skills/brain/SKILL.md" >&2
+  echo "   These did NOT:" >&2
+  echo "     - the hook wiring (no preload, no checkpoints, no stop-gate)" >&2
+  echo "     - the Bash(<brain cmd>:*) permission rule (proactive saves will prompt)" >&2
+  echo "     - MCP registration / cleanup (not attempted)" >&2
+  echo "   Repair $SETTINGS_FILE and re-run this script." >&2
+  exit 3
+fi
 
 # 7. Register the brain MCP server with USER scope via the claude CLI.
 #    User-scoped MCP servers live in ~/.claude.json under the config dir, and

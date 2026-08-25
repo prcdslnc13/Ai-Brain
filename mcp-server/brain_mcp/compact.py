@@ -172,7 +172,11 @@ def _compact_project(project_dir: Path, archive_root: Path, dry_run: bool) -> Co
         return counts
 
     now = datetime.now().timestamp()
-    project = project_dir.name
+    # Validated even though the name came off disk: it is about to be joined into
+    # the archive path, and a directory literally named `..` (creatable on some
+    # filesystems, or arriving via Obsidian Sync from another OS) would put the
+    # rollup outside `archive/projects/`. One helper decides this everywhere.
+    project = vault.validate_project_name(project_dir.name)
 
     # Backfill first, so a vault compacted before rollups carried frontmatter
     # converges on the next run rather than only on the next rollup write.
@@ -221,7 +225,8 @@ def _compact_project(project_dir: Path, archive_root: Path, dry_run: bool) -> Co
         aging_weeklies = [p for p in weeklies
                           if (now - p.stat().st_mtime) >= ARCHIVE_AGE_MIN.total_seconds()]
         for w in aging_weeklies:
-            dest = archive_root / "projects" / project_dir.name / "sessions" / "weekly" / w.name
+            dest = vault.project_dir(project, "sessions", "weekly", w.name,
+                                     root=archive_root)
             counts["archived"] += 1
             if dry_run:
                 continue
@@ -250,13 +255,17 @@ def main() -> None:
         sys.exit(1)
 
     archive_root = root / "archive"
-    projects_root = root / "projects"
+    projects_root = vault.projects_root(root)
     if not projects_root.exists():
         print("no projects directory; nothing to compact.")
         return
 
     if args.project:
-        targets = [projects_root / args.project]
+        try:
+            targets = [vault.project_dir(args.project, root=root)]
+        except ValueError as e:
+            print(f"brain-compact error: {e}", file=sys.stderr)
+            sys.exit(1)
         if not targets[0].exists():
             print(f"project not found: {args.project}", file=sys.stderr)
             sys.exit(1)
@@ -265,7 +274,13 @@ def main() -> None:
 
     totals: Counter = Counter()
     for proj in targets:
-        totals += _compact_project(proj, archive_root, args.dry_run)
+        try:
+            totals += _compact_project(proj, archive_root, args.dry_run)
+        except ValueError as e:
+            # One unusable directory name must not abort the whole run: compaction
+            # is the only thing bounding checkpoint growth, and it is already
+            # something nobody remembers to run.
+            print(f"skipping {proj.name}: {e}", file=sys.stderr)
 
     prefix = "[dry-run] " if args.dry_run else ""
     line = (

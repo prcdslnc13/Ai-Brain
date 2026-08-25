@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import os
 import platform
 import re
@@ -69,10 +70,186 @@ def machine_name() -> str:
     return _machine_name_cache
 
 
-def project_basename(project_dir: str | None) -> str | None:
-    if not project_dir:
+# ---------------------------------------------------------------- project names
+
+class ProjectNameError(ValueError):
+    """A project value that cannot be used as a directory name under Brain/projects/.
+
+    A ValueError subclass so existing `except ValueError` paths — and the CLI's and
+    MCP server's blanket handlers — already report it instead of crashing.
+    """
+
+
+# 96 is not a filesystem limit, it is a headroom calculation. The longest path this
+# name ever appears in is
+# `<vault>/Brain/projects/<name>/sessions/<YYYY-MM-DD-HHMMSS>-<machine>-<n>.md`,
+# whose fixed part runs ~90 chars plus the vault root. Windows' default MAX_PATH is
+# 260 and the vault is deliberately shallow (`~/Vaults/Ai-Brain`), so 96 keeps the
+# deepest checkpoint comfortably inside it while staying ~3x longer than any project
+# basename actually in use (longest in the reference vault: 27).
+PROJECT_NAME_MAX_LEN = 96
+
+# Characters no project name may contain. `/` and `\` are the traversal vector; the
+# rest are illegal in Windows filenames (`:` doubles as the drive qualifier in
+# `C:foo` and as the NTFS alternate-data-stream separator) and a vault syncs between
+# macOS and Windows, so a name only one OS accepts is a name that breaks on the other
+# machine.
+PROJECT_FORBIDDEN_CHARS = frozenset(r'/\<>:"|?*')
+
+# Windows resolves these as device names regardless of extension or directory, so a
+# project literally named `aux` cannot be created there even though macOS accepts it.
+# Rejected on every platform so the vault stays portable.
+PROJECT_RESERVED_NAMES = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{i}" for i in range(1, 10)}
+    | {f"lpt{i}" for i in range(1, 10)}
+)
+
+
+def validate_project_name(project: str) -> str:
+    r"""Return `project` unchanged, or raise ProjectNameError.
+
+    THE single answer to "may this string become a directory under Brain/projects/".
+    Project values arrive from the CLI, the MCP server (i.e. from a model), the
+    hooks' payload `cwd`, brain-compact, doctor, and the pi extension, and every one
+    of them used to be joined straight into a path — so `..`, `../../x`, `/etc/x` or
+    `C:\Windows` read and wrote outside the vault entirely.
+
+    The rule is a **blacklist, not a whitelist**: a project name is a directory
+    basename off the user's disk, so letters of any script, digits, spaces, dots,
+    dashes, underscores, parentheses and ordinary punctuation must all survive — a
+    narrow whitelist would silently orphan existing project directories. Rejected:
+
+    - empty, or anything with leading/trailing whitespace (Windows silently trims a
+      trailing space or dot, so the directory would not carry the name we validated)
+    - `.`, `..`, or any name made only of dots; and any name ending in `.`
+    - PROJECT_FORBIDDEN_CHARS: ``/ \ < > : " | ? *`` — that set alone covers `../x`,
+      `..\x`, `/etc/x`, `C:\x`, `C:x`, `\\server\share`, and mixed separators
+    - control characters, NUL included
+    - PROJECT_RESERVED_NAMES (Windows device names), with or without an extension
+    - longer than PROJECT_NAME_MAX_LEN
+
+    Every project directory in the reference vault (2026-08-25: 34 of them, all
+    `[A-Za-z0-9._-]`) passes unchanged.
+    """
+    if not isinstance(project, str):
+        raise ProjectNameError(f"project must be a string, got {type(project).__name__}")
+    if not project or not project.strip():
+        raise ProjectNameError("project name is empty")
+    if project != project.strip():
+        raise ProjectNameError(f"project name has leading/trailing whitespace: {project!r}")
+    if len(project) > PROJECT_NAME_MAX_LEN:
+        raise ProjectNameError(
+            f"project name is longer than {PROJECT_NAME_MAX_LEN} characters: {project[:40]!r}…"
+        )
+    if set(project) <= {"."}:
+        raise ProjectNameError(f"project name is not a directory name: {project!r}")
+    if project.endswith("."):
+        raise ProjectNameError(f"project name ends with a dot (Windows strips it): {project!r}")
+    bad = sorted(set(project) & PROJECT_FORBIDDEN_CHARS)
+    if bad:
+        raise ProjectNameError(
+            f"project name must be a basename, not a path — "
+            f"{''.join(bad)!r} is not allowed in {project!r}"
+        )
+    ctrl = [c for c in project if ord(c) < 0x20 or ord(c) == 0x7F]
+    if ctrl:
+        raise ProjectNameError(
+            f"project name contains a control character (0x{ord(ctrl[0]):02x})"
+        )
+    if project.split(".", 1)[0].lower() in PROJECT_RESERVED_NAMES:
+        raise ProjectNameError(
+            f"{project!r} is a reserved device name on Windows and the vault syncs there"
+        )
+    return project
+
+
+# The Windows extended-length prefixes, spelled out rather than written as escaped
+# literals: `\\?\` and `\\?\UNC\` are almost impossible to review inside a Python
+# string, and getting one backslash wrong makes the guard below silently no-op.
+_BS = "\\"
+_EXTENDED_PREFIX = _BS + _BS + "?" + _BS
+_EXTENDED_UNC_PREFIX = _EXTENDED_PREFIX + "UNC" + _BS
+
+
+def _comparable(path: Path) -> Path:
+    r"""Normalize a *resolved* path so two of them can be compared.
+
+    `Path.resolve()` is NOT prefix-stable on Windows. CPython asks the OS for the
+    final path (which always comes back in the `\\?\` extended-length form), then
+    strips that prefix only if it can re-resolve the stripped form and get the same
+    answer back. When that verification call fails — the path is being created or
+    removed by another thread/process right then, or it exceeds MAX_PATH — the
+    prefix survives. So one operand can be `\\?\C:\...` while the other is `C:\...`,
+    and a containment test between them fails for a perfectly legal path.
+
+    That bit during the 2026-08-25 review: 40 concurrent `write_checkpoint` calls
+    for one project raised ProjectNameError, i.e. the traversal guard rejected a
+    real project and dropped the checkpoint — in exactly the concurrent-checkpoint
+    case the uniqueness work exists to make safe. Case folding matters for the same
+    reason: Windows paths are case-insensitive, so `D:\Vaults` and `d:\vaults` are
+    one directory and must compare equal.
+    """
+    text = str(path)
+    if text.startswith(_EXTENDED_UNC_PREFIX):
+        text = _BS + _BS + text[len(_EXTENDED_UNC_PREFIX):]
+    elif text.startswith(_EXTENDED_PREFIX):
+        text = text[len(_EXTENDED_PREFIX):]
+    return Path(os.path.normcase(text))
+
+
+def projects_root(root: Path | None = None) -> Path:
+    """The `Brain/projects/` directory. Every enumeration of it starts here."""
+    return (root if root is not None else vault_root()) / "projects"
+
+
+def project_dir(project: str, *parts: str, root: Path | None = None) -> Path:
+    r"""Validated `Brain/projects/<project>/<parts...>`.
+
+    THE only way to turn a project value into a path — `test_project_path_safety.py`
+    fails the build if any module joins a project value under `projects` itself.
+    `validate_project_name` makes escape structurally impossible; the containment
+    check afterwards is belt-and-braces, and is what would catch a future edit that
+    loosens the character rules, or a project directory symlinked out of the vault.
+    """
+    base = projects_root(root)
+    path = base.joinpath(validate_project_name(project), *parts)
+    try:
+        resolved = _comparable(path.resolve())
+        resolved_base = _comparable(base.resolve())
+    except OSError as e:  # pragma: no cover - resolve(strict=False) rarely raises
+        raise ProjectNameError(f"cannot resolve project path for {project!r}: {e}")
+    if resolved != resolved_base and resolved_base not in resolved.parents:
+        raise ProjectNameError(f"project path escapes {resolved_base}: {resolved}")
+    return path
+
+
+def project_basename(project_cwd: str | None) -> str | None:
+    """Derive a usable project name from a working directory, or None.
+
+    Sanitizes rather than raises, and returns None rather than something invalid:
+    this runs inside the SessionStart hook, and a hook that raises drops the *entire*
+    preload — losing every behavioural rule for a session is far worse than losing
+    one session's project context. A cwd that yields no valid name (a drive root, a
+    UNC share root, a name that is only dots) simply produces an unscoped session.
+    """
+    if not project_cwd:
         return None
-    return Path(project_dir).resolve().name
+    try:
+        name = Path(project_cwd).resolve().name
+    except (OSError, ValueError):
+        return None
+    # Trim what the validator rejects but a filesystem may still hand us: control
+    # characters, a trailing dot or space (Windows), an over-long name.
+    name = "".join(c for c in name if ord(c) >= 0x20 and ord(c) != 0x7F)
+    name = name.strip().rstrip(". ").strip()
+    name = name[:PROJECT_NAME_MAX_LEN].strip().rstrip(". ").strip()
+    if not name:
+        return None
+    try:
+        return validate_project_name(name)
+    except ProjectNameError:
+        return None
 
 
 def path_in_project(path: Path, project: str) -> bool:
@@ -106,13 +283,26 @@ def _frontmatter(fields: dict) -> str:
     return f"---\n{dumped}---\n\n"
 
 
+# Monotonic within a process; combined with the pid it makes every temp name in
+# flight distinct, including between threads of a long-lived MCP server.
+_tmp_counter = itertools.count()
+
+
 def _atomic_write(path: Path, text: str) -> None:
     """Write via a same-directory temp file + os.replace so a mid-write
     failure can never truncate an existing memory (2026-07-28: a
     UnicodeEncodeError on Windows emptied three notes during overwrite).
     The temp name doesn't end in .md, so vault globs, the embed index, and
-    Obsidian Sync never see it."""
-    tmp = path.with_name(path.name + ".tmp")
+    Obsidian Sync never see it.
+
+    The temp name is also unique per writer (pid + counter). It used to be a fixed
+    `<name>.md.tmp`, which meant two processes saving the *same* memory — two
+    sessions reacting to the same correction, a hook and a CLI save racing —
+    interleaved their bytes into one temp file and then both renamed it over the
+    real note. Same class of bug as the checkpoint filename collision, one level
+    down (2026-08-25).
+    """
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{next(_tmp_counter)}.tmp")
     try:
         tmp.write_text(text, encoding="utf-8")
         os.replace(tmp, path)
@@ -122,7 +312,6 @@ def _atomic_write(path: Path, text: str) -> None:
                 tmp.unlink()
         except OSError:
             pass
-
 
 def _fm_str(value, default: str) -> str:
     """Coerce a frontmatter scalar to str, falling back to `default` when absent.
@@ -206,13 +395,13 @@ def write_memory(mtype: str, name: str, content: str, project: str | None = None
     if mtype == "project":
         if not project:
             raise ValueError("project memories require a project name")
-        target_dir = root / "projects" / project
+        target_dir = project_dir(project, root=root)
     elif mtype == "feedback":
         # Global by default. `--project X` scopes the rule to one project: it lands in
         # projects/X/feedback/ and preloads only in that project's sessions. Added
         # 2026-08-06, when ~40% of the global feedback corpus turned out to be
         # project-specific advice loading into every session of every project.
-        target_dir = (root / "projects" / project / "feedback") if project else (root / "feedback")
+        target_dir = project_dir(project, "feedback", root=root) if project else (root / "feedback")
     else:
         target_dir = root / ("user" if mtype == "user" else "references")
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -256,6 +445,11 @@ def _try_embed_delete(path: Path) -> None:
 
 def list_memories(mtype: str | None = None, project: str | None = None) -> list[Memory]:
     root = vault_root()
+    # Validated even on the branches that only *filter* by project rather than
+    # building a path: a filter that silently matches nothing and a filter that is
+    # an attempted traversal must not look the same to the caller.
+    if project:
+        validate_project_name(project)
     candidates: list[Path] = []
     if mtype is None:
         candidates += list(root.rglob("*.md"))
@@ -264,15 +458,15 @@ def list_memories(mtype: str | None = None, project: str | None = None) -> list[
     elif mtype == "feedback":
         candidates += list((root / "feedback").rglob("*.md"))
         # Project-scoped feedback lives under projects/<p>/feedback/ (added 2026-08-06).
-        proj_root = root / "projects"
+        proj_root = projects_root(root)
         if proj_root.exists():
             candidates += list(proj_root.glob("*/feedback/**/*.md"))
     elif mtype == "reference":
         candidates += list((root / "references").rglob("*.md"))
     elif mtype == "project":
-        proj_root = root / "projects"
+        proj_root = projects_root(root)
         if project:
-            proj_root = proj_root / project
+            proj_root = project_dir(project, root=root)
         if proj_root.exists():
             candidates += list(proj_root.rglob("*.md"))
     candidates = [p for p in candidates if is_memory_path(p, root)]
@@ -373,6 +567,8 @@ def search_memories(query: str, mtype: str | None = None, project: str | None = 
     sqlite error) falls back transparently to ripgrep substring search.
     """
     root = vault_root()
+    if project:
+        validate_project_name(project)
     use_embed = os.environ.get("BRAIN_EMBED", "1") != "0"
 
     ordered_paths: list[Path] = []
@@ -608,7 +804,7 @@ def session_start_bundle(project: str | None = None, budget_kb: float | None = N
         add_pinned("index", index_file)
 
     if project:
-        proj_dir = root / "projects" / project
+        proj_dir = project_dir(project, root=root)
         if proj_dir.exists():
             if not slim:
                 overview = proj_dir / "overview.md"
@@ -648,7 +844,7 @@ def session_start_bundle(project: str | None = None, budget_kb: float | None = N
 OVERVIEW_SOURCE_CANDIDATES = ("CLAUDE.md", "plan.md", "ROADMAP.md", "README.md")
 
 
-def ensure_project_overview_stub(project: str, project_dir: str | Path | None) -> Path | None:
+def ensure_project_overview_stub(project: str, project_cwd: str | Path | None) -> Path | None:
     """Write a minimal stub `projects/<project>/overview.md` if none exists.
 
     The stub has `stub: true` in frontmatter so the model (via the SessionStart
@@ -663,13 +859,13 @@ def ensure_project_overview_stub(project: str, project_dir: str | Path | None) -
     if not project:
         return None
     root = vault_root()
-    overview = root / "projects" / project / "overview.md"
+    overview = project_dir(project, "overview.md", root=root)
     if overview.exists():
         return None
 
     pointers: list[str] = []
-    if project_dir:
-        p = Path(project_dir).expanduser().resolve()
+    if project_cwd:
+        p = Path(project_cwd).expanduser().resolve()
         for name in OVERVIEW_SOURCE_CANDIDATES:
             candidate = p / name
             if candidate.exists():
@@ -728,17 +924,65 @@ def is_overview_stub(path: Path) -> bool:
     return bool(fm.get("stub"))
 
 
+# Second precision, not minute. The old `%Y-%m-%d-%H%M` made "two checkpoints in the
+# same minute on the same machine" the same filename, and PreCompact immediately
+# followed by SessionEnd is exactly that: the second write silently replaced the
+# first. Still sortable as a string, and still ordered correctly against the legacy
+# minute-precision names already in the vault ('-' < any digit, so 12:49 sorts before
+# 12:49:xx).
+CHECKPOINT_STAMP_FORMAT = "%Y-%m-%d-%H%M%S"
+
+# How many `_02`, `_03`, … suffixes to try before giving up. A same-second collision
+# is already the rare case; 99 of them is a bug, not a busy machine. The counter is
+# zero-padded and introduced by `_` rather than `-` so the names stay sortable as
+# strings: `_` (0x5F) sorts after `.` (0x2E), so `…-host.md` still precedes
+# `…-host_02.md`, whereas a `-` suffix (0x2D) sorted the *second* checkpoint first.
+CHECKPOINT_MAX_ATTEMPTS = 99
+
+
+def _reserve_checkpoint_path(target: Path, stamp: str, machine: str) -> Path:
+    r"""Atomically claim an unused `<stamp>-<machine>[-n].md` under `target`.
+
+    Uses O_EXCL rather than an `exists()` test because the collision this guards
+    against is *concurrent*: PreCompact and SessionEnd are separate processes, and
+    the pi extension's cadence and shutdown checkpoints can overlap. Two processes
+    checking-then-writing both see "free" and both write the same path; two
+    processes O_EXCL-creating cannot.
+
+    Claiming the name up front also makes `_atomic_write`'s temp file unique per
+    writer, since the temp name is derived from the (now unique) destination.
+
+    The counter goes *after* the machine suffix so the machine stays where the user
+    scans for it (see `machine_name`), and so the suffixed name still sorts directly
+    after its unsuffixed sibling.
+    """
+    base = f"{stamp}-{machine}"
+    for attempt in range(1, CHECKPOINT_MAX_ATTEMPTS + 1):
+        name = f"{base}.md" if attempt == 1 else f"{base}_{attempt:02d}.md"
+        path = target / name
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            continue
+        os.close(fd)
+        return path
+    raise RuntimeError(
+        f"could not find a free checkpoint filename under {target} after "
+        f"{CHECKPOINT_MAX_ATTEMPTS} attempts (base {base})"
+    )
+
+
 def write_checkpoint(project: str, summary: str) -> Path:
     root = vault_root()
-    target = root / "projects" / project / "sessions"
+    target = project_dir(project, "sessions", root=root)
     target.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y-%m-%d-%H%M")
+    stamp = datetime.now().strftime(CHECKPOINT_STAMP_FORMAT)
     # The machine suffix in the filename is deliberate: it's how the user spots
     # where unfinished/uncommitted work lives when scanning sessions/ (they hop
     # between machines). Everything that consumes these files picks them by
     # mtime, never by parsing the name, so the suffix is safe to carry.
     machine = machine_name()
-    path = target / f"{stamp}-{machine}.md"
+    path = _reserve_checkpoint_path(target, stamp, machine)
     if not summary.lstrip().startswith("---"):
         summary = _frontmatter({
             "name": f"session checkpoint {stamp} ({machine})",
@@ -748,9 +992,19 @@ def write_checkpoint(project: str, summary: str) -> Path:
             "timestamp": stamp,
             "machine": machine,
         }) + summary.strip() + "\n"
-    _atomic_write(path, summary)
+    try:
+        _atomic_write(path, summary)
+    except BaseException:
+        # The reservation is a real (empty) .md file. Leaving it behind would put a
+        # contentless checkpoint in the preload's latest-session slot, which is
+        # worse than the failed write itself.
+        try:
+            if path.stat().st_size == 0:
+                path.unlink()
+        except OSError:
+            pass
+        raise
     return path
-
 
 EXCLUDE_DIRS = frozenset({"archive", "_setup", ".index"})
 # Bookkeeping files that live at the Brain/ root and are not memories: the Stop-hook
@@ -838,7 +1092,8 @@ def stats() -> dict:
 
     oldest_checkpoint: str | None = None
     earliest_mtime: float | None = None
-    sessions_glob = list((root / "projects").glob("*/sessions/*.md")) if (root / "projects").exists() else []
+    proj_root = projects_root(root)
+    sessions_glob = list(proj_root.glob("*/sessions/*.md")) if proj_root.exists() else []
     for p in sessions_glob:
         try:
             m = p.stat().st_mtime
@@ -889,11 +1144,16 @@ def forget_memory(rel_or_abs_path: str) -> Path:
                 break
     if not p.exists():
         raise FileNotFoundError(f"memory not found: {rel_or_abs_path}")
-    resolved = p.resolve()
+    # `_comparable` on BOTH sides for the same reason as project_dir: Path.resolve()
+    # is not prefix-stable on Windows, so an unnormalized comparison here refuses a
+    # perfectly legitimate delete whenever the OS hands back the `\\?\` form. This
+    # guard fails safe, so it would have shown up as a mysterious intermittent
+    # "refusing to delete outside the Brain dir" rather than as a hole.
+    resolved = _comparable(p.resolve())
     # The old guard was `root not in parents and resolved != root`, which *permitted*
     # the Brain directory itself — the one path that should be refused hardest — and
     # then fell through to unlink() on a directory.
-    if root not in resolved.parents:
+    if _comparable(root) not in resolved.parents:
         raise PermissionError(f"refusing to delete outside the Brain dir: {p}")
     if resolved.is_dir():
         raise IsADirectoryError(f"refusing to delete a directory: {p}")

@@ -96,7 +96,12 @@ else
   fi
 fi
 
-# 2. Prune Brain-owned entries from settings.json.
+# 2. Prune Brain-owned entries from settings.json via the shared
+#    brain_settings_merge.py — the SAME module (and therefore the same ownership
+#    predicate) the installers use. An asymmetry here means either orphan hooks
+#    left after uninstall or duplicated hooks after the next install. Third-party
+#    hooks registered for the same events are left untouched, and an unparseable
+#    settings.json is left exactly as found.
 SETTINGS_FILE="$CLAUDE_DIR/settings.json"
 echo "[2/5] pruning Brain hooks from $SETTINGS_FILE"
 if [ ! -f "$SETTINGS_FILE" ]; then
@@ -105,88 +110,9 @@ elif [ -z "$PY_FOR_PRUNE" ]; then
   echo "       ⚠ no python3 available to parse settings.json — leaving hooks in place." >&2
   echo "         Install Python 3 and re-run, or hand-edit $SETTINGS_FILE." >&2
 else
-  "$PY_FOR_PRUNE" - "$SETTINGS_FILE" "$REPO_DIR/hooks" <<'PY'
-import json, sys
-settings_path, brain_hooks = sys.argv[1:3]
-
-try:
-    with open(settings_path, "r", encoding="utf-8") as f:
-        settings = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
-    sys.exit(0)
-
-def _is_brain_command(cmd):
-    if not isinstance(cmd, str):
-        return False
-    return (
-        "BRAIN_VAULT=" in cmd
-        or brain_hooks in cmd
-        or "brain-launch" in cmd.lower()
-    )
-
-existing = settings.get("hooks", {}) or {}
-if not isinstance(existing, dict):
-    sys.exit(0)
-
-removed = 0
-for event in list(existing.keys()):
-    groups = existing.get(event) or []
-    if not isinstance(groups, list):
-        continue
-    pruned_groups = []
-    for group in groups:
-        if not isinstance(group, dict):
-            pruned_groups.append(group)
-            continue
-        inner = group.get("hooks") or []
-        kept = []
-        for h in inner:
-            if isinstance(h, dict) and _is_brain_command(h.get("command", "")):
-                removed += 1
-            else:
-                kept.append(h)
-        if kept:
-            new_group = dict(group)
-            new_group["hooks"] = kept
-            pruned_groups.append(new_group)
-    if pruned_groups:
-        existing[event] = pruned_groups
-    else:
-        del existing[event]
-
-if existing:
-    settings["hooks"] = existing
-else:
-    settings.pop("hooks", None)
-
-# Drop the Bash(<brain_cmd>:*) pre-approval the installer writes. Install and
-# uninstall have to be symmetric: the uninstaller deletes the brain wrapper but used
-# to leave its allow-rule behind, so settings.json kept a standing unprompted Bash
-# approval for a path that no longer exists -- harmless until something else creates
-# that path, at which point it is already approved.
-perms = settings.get("permissions")
-if isinstance(perms, dict) and isinstance(perms.get("allow"), list):
-    def _is_brain_rule(r):
-        if not isinstance(r, str) or not r.startswith("Bash("):
-            return False
-        return "brain.cmd" in r.lower() or (
-            r.startswith("Bash(BRAIN_VAULT=") and "/bin/brain" in r
-        )
-    kept = [r for r in perms["allow"] if not _is_brain_rule(r)]
-    removed += len(perms["allow"]) - len(kept)
-    if kept:
-        perms["allow"] = kept
-    else:
-        perms.pop("allow", None)
-    if not perms:
-        settings.pop("permissions", None)
-
-with open(settings_path, "w", encoding="utf-8") as f:
-    json.dump(settings, f, indent=2)
-    f.write("\n")
-
-print(f"       ✓ removed {removed} Brain-owned entr{'y' if removed == 1 else 'ies'}")
-PY
+  "$PY_FOR_PRUNE" "$REPO_DIR/brain_settings_merge.py" prune \
+    --settings "$SETTINGS_FILE" \
+    --brain-hooks "$REPO_DIR/hooks"
 fi
 
 # 3. Delete CLAUDE.md only if it carries our managed-by marker.

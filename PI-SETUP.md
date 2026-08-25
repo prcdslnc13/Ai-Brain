@@ -135,6 +135,7 @@ place the rest of this repo reads its configuration from:
 | `BRAIN_PI_CHECKPOINT_EVERY` | `3` | Settled turns between cadence checkpoints |
 | `BRAIN_PI_TIMEOUT_MS` | `60000` | Per-invocation timeout |
 | `BRAIN_PI_EXTENSION` | on | `0` disables the extension entirely |
+| `BRAIN_AGENT_SURFACE` | forced to `0` | Set by the extension itself. Claude Code's generated `brain.cmd` sets it to `1`, which makes the CLI refuse `--from-pi`; the extension is the operator here, so it clears it. |
 
 `BRAIN_CMD` is also honoured, but only when it is a bare path: in the Claude Code templates it
 is a *shell string* (`BRAIN_VAULT=… /path/to/brain`) and pi spawns without a shell. Use

@@ -96,7 +96,12 @@ if (-not (Get-Command $ClaudeBin -ErrorAction SilentlyContinue)) {
   }
 }
 
-# 2. Prune Brain-owned entries from settings.json.
+# 2. Prune Brain-owned entries from settings.json via the shared
+#    brain_settings_merge.py - the SAME module (and therefore the same ownership
+#    predicate) the installers use. An asymmetry here means either orphan hooks
+#    left after uninstall or duplicated hooks after the next install. Third-party
+#    hooks registered for the same events are left untouched, and an unparseable
+#    settings.json is left exactly as found.
 $SettingsFile = Join-Path $ClaudeDir 'settings.json'
 Write-Host "[2/6] pruning Brain hooks from $SettingsFile"
 if (-not (Test-Path $SettingsFile)) {
@@ -105,98 +110,19 @@ if (-not (Test-Path $SettingsFile)) {
   Write-Warning "no Python available to parse settings.json - leaving hooks in place."
   Write-Warning "Install Python 3 and re-run, or hand-edit $SettingsFile."
 } else {
-  $pruneScript = @'
-import json, sys
-settings_path, brain_hooks = sys.argv[1:3]
-
-try:
-    with open(settings_path, "r", encoding="utf-8") as f:
-        settings = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
-    sys.exit(0)
-
-def _is_brain_command(cmd):
-    if not isinstance(cmd, str):
-        return False
-    low = cmd.lower()
-    return (
-        "brain_vault=" in low
-        or brain_hooks.lower() in low
-        or "brain-launch" in low
-    )
-
-existing = settings.get("hooks", {}) or {}
-if not isinstance(existing, dict):
-    sys.exit(0)
-
-removed = 0
-for event in list(existing.keys()):
-    groups = existing.get(event) or []
-    if not isinstance(groups, list):
-        continue
-    pruned_groups = []
-    for group in groups:
-        if not isinstance(group, dict):
-            pruned_groups.append(group)
-            continue
-        inner = group.get("hooks") or []
-        kept = []
-        for h in inner:
-            if isinstance(h, dict) and _is_brain_command(h.get("command", "")):
-                removed += 1
-            else:
-                kept.append(h)
-        if kept:
-            new_group = dict(group)
-            new_group["hooks"] = kept
-            pruned_groups.append(new_group)
-    if pruned_groups:
-        existing[event] = pruned_groups
-    else:
-        del existing[event]
-
-if existing:
-    settings["hooks"] = existing
-else:
-    settings.pop("hooks", None)
-
-# Drop the Bash(<brain_cmd>:*) pre-approval the installer writes. Install and
-# uninstall have to be symmetric: the uninstaller deletes the brain wrapper but used
-# to leave its allow-rule behind, so settings.json kept a standing unprompted Bash
-# approval for a path that no longer exists -- harmless until something else creates
-# that path, at which point it is already approved.
-perms = settings.get("permissions")
-if isinstance(perms, dict) and isinstance(perms.get("allow"), list):
-    def _is_brain_rule(r):
-        if not isinstance(r, str) or not r.startswith("Bash("):
-            return False
-        return "brain.cmd" in r.lower() or (
-            r.startswith("Bash(BRAIN_VAULT=") and "/bin/brain" in r
-        )
-    kept = [r for r in perms["allow"] if not _is_brain_rule(r)]
-    removed += len(perms["allow"]) - len(kept)
-    if kept:
-        perms["allow"] = kept
-    else:
-        perms.pop("allow", None)
-    if not perms:
-        settings.pop("permissions", None)
-
-with open(settings_path, "w", encoding="utf-8") as f:
-    json.dump(settings, f, indent=2)
-    f.write("\n")
-
-word = "entry" if removed == 1 else "entries"
-print(f"       [ok] removed {removed} Brain-owned {word}")
-'@
-  $prunePath = Join-Path $env:TEMP "brain-uninstall-prune-$PID.py"
-  [System.IO.File]::WriteAllText($prunePath, $pruneScript)
+  $HooksDir    = Join-Path $RepoDir 'hooks'
+  $PruneScript = Join-Path $RepoDir 'brain_settings_merge.py'
+  # Same PS 5.1 trap as the `claude mcp remove` calls: $ErrorActionPreference='Stop'
+  # turns any native stderr into a terminating NativeCommandError, and an uninstall
+  # must never abort on a diagnostic.
   try {
-    $HooksDir = Join-Path $RepoDir 'hooks'
-    & $PyForPrune $prunePath $SettingsFile $HooksDir
-  } finally {
-    Remove-Item -Force $prunePath -ErrorAction SilentlyContinue
+    $pruneOutput = (& $PyForPrune $PruneScript prune `
+        --settings $SettingsFile `
+        --brain-hooks $HooksDir 2>&1 | Out-String)
+  } catch {
+    $pruneOutput = $_.Exception.Message
   }
+  if ($pruneOutput.Trim()) { Write-Host $pruneOutput.Trim() }
 }
 
 # 3. Delete CLAUDE.md only if it carries our managed-by marker.

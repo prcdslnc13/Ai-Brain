@@ -75,6 +75,12 @@ from the outside, after the fact, by reading that log.
 cherryd writes every session to a SQLite event log at `$XDG_STATE_HOME/cherryd/cherryd.db`
 (default `~/.local/state/cherryd/cherryd.db`). Point `brain checkpoint` at it:
 
+> **Run these from the venv's `brain`, not from Claude Code's generated wrapper.**
+> `--from-cherryd` and `--from-pi` read an event log off disk, so they are refused when
+> `BRAIN_AGENT_SURFACE=1` is set — which the wrapper Claude Code pre-approves does set, to
+> stop a prompt-injected model importing arbitrary local files into the vault. A timer or a
+> shell running the venv binary directly is unaffected.
+
 ```bash
 # Checkpoint the most recently active session
 brain checkpoint --from-cherryd ~/.local/state/cherryd/cherryd.db

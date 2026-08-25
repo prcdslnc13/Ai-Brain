@@ -102,42 +102,48 @@ def test_uninstall_removes_the_permission_rule(uninstaller: str) -> None:
     Every installer writes `permissions.allow -> Bash(<brain_cmd>:*)`. No uninstaller
     removed it, so uninstalling deleted the brain wrapper but left a standing
     unprompted Bash approval for that path behind in settings.json.
+
+    Since 2026-08-25 symmetry is structural rather than duplicated: both halves call
+    `brain_settings_merge`, so the rule predicate cannot drift between them. This
+    test now guards the routing; `test_permission_rule_round_trips` below still
+    exercises the behaviour.
     """
     src = (REPO_ROOT / uninstaller).read_text(encoding="utf-8")
-    assert "permissions" in src, f"{uninstaller} never prunes settings['permissions']"
-    assert "_is_brain_rule" in src, f"{uninstaller} has no Brain-owned allow-rule predicate"
+    assert "brain_settings_merge" in src, (
+        f"{uninstaller} no longer routes through the shared merge module, so its "
+        f"allow-rule and hook-ownership predicates can drift from the installers'"
+    )
 
 
 def test_permission_rule_round_trips(tmp_path: Path) -> None:
     """Whatever an installer writes, an uninstaller must be able to remove.
 
     Asserted against the *real* predicates rather than a copy, so a change to the
-    rule format on one side cannot silently orphan the other.
+    rule format cannot silently orphan a rule in a user's settings.json.
     """
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
-        "brain_setup", REPO_ROOT / "brain-setup.py"
+        "brain_settings_merge_residue", REPO_ROOT / "brain_settings_merge.py"
     )
-    setup = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(setup)
-
-    spec_u = importlib.util.spec_from_file_location(
-        "brain_uninstall", REPO_ROOT / "brain-uninstall.py"
-    )
-    uninstall = importlib.util.module_from_spec(spec_u)
-    spec_u.loader.exec_module(uninstall)
+    merge = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(merge)
 
     for brain_cmd in (
         "C:/Users/x/.claude/brain.cmd",
-        'BRAIN_VAULT="/home/x/Vaults/Ai-Brain" "/home/x/src/Ai-Brain/mcp-server/.venv/bin/brain"',
+        'BRAIN_AGENT_SURFACE=1 BRAIN_VAULT="/home/x/Vaults/Ai-Brain" '
+        '"/home/x/src/Ai-Brain/mcp-server/.venv/bin/brain"',
     ):
         settings = {"permissions": {"allow": ["Bash(git status:*)"]}}
-        setup._merge_permission_rule(settings, brain_cmd)
-        assert f"Bash({brain_cmd}:*)" in settings["permissions"]["allow"]
+        merge.merge_permission_rule(settings, brain_cmd)
+        written = settings["permissions"]["allow"]
+        for sub in merge.AGENT_SUBCOMMANDS:
+            assert f"Bash({brain_cmd} {sub}:*)" in written
 
-        removed = uninstall._prune_permission_rules(settings)
-        assert removed == 1, f"uninstall did not recognise the rule for {brain_cmd!r}"
+        removed = merge.prune_permission_rules(settings)
+        assert removed == len(merge.AGENT_SUBCOMMANDS), (
+            f"uninstall did not recognise every rule for {brain_cmd!r}"
+        )
         assert settings.get("permissions", {}).get("allow", []) == ["Bash(git status:*)"], (
             "pruning must leave unrelated rules alone"
         )

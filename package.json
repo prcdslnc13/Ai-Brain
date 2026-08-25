@@ -2,10 +2,23 @@
   "name": "ai-brain",
   "version": "0.1.0",
   "description": "The Ai-Brain memory system as a pi extension: session preload, memory tools, and automatic checkpoints",
-  "keywords": ["pi-package"],
+  "keywords": [
+    "pi-package"
+  ],
   "license": "MIT",
   "private": true,
   "pi": {
-    "extensions": ["./pi/extensions"]
+    "extensions": [
+      "./pi/extensions"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.3",
+    "@types/node": "^24.0.0",
+    "typebox": "^1.3.19",
+    "typescript": "^5.9.0"
   }
 }

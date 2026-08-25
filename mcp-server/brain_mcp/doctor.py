@@ -27,6 +27,7 @@ from pathlib import Path
 
 import yaml
 
+from . import vault
 from ._console import force_utf8_stdio
 
 SEVERITY_ORDER = ("ok", "info", "warn", "error")
@@ -130,8 +131,6 @@ def _check_frontmatter(brain: Path) -> list[Finding]:
     `name: F1 Ultra job path: .xf is a tar`, invalid YAML, and four notes
     lost their type without any error surfacing anywhere.
     """
-    from . import vault
-
     bad: list[tuple[Path, str]] = []
     for d in MEMORY_DIRS:
         droot = brain / d
@@ -544,7 +543,7 @@ def _check_stale_uncommitted(
     if not (cwd_path / ".git").exists():
         return []
 
-    sessions = brain / "projects" / project / "sessions"
+    sessions = vault.project_dir(project, "sessions", root=brain)
     if not sessions.exists():
         return []
     checkpoints = list(sessions.glob("*.md"))
@@ -621,7 +620,7 @@ def _check_stale_uncommitted(
 def _check_project_overview(brain: Path, project: str | None) -> list[Finding]:
     if not project:
         return []
-    overview = brain / "projects" / project / "overview.md"
+    overview = vault.project_dir(project, "overview.md", root=brain)
     if not overview.exists():
         return [Finding(
             "warn", "OVERVIEW_MISSING",
@@ -630,7 +629,6 @@ def _check_project_overview(brain: Path, project: str | None) -> list[Finding]:
             "either didn't run or couldn't write to the vault. Check hook logs on this machine.",
         )]
     try:
-        from brain_mcp import vault
         if vault.is_overview_stub(overview):
             return [Finding(
                 "info", "OVERVIEW_STUB",
@@ -646,7 +644,7 @@ def _check_project_overview(brain: Path, project: str | None) -> list[Finding]:
 def _check_stale_checkpoint(brain: Path, project: str | None) -> list[Finding]:
     if not project:
         return []
-    sessions = brain / "projects" / project / "sessions"
+    sessions = vault.project_dir(project, "sessions", root=brain)
     if not sessions.exists():
         return [Finding(
             "info", "NO_CHECKPOINTS",
@@ -682,8 +680,6 @@ def _check_bundle_budget(project: str | None) -> list[Finding]:
     the 44 KB subagent budget (3 feedback rules dropped from every subagent) while this
     check — then sizing only the 72 KB session budget — reported OK.
     """
-    from . import vault
-
     findings: list[Finding] = []
 
     def size_one(label: str, warn_code: str, ok_code: str, knob: str,
@@ -762,7 +758,7 @@ def _check_memory_sizes(brain: Path) -> list[Finding]:
 
     oversized: list[tuple[int, int, str]] = []
     dirs = [brain / "user", brain / "feedback"]
-    projects = brain / "projects"
+    projects = vault.projects_root(brain)
     if projects.exists():
         dirs += sorted(p for p in projects.glob("*/feedback") if p.is_dir())
     for d in dirs:
@@ -837,7 +833,7 @@ def _check_shadowed_overviews(brain: Path) -> list[Finding]:
     so every session there got the stub for months."""
     from brain_mcp import vault
 
-    projects = brain / "projects"
+    projects = vault.projects_root(brain)
     if not projects.exists():
         return []
     hits: list[str] = []
@@ -870,7 +866,7 @@ def _check_stub_only_projects(brain: Path) -> list[Finding]:
     than STUB_ONLY_STALE_DAYS, so genuinely new projects never appear."""
     from brain_mcp import vault
 
-    projects = brain / "projects"
+    projects = vault.projects_root(brain)
     if not projects.exists():
         return []
     now = datetime.now().timestamp()
@@ -999,6 +995,22 @@ def check(
         return [f.to_dict() for f in findings]
 
     brain = Path(os.environ["BRAIN_VAULT"]).expanduser() / "Brain"
+
+    # Degrade to an unscoped run rather than raising: `check()` is called from the
+    # SessionStart hook, and an exception there loses the entire preload. Reported
+    # so the cause is visible instead of the project checks just going quiet.
+    if project is not None:
+        try:
+            vault.validate_project_name(project)
+        except ValueError as e:
+            findings.append(Finding(
+                "warn", "PROJECT_NAME_INVALID",
+                f"project value cannot be used as a vault directory: {e}",
+                "Project names are directory basenames — no separators, no '..', no "
+                "drive letters. Project-scoped checks and preload are skipped this run.",
+            ))
+            project = None
+
     findings.extend(_check_subdirs(brain))
     findings.extend(_check_sync_conflicts(brain))
     findings.extend(_check_frontmatter(brain))
