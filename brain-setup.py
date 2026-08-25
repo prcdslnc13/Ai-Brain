@@ -289,6 +289,23 @@ def install_brain_mcp(num: int, total: int) -> None:
     )
     subprocess.run([str(VENV_PIP), "install", "--quiet", str(MCP_SERVER_DIR)], check=True)
 
+    # The `dev` extra (pytest) is installed SEPARATELY and non-fatally, on purpose.
+    # It has to be installed for run_tests() to have anything to run -- until
+    # 2026-08-25 no installer installed it, so a fresh venv could not run the suite
+    # at all, and a test that had never passed on macOS or Linux sat red through a
+    # whole review cycle without anyone seeing it.
+    #
+    # But it must not be able to FAIL the install: a machine that has the real
+    # dependencies in its pip cache and not pytest would otherwise lose its memory
+    # system over a testing convenience. A missing pytest degrades to a skipped
+    # self-test, which run_tests() reports honestly.
+    res = subprocess.run(
+        [str(VENV_PIP), "install", "--quiet", f"{MCP_SERVER_DIR}[dev]"],
+        check=False, capture_output=True, text=True,
+    )
+    if res.returncode != 0:
+        warn("could not install the 'dev' extra (pytest); the self-test step will be skipped.")
+
 
 def sanity_import(num: int, total: int, vault_root: Path) -> None:
     step(num, total, "import smoke test from foreign cwd")
@@ -319,6 +336,64 @@ def warm_embedder(num: int, total: int, vault_root: Path) -> None:
     )
     if res.returncode != 0:
         warn("embed warm-up failed; vector recall will fall back to ripgrep until resolved.")
+
+
+def run_tests(num: int, total: int, skip: bool) -> tuple[bool, str]:
+    """Run the package's own test suite against the source tree.
+
+    Returns (ok, reason). A failure never blocks the install -- by this point the
+    venv is built and the wiring still needs to land -- but it is reported loudly
+    and makes the process exit nonzero, the same contract a refused settings.json
+    already has. Silence is what this step exists to end.
+    """
+    if skip:
+        step(num, total, "self-test skipped (--skip-tests)")
+        return True, "skipped"
+    tests_dir = MCP_SERVER_DIR / "tests"
+    if not tests_dir.is_dir():
+        step(num, total, "self-test skipped (no tests/ in this checkout)")
+        return True, "no tests"
+
+    step(num, total, "running the test suite")
+    env = os.environ.copy()
+    # conftest.py builds a throwaway vault and points BRAIN_VAULT at it. Drop any
+    # inherited value so the suite cannot be steered at -- or write into -- the
+    # user's real vault, and so it runs under the same env developers run it under.
+    env.pop("BRAIN_VAULT", None)
+    try:
+        res = subprocess.run(
+            [str(VENV_PY), "-m", "pytest", "-q"],
+            cwd=str(MCP_SERVER_DIR), env=env,
+            capture_output=True, text=True, check=False, timeout=900,
+        )
+    except subprocess.TimeoutExpired:
+        warn("the test suite timed out after 15 minutes; skipping.")
+        return False, "timed out"
+    except OSError as exc:
+        warn(f"could not run the test suite: {exc}")
+        return False, str(exc)
+
+    out = (res.stdout or "") + (res.stderr or "")
+    if "No module named pytest" in out:
+        step(num, total, "self-test skipped (pytest not installed)")
+        return True, "pytest missing"
+    if res.returncode == 5:  # pytest's "no tests collected"
+        warn("the test suite collected no tests.")
+        return True, "no tests collected"
+    if res.returncode != 0:
+        info("")
+        for line in out.strip().splitlines()[-25:]:
+            info(f"       {line}")
+        info("")
+        return False, f"pytest exited {res.returncode}"
+
+    summary = next(
+        (ln.strip() for ln in reversed(out.strip().splitlines()) if "passed" in ln or "skipped" in ln),
+        "",
+    )
+    if summary:
+        info(f"       {summary}")
+    return True, ""
 
 
 def ensure_brain_layout(vault_root: Path) -> None:
@@ -621,6 +696,10 @@ def main() -> None:
                         help="also register the brain MCP server with Claude Code "
                              "(default: CLI-first — no MCP registration, and any stale "
                              "user-scope 'brain' entry is removed).")
+    parser.add_argument("--skip-tests", action="store_true",
+                        help="skip the self-test step. The suite runs by default and a "
+                             "failure makes this installer exit nonzero (the install "
+                             "itself still completes).")
     args = parser.parse_args()
 
     info("Brain setup")
@@ -664,12 +743,13 @@ def main() -> None:
     info("  config:   " + ", ".join(str(c) for c in claude_dirs))
     info("")
 
-    # ---- shared install (venv, deps, warm-up — done once regardless of #claude dirs) ----
+    # ---- shared install (venv, deps, warm-up, self-test — done once regardless of #claude dirs) ----
     info("Preparing brain-mcp")
-    ensure_venv(1, 4)
-    install_brain_mcp(2, 4)
-    sanity_import(3, 4, vault_root)
-    warm_embedder(4, 4, vault_root)
+    ensure_venv(1, 5)
+    install_brain_mcp(2, 5)
+    sanity_import(3, 5, vault_root)
+    warm_embedder(4, 5, vault_root)
+    tests_ok, tests_reason = run_tests(5, 5, args.skip_tests)
 
     # ---- per-claude-dir wiring ----
     results: list[dict] = []
@@ -698,10 +778,19 @@ def main() -> None:
         info("   Repair the settings.json listed above and re-run this installer.")
         info("")
 
+    if not tests_ok:
+        info(f"✗ SELF-TEST FAILED ({tests_reason}) — the wiring above still installed.")
+        info("")
+        info("   The Brain will work, but this checkout is not behaving as its own tests")
+        info("   expect, so trust it accordingly. Re-run the suite yourself with:")
+        info(f"     cd {MCP_SERVER_DIR} && {VENV_PY} -m pytest")
+        info("   Re-run this installer with --skip-tests to bypass this step.")
+        info("")
+
     failures = [(r["claude_dir"], r["mcp_reason"]) for r in results if not r["mcp_ok"]]
     if not failures:
         if not settings_failures:
-            info("✓ Brain installed.")
+            info("✓ Brain installed." if tests_ok else "✓ Brain installed (self-test failed — see above).")
     else:
         info("✓ Brain files installed.")
         info("")
@@ -736,8 +825,12 @@ def main() -> None:
 
     # A refused settings.json means no hooks: the Brain will not preload, checkpoint,
     # or gate save-promises. Exit nonzero so a scripted install can't call that a win.
+    # A failing self-test gets the same treatment for the same reason: the one thing
+    # that must not happen to a red suite is that it passes unnoticed.
     if settings_failures:
         sys.exit(1)
+    if not tests_ok:
+        sys.exit(4)
 
 
 if __name__ == "__main__":

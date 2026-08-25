@@ -223,3 +223,60 @@ def test_every_hook_template_command_maps_to_a_real_hook():
             assert (hooks_dir / f"{name}.py").is_file(), (
                 f"{template} wires {event} to '{name}', but hooks/{name}.py does not exist"
             )
+
+
+# ----------------------------------------------------- the installer runs its own tests
+
+# `pytest` is declared as the `dev` optional-dependency, and until 2026-08-25 no
+# installer installed it. So a fresh venv -- which is what every install produces --
+# could not run the suite at all without a hand-typed `pip install pytest`. The cost
+# was not hypothetical: test_comparable_normalizes_windows_path_spellings[case-fold]
+# asserted Windows-only case folding unconditionally and had NEVER passed on macOS or
+# Linux, and it survived a whole code-review-remediation cycle because the suite was
+# nobody's default. `brain-setup.py` now installs the extra and runs the suite.
+#
+# These assert on `brain-setup.py` alone, deliberately: it is the installer that
+# actually gets run. The shell/PowerShell three are a known, accepted gap here rather
+# than an oversight -- so if you port this, extend the parametrize rather than adding
+# a second copy of the check.
+
+def test_the_primary_installer_installs_the_dev_extra():
+    """Without the extra there is no pytest, and the self-test below is decorative."""
+    src = read("brain-setup.py")
+    assert re.search(r"MCP_SERVER_DIR\}\[dev\]|\[dev\]", src), (
+        "brain-setup.py must install the 'dev' extra, or the venv it builds cannot "
+        "run the test suite"
+    )
+
+
+def test_the_primary_installer_runs_the_suite():
+    src = read("brain-setup.py")
+    assert '"-m", "pytest"' in src, "brain-setup.py must run the test suite during setup"
+    assert "--skip-tests" in src, "the self-test needs a documented escape hatch"
+
+
+def test_a_failing_suite_does_not_abort_the_install_but_does_exit_nonzero():
+    """Both halves matter, and they pull in opposite directions.
+
+    Aborting would mean a red test costs the user their memory system, so the wiring
+    must still land. But exiting 0 would recreate the exact silence this step exists
+    to end -- a scripted install could report success over a broken checkout.
+    """
+    src = read("brain-setup.py")
+    assert "sys.exit(4)" in src, (
+        "a failing self-test must make brain-setup.py exit nonzero"
+    )
+    # The run_tests() call site must not be wrapped in anything that stops the install.
+    call = re.search(r"tests_ok, tests_reason = run_tests\(.*\)", src)
+    assert call, "run_tests must be called and its result kept"
+    assert "die(" not in call.group(0), "a failing self-test must not abort the install"
+
+
+def test_the_self_test_does_not_inherit_the_users_real_vault():
+    """conftest builds a throwaway vault; an inherited BRAIN_VAULT could point the
+    suite at the user's real memories, which setup has no business writing to."""
+    src = read("brain-setup.py")
+    run_tests = src[src.index("def run_tests("):src.index("def ensure_brain_layout(")]
+    assert 'env.pop("BRAIN_VAULT", None)' in run_tests, (
+        "run_tests must drop an inherited BRAIN_VAULT before running the suite"
+    )

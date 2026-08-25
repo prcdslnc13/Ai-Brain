@@ -224,6 +224,30 @@ The moving parts fit together as follows:
   `mcp-server/tests/test_settings_merge.py` tests the shared merge's actual behaviour, which no
   amount of text parity can.
 
+  **It also installs the `dev` extra and runs the test suite as its last shared step
+  (2026-08-25).** `pytest` is declared in `pyproject.toml` as an optional dependency and no
+  installer installed it, so the venv every install produces could not run the suite without a
+  hand-typed `pip install pytest` — and a suite nobody can run by default is a suite nobody
+  runs. The bill came due the same day: a case-fold assertion in
+  `test_project_path_safety.py` demanded Windows-only `os.path.normcase` behaviour
+  unconditionally, so the suite was **red on every macOS and Linux checkout from the moment it
+  landed**, straight through a code-review-remediation cycle, unnoticed.
+
+  Three properties are load-bearing, and `test_installer_parity.py` asserts each. (1) The extra
+  is installed **separately and non-fatally** — a machine with the real dependencies cached but
+  not pytest must not lose its memory system over a testing convenience; a missing pytest
+  degrades to a reported skip. (2) A failing suite **does not abort the install** — the wiring
+  still lands, because a red test should not cost the user their Brain — but it **exits 4**, the
+  same contract a refused `settings.json` already has, so a scripted install cannot report
+  success over a broken checkout. Those two pull in opposite directions and both are required.
+  (3) `run_tests()` drops any inherited `BRAIN_VAULT`, so the suite runs against `conftest`'s
+  throwaway vault and setup can never write into the user's real memories. `--skip-tests`
+  bypasses the step.
+
+  The other three installers do **not** do this yet — a deliberate, known gap, not an
+  oversight. If you port it, extend the parametrize in `test_installer_parity.py` rather than
+  adding a second copy of the check.
+
 - **`setup-linux.sh`** — a fork of `setup-mac.sh` for Debian Trixie / Raspberry Pi OS /
   Ubuntu 22.04. Adds a `find_python()` that rejects anything below 3.11 (Ubuntu 22.04 ships
   3.10, which `pyproject.toml` refuses). Otherwise it should stay byte-for-byte equivalent in
@@ -823,6 +847,12 @@ BRAIN_VAULT=~/Vaults/Ai-Brain \
 npm install        # once; node_modules is gitignored, package-lock.json is not
 npm run typecheck  # tsc --noEmit over pi/extensions/**
 ```
+
+`brain-setup.py` installs the `dev` extra and runs the suite itself as its last shared step, so
+a normal install both provides pytest and tells you whether the checkout is green — see the
+`brain-setup.py` bullet above for why, and for the exit-4-but-don't-abort contract. The
+shell/PowerShell installers do neither, so on a venv built by those, install pytest by hand
+(`.venv/bin/pip install "pytest>=8,<9"`) before the command above will work.
 
 `npm run typecheck` is not optional garnish — it earned itself on the first run
 (2026-08-25) by finding `ctx.sendMessage(...)` in the `/brain recall` and `/brain list`
