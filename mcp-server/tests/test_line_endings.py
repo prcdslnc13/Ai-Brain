@@ -64,7 +64,10 @@ def test_no_file_uses_crlf():
 
 @pytest.mark.parametrize(
     "script",
-    ["setup-mac.sh", "setup-linux.sh", "uninstall-mac.sh", "uninstall-linux.sh"],
+    # The four POSIX shell scripts were retired by ROADMAP 3G (2026-08-25). The two
+    # Python entry points inherit the same hazard: they carry `#!/usr/bin/env python3`
+    # and are documented as directly executable, so a CRLF first line is still fatal.
+    ["brain-setup.py", "brain-uninstall.py", "brain_settings_merge.py"],
 )
 def test_posix_scripts_have_a_clean_shebang(script):
     """The specific failure: a trailing CR on line 1 kills the script outright."""
