@@ -22,7 +22,13 @@ def read_payload() -> dict:
         return {}
     try:
         return json.loads(raw)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        # Degrade to an empty payload, but say so. An unparseable payload means no
+        # `cwd`, which means no project, which means the preload silently drops the
+        # project overview and latest checkpoint — a bundle that looks complete and
+        # is missing exactly the context the session needed. Costs nothing to say.
+        sys.stderr.write(f"brain hook: ignoring unparseable payload ({e}); "
+                         f"project context will be missing from this preload\n")
         return {}
 
 

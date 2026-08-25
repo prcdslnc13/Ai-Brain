@@ -455,6 +455,63 @@ def subagent_budget_kb() -> float:
         return SUBAGENT_BUDGET_DEFAULT_KB
 
 
+# The preload carries the rule, not the case history. Every feedback memory follows the
+# same shape — a rule lead, a `**Why:**` recounting the incident that produced it, and a
+# `**How to apply:**`. The lead and the how-to-apply are directives; the Why is evidence
+# for judging edge cases, and it is 37% of the feedback corpus by bytes (measured
+# 2026-08-25: 15.1 KB across 36 structured memories, of which 10.1 KB is in the two
+# always-loaded sections).
+#
+# Deferring it is the cheapest real headroom available, and unlike scoping or
+# summarizing it is **lossless**: nothing on disk changes, `brain recall` still returns
+# the whole body, and each trimmed entry carries a marker saying the rationale is one
+# recall away. That matters because these files are the record of corrections the user
+# has given — a lossy rewrite of that record is the failure the Brain exists to prevent.
+#
+# Set BRAIN_PRELOAD_DEFER_WHY=0 to load full bodies again.
+_WHY_RE = re.compile(r"^[ \t]*\*\*Why:?\*\*", re.MULTILINE)
+_HOW_RE = re.compile(r"^[ \t]*\*\*How to apply:?\*\*", re.MULTILINE)
+_WHY_DEFERRED_MARKER = "_[Why: recall for rationale]_"
+
+
+def defer_why_enabled() -> bool:
+    return os.environ.get("BRAIN_PRELOAD_DEFER_WHY", "1") != "0"
+
+
+def preload_text(text: str) -> str:
+    """A memory rendered for the preload: rule and how-to-apply, Why replaced by a marker.
+
+    Operates on the raw file text (frontmatter included, because that is what the bundle
+    carries) and returns it unchanged when there is no `**Why:**` to defer — so a memory
+    that doesn't follow the convention, or a project overview, passes through untouched.
+
+    Deliberately conservative: it only cuts between a `**Why:**` line and the
+    `**How to apply:**` that follows it. When a memory has a Why and no How, the Why runs
+    to the end of the body and cutting it would leave only the one-line rule, so it is
+    left alone — a memory whose entire substance is its rationale must not be gutted.
+    (No such memory exists in the vault today; this is the guard for the one that will.)
+    """
+    fm_end = 0
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            fm_end = end + 4
+    head, body = text[:fm_end], text[fm_end:]
+
+    why = _WHY_RE.search(body)
+    if not why:
+        return text
+    how = _HOW_RE.search(body, why.end())
+    if not how:
+        return text
+
+    trimmed = body[: why.start()].rstrip() + "\n\n" + _WHY_DEFERRED_MARKER + "\n\n" + body[how.start():]
+    # Never let the "saving" be negative on a memory whose Why is shorter than the marker.
+    if len(trimmed.encode("utf-8")) >= len(body.encode("utf-8")):
+        return text
+    return head + trimmed
+
+
 def session_start_bundle(project: str | None = None, budget_kb: float | None = None,
                          slim: bool = False) -> dict:
     """Return the standard preload bundle: index + user + feedback + project context.
@@ -496,6 +553,8 @@ def session_start_bundle(project: str | None = None, budget_kb: float | None = N
 
     sections_by_label: dict[str, dict] = {}
     consumed_bytes = 0
+    deferred_bytes = 0
+    defer_why = defer_why_enabled()
     skipped_counts: dict[str, int] = {}
 
     def add_pinned(label: str, file: Path) -> None:
@@ -515,12 +574,21 @@ def session_start_bundle(project: str | None = None, budget_kb: float | None = N
         consumed_bytes += len(content.encode("utf-8"))
 
     def add_elastic(label: str, files: list[Path]) -> None:
-        nonlocal consumed_bytes
+        nonlocal consumed_bytes, deferred_bytes
         for f in files:
             try:
                 content = f.read_text(encoding="utf-8")
             except Exception:
                 continue
+            # Elastic sections only — these are the behavioural rules, the ones that
+            # follow the Why/How convention and the ones the budget actually drops.
+            # Pinned sections (index, project overview, latest checkpoint) are narrative
+            # context with no rule structure, and are small and load-bearing anyway.
+            if defer_why:
+                trimmed = preload_text(content)
+                if trimmed is not content:
+                    deferred_bytes += len(content.encode("utf-8")) - len(trimmed.encode("utf-8"))
+                    content = trimmed
             size = len(content.encode("utf-8"))
             if consumed_bytes + size > budget_bytes and consumed_bytes > 0:
                 skipped_counts[label] = skipped_counts.get(label, 0) + 1
@@ -573,6 +641,7 @@ def session_start_bundle(project: str | None = None, budget_kb: float | None = N
 
     bundle["budget_consumed_kb"] = round(consumed_bytes / 1024.0, 2)
     bundle["skipped_sections"] = skipped_counts
+    bundle["deferred_why_kb"] = round(deferred_bytes / 1024.0, 2)
     return bundle
 
 
