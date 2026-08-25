@@ -191,36 +191,33 @@ The moving parts fit together as follows:
   `_assert_block_is_ownable()` fails the install if a template command isn't detectable as ours,
   because such a command could never be pruned and would duplicate on every run.
 
-- **`setup-mac.sh`** — **DEPRECATED 2026-08-25 (ROADMAP 3G); use `brain-setup.py`.** Still works, still warns on stderr, no longer receives new behaviour — and it has no Python >= 3.11 gate at all, so a stock macOS `/usr/bin/python3` (3.9) breaks the install unless a newer one sorts earlier on PATH. Idempotent bootstrap. Installs brain-mcp into `mcp-server/.venv`, writes the
-  global CLAUDE.md and brain skill (with `__BRAIN_CMD__` substituted; the skill frontmatter
-  pre-approves the brain CLI via `allowed-tools`), merges one `permissions.allow` rule
-  **per agent subcommand** (`Bash(<BRAIN_CMD> recall:*)`, `… save:*`, …) so proactive CLI
-  saves never hit permission prompts without pre-approving the whole CLI, and merges the hooks block
-  into settings.json **via `brain_settings_merge.py`** — it no longer carries its own copy of that
-  logic, and a refused merge exits 3 after printing which steps did land. Takes
-  `<claude-config-dir> <vault-path> [--with-mcp]`. **MCP registration is
-  opt-in**: only `--with-mcp` runs `claude mcp add`; without it, any existing user-scope `brain`
-  registration is *removed* so the CLI-first token saving actually lands.
+- **`brain-setup.py`** — **THE installer, on every platform** (ROADMAP 3G retired
+  `setup-mac.sh`, `setup-linux.sh` and `setup-windows.ps1` on 2026-08-25; do not add a
+  platform script back — see 3G for what four of them cost). It creates the venv, installs
+  brain-mcp non-editable, writes the global CLAUDE.md and brain skill (with `__BRAIN_CMD__`
+  substituted; the skill frontmatter pre-approves the brain CLI via `allowed-tools`), merges
+  one `permissions.allow` rule **per agent subcommand** (`Bash(<BRAIN_CMD> recall:*)`,
+  `… save:*`, …) so proactive CLI saves never hit permission prompts without pre-approving the
+  whole CLI, and merges the hooks block into settings.json **via `brain_settings_merge.py`** —
+  a refused merge makes `main()` exit 1 after reporting the partial install. Runs interactively
+  by default; `--non-interactive --vault P --claude-dir D` for scripted use. **MCP registration
+  is opt-in**: only `--with-mcp` runs `claude mcp add`; without it, any existing user-scope
+  `brain` registration is *removed* so the CLI-first token saving actually lands.
 
-- **`setup-windows.ps1`** — **DEPRECATED 2026-08-25 (ROADMAP 3G); use `brain-setup.py`**, which writes the same two wrappers without the PS 5.1 encoding hazard below. The Windows counterpart to `setup-mac.sh`. Same arguments (`-WithMcp`
-  switch), same idempotency guarantee. Generates two per-install wrappers (Unix-style env prefixes
-  don't work on Windows): `<config-dir>\brain-launch.cmd` for hook commands in `settings.json`
-  (`<launch.cmd> <hook-name>`, no JSON quote-escaping) and `<config-dir>\brain.cmd` — the CLI
-  wrapper substituted for `__BRAIN_CMD__`, which bakes in `BRAIN_VAULT` and forwards args to the
-  venv's `brain.exe`. Uses `templates/settings.hooks.win.json` as the template, merged by
-  `brain_settings_merge.py` — whose call site needs its own try/catch, because the merge writes
-  its refusal diagnosis to stderr and PS 5.1 turns any native stderr into a terminating
-  `NativeCommandError`. Python hooks and server/CLI code are unchanged between platforms.
+  On Windows it generates the two per-install wrappers Unix-style env prefixes can't provide:
+  `<config-dir>rain-launch.cmd` for hook commands in `settings.json` (`<launch.cmd>
+  <hook-name>`, no JSON quote-escaping) and `<config-dir>rain.cmd` — the CLI wrapper
+  substituted for `__BRAIN_CMD__`, which bakes in `BRAIN_VAULT` plus `BRAIN_AGENT_SURFACE=1`
+  and forwards args to the venv's `brain.exe` — and merges
+  `templates/settings.hooks.win.json` instead of `settings.hooks.json`. Hooks and server/CLI
+  code are identical across platforms.
 
-- **`brain-setup.py`** — the interactive cross-platform wizard, and **the installer most
-  installs actually run**. Same end state as the shell/PowerShell scripts: venv, non-editable
-  install, global CLAUDE.md, brain skill, hooks block, `permissions.allow` rule, `--with-mcp`
-  opt-in (the settings.json half now comes from `brain_settings_merge.py`, and a refused merge
-  makes `main()` exit 1 after reporting the partial install). Runs interactively by default;
-  `--non-interactive --vault P --claude-dir D` for
-  scripted use. Because it is a fourth hand-maintained copy of the same logic it is the one
-  most likely to be missed — the permission rule reached `setup-mac.sh` on 2026-07-28 and only
-  got here on 2026-08-24. `mcp-server/tests/test_installer_parity.py` exists to catch that;
+  It runs on **any** Python 3 (`from __future__ import annotations`, no `match`, stdlib only —
+  verified on macOS 26.5.1's stock 3.9.6); `find_python3` then locates a 3.11+ *for the venv*,
+  preferring version-suffixed binaries because a stock `/usr/bin/python3` is 3.9 and
+  `pyproject.toml` refuses it. That property is what made retiring the shell installers safe,
+  so keep it: no 3.10+ syntax in this file.
+  `mcp-server/tests/test_installer_parity.py` guards the invariants;
   `mcp-server/tests/test_settings_merge.py` tests the shared merge's actual behaviour, which no
   amount of text parity can.
 
@@ -248,13 +245,8 @@ The moving parts fit together as follows:
   oversight. If you port it, extend the parametrize in `test_installer_parity.py` rather than
   adding a second copy of the check.
 
-- **`setup-linux.sh`** — **DEPRECATED 2026-08-25 (ROADMAP 3G); use `brain-setup.py`.** A fork of `setup-mac.sh` for Debian Trixie / Raspberry Pi OS /
-  Ubuntu 22.04. Adds a `find_python()` that rejects anything below 3.11 (Ubuntu 22.04 ships
-  3.10, which `pyproject.toml` refuses). Otherwise it should stay byte-for-byte equivalent in
-  behaviour; when you touch one, touch both.
-
-- **`brain-uninstall.py`** (the three `uninstall-*` shell scripts are **DEPRECATED 2026-08-25**, ROADMAP 3G) —
-  the inverses. Each prunes Brain-owned hook entries *and* every Brain `permissions.allow` rule
+- **`brain-uninstall.py`** — the inverse of `brain-setup.py` (the three `uninstall-*`
+  shell scripts were retired with their installers, ROADMAP 3G). It prunes Brain-owned hook entries *and* every Brain `permissions.allow` rule
   from `settings.json` — through `brain_settings_merge.py prune`, the same module and therefore
   the same ownership predicate the installers use — deletes the generated wrappers, removes the
   MCP registration, and
@@ -276,7 +268,7 @@ The moving parts fit together as follows:
 - **`WINDOWS-SETUP.md`, `LMSTUDIO-SETUP.md`, `PI-SETUP.md`, `LOCAL-HARNESS-SETUP.md`** —
   user-facing install guides for the Windows bring-up, the LMStudio MCP registration, the pi
   (pi.dev) CLI wiring, and llama.cpp/cherryd (bundle sizing plus timer-driven checkpoints for
-  harnesses with no hooks). Keep these in sync with `setup-windows.ps1`, the MCP server
+  harnesses with no hooks). Keep these in sync with `brain-setup.py`, the MCP server
   command/env contract, the `brain` CLI surface, and `brain_mcp/transcript.py` respectively.
 
 ## Common commands
@@ -739,30 +731,27 @@ BRAIN_VAULT=~/Vaults/Ai-Brain \
   (`$env:CLAUDE_CONFIG_DIR`), not just whichever dir setup targeted. Note the default `.claude`
   dir's config file lives at `~/.claude.json` (home), not inside `~/.claude/`.
 
-- **`setup-windows.ps1` runs under Windows PowerShell 5.1, not pwsh 7 — read and write every
-  template with an explicit UTF-8 encoding (fixed 2026-08-24).** The shebang says `pwsh` and
-  the script uses PS7-era idioms, but the documented invocation is
-  `powershell -ExecutionPolicy Bypass -File ...`, and `powershell.exe` *is* 5.1. There
-  `Get-Content -Raw` defaults to the ANSI codepage, so it decoded the templates' UTF-8 em
-  dashes and ellipses as cp1252 and wrote the mojibake straight back out — 43 corrupted
-  sequences in the generated global `CLAUDE.md` and 7 in the brain skill, i.e. the two
-  load-bearing behavioural files, produced by the one step whose entire job is to produce
-  them. The templates themselves were clean, so nothing upstream showed the damage. Both
-  reads now go through `[System.IO.File]::ReadAllText(path, [System.Text.Encoding]::UTF8)`
-  and both writes pass an explicit `UTF8Encoding($false)` (no BOM). Same failure class as
-  the 2026-07-29 CLI-stdin incident; verify with a mojibake byte-count (`\xc3\xa2\xe2\x82\xac`)
-  after any change to that step, not by eyeballing the file.
+- **Whatever writes the two behavioural templates must name its encoding explicitly
+  (2026-08-24; the script that caused it is gone, the bug class is not).** The retired
+  `setup-windows.ps1` ran under Windows PowerShell 5.1, where `Get-Content -Raw` defaults to
+  the ANSI codepage: it decoded the templates' UTF-8 em dashes and ellipses as cp1252 and wrote
+  the mojibake straight back out — 43 corrupted sequences in the generated global `CLAUDE.md`
+  and 7 in the brain skill, i.e. the two load-bearing behavioural files, produced by the one
+  step whose entire job is to produce them. The templates themselves were clean, so nothing
+  upstream showed the damage.
 
-  The same run also exposed that `$ErrorActionPreference = 'Stop'` turns *any* native stderr
-  into a terminating `NativeCommandError`. On a CLI-first install, step 6 runs
-  `claude mcp remove brain --scope user`, whose "No MCP server named brain in user scope" is
-  the **expected** result when there is nothing to remove — so the idempotent path exited 1
-  and setup reported failure after all six steps had already succeeded. That call is wrapped
-  in its own try/catch now. Watch for the same trap around any other `& $ClaudeBin` call.
+  `brain-setup.py` owns that step now, and Python is not immune: `read_text()` with no
+  `encoding=` uses the locale default, which is cp1252 on a stock Windows. Every file
+  read/write in the installer therefore passes `encoding="utf-8"`, and
+  `test_installer_parity.py::test_the_installer_reads_and_writes_templates_as_utf8` parses the
+  file with `ast` to prove it — parsed, not grepped, because a regex for the call stops at the
+  first `)` and reads `write_text(t.replace(a, b), encoding="utf-8")` as unqualified. Same
+  failure class as the 2026-07-29 CLI-stdin incident; verify with a mojibake byte-count
+  (`Ã¢â¬`) after any change to that step, not by eyeballing the file.
 
 - **Never install brain-mcp editable** (`pip install -e .`). The .pth file generated by setuptools
   doesn't reliably activate at startup, so `import brain_mcp` fails from any cwd other than the
-  project root. Use plain `pip install .` (non-editable) — the `setup-mac.sh` script already does
+  project root. Use plain `pip install .` (non-editable) — `brain-setup.py` already does
   this. If you "fix" it back to editable, hooks will silently break for anyone launching them from
   a foreign cwd (which Claude Code does).
 
@@ -774,7 +763,7 @@ BRAIN_VAULT=~/Vaults/Ai-Brain \
   the parent's env but the parent (Claude Code) doesn't export `BRAIN_VAULT`. On macOS, the
   `settings.hooks.json` template wraps each command as
   `BRAIN_VAULT=<vault> <venv python> <hook>.py`. On Windows, Unix-style env prefixes don't work,
-  so `setup-windows.ps1` generates a `brain-launch.cmd` wrapper that sets the env and execs the
+  so `brain-setup.py` generates a `brain-launch.cmd` wrapper that sets the env and execs the
   hook — `settings.hooks.win.json` just invokes that wrapper with the hook name as the argument.
   Preserve whichever pattern matches the platform.
 

@@ -1,16 +1,17 @@
 # Windows setup
 
-How to bring the Brain up on a Windows machine. The Mac install is documented in `CLAUDE.md`
-and `setup-mac.sh`; this file is the Windows counterpart.
+How to bring the Brain up on a Windows machine. `brain-setup.py` is the installer on every
+platform; this file covers what is Windows-specific about running it.
 
 ## Prerequisites
 
-1. **Python 3.10+** from [python.org](https://www.python.org/downloads/windows/). The installer
-   registers the `py` launcher, which `setup-windows.ps1` prefers. Anaconda / MS Store Python
-   also work but `py -3` must resolve to a 3.10+ interpreter.
+1. **Python 3.11+** from [python.org](https://www.python.org/downloads/windows/). The installer
+   registers the `py` launcher, which `brain-setup.py` prefers (it tries `py -3.20` down to
+   `py -3.11` before falling back to `python`). Anaconda / MS Store Python also work.
+   `brain-setup.py` itself runs on any Python 3 — it only needs to *find* a 3.11+ for the venv.
 2. **Claude Code CLI** installed and on `PATH`. Verify with `claude --version` in a new
-   PowerShell window. If it's missing, `setup-windows.ps1` will still configure hooks and
-   templates but will skip MCP server registration — you can re-run the script once Claude is
+   PowerShell window. If it's missing, `brain-setup.py` will still configure hooks and
+   templates but will skip MCP server registration — you can re-run it once Claude is
    on `PATH`.
 3. **Git** (for cloning — any recent version is fine).
 4. **Obsidian + Obsidian Sync** already set up and synced down to
@@ -58,50 +59,11 @@ opaque strings. `~\.claude-personal` /
 with `.claude` (e.g. `.claude-clientX`) is picked up by the installer's
 auto-discovery.
 
-### Deprecated: the PowerShell installer
-
-**Use `brain-setup.py` above.** `setup-windows.ps1` is deprecated as of 2026-08-25 and prints
-a warning when run. It still works, but it accepts any `py -3` / `python` / `python3` it finds
-with no `>= 3.11` gate (its error text still says "3.10+", which `pyproject.toml` refuses), it
-does not install the pytest extra or self-test after installing, and it runs under Windows
-PowerShell 5.1 — whose ANSI-default file reads have silently corrupted the generated
-`CLAUDE.md` before. `brain-setup.py` has none of those failure modes and writes the same two
-`brain.cmd` / `brain-launch.cmd` wrappers.
-
-Kept documented only so an existing muscle-memory invocation still resolves:
-
-```powershell
-# Run setup for each Claude Code config dir you use.
-#    Arguments: <claude-config-dir> <vault-path>
-# Single account using the default config dir:
-powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
-    "$env:USERPROFILE\.claude" "$env:USERPROFILE\Vaults\Ai-Brain"
-
-# Multiple accounts — re-run once per config dir:
-powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
-    "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Vaults\Ai-Brain"
-powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
-    "$env:USERPROFILE\.claude-work" "$env:USERPROFILE\Vaults\Ai-Brain"
-
-# Non-standard vault path (no $env: prefix needed for plain paths):
-powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
-    "$env:USERPROFILE\.claude-personal" "D:\Vaults\Ai-Brain"
-```
-
-The script is idempotent — re-running updates the global `CLAUDE.md`, skill, hook block, MCP
-registration, and the generated `brain-launch.cmd` / `brain.cmd` wrappers without touching
-anything else in `settings.json`.
-
-By default no MCP server is registered with Claude Code — the model drives the Brain through
-the generated `brain.cmd` CLI wrapper instead (saving ~3k tokens of tool schemas per session),
-and any stale user-scope `brain` MCP entry is removed. Pass `-WithMcp` to register the MCP
-server as before.
-
 > Common gotcha: `$env:NAME` is PowerShell's syntax for reading environment variables.
 > A literal drive path like `D:\Vaults\Ai-Brain` should NOT be prefixed with `$env:` —
 > just pass it as a plain double-quoted string.
 
-## What the script does
+## What the installer does
 
 1. Creates `mcp-server\.venv` and installs `brain_mcp` into it (non-editable — editable
    installs break imports from foreign cwds, same footgun as Mac).
@@ -157,7 +119,7 @@ Symptom: Claude Code logs an error like
 Notice the path has no backslashes — they were eaten by Git Bash, which Claude
 Code uses to run hooks on many Windows setups.
 
-`brain-setup.py` (and the deprecated `setup-windows.ps1`) write **forward-slash** paths into
+`brain-setup.py` writes **forward-slash** paths into
 `settings.json` for exactly this reason (`C:/Users/<you>/.claude/brain-launch.cmd`).
 Forward slashes survive bash, work in cmd.exe, and are accepted by `python.exe`.
 If you have an old install, re-run the wizard to refresh the
@@ -201,8 +163,8 @@ exact Claude Code version — this is a regression worth fixing at the source.
 
 ### Path with spaces
 
-`setup-windows.ps1` quotes every path it passes. If you still see quoting errors, pass the
-config dir and vault path as quoted strings on the PowerShell command line, not unquoted.
+`brain-setup.py` quotes every path it passes. If you still see quoting errors, pass the
+config dir and vault path as quoted strings on the command line, not unquoted.
 
 ## Multiple Claude Code accounts
 
@@ -212,7 +174,7 @@ Claude Code stores per-account state (login, settings, MCP registrations,
 or one per client), point Claude Code at a **different config directory per
 account** using the `CLAUDE_CONFIG_DIR` environment variable.
 
-The naming is up to you — Claude Code and `setup-windows.ps1` treat
+The naming is up to you — Claude Code and `brain-setup.py` treat
 `CLAUDE_CONFIG_DIR` as an opaque path. `~\.claude-personal` and `~\.claude-work`
 are the examples used throughout these docs, but anything starting with
 `.claude` (e.g. `.claude-acme`, `.claude-clientX`) is picked up by the Ai-Brain
@@ -256,16 +218,7 @@ config dir automatically.
 
 ### Install the Brain into each account
 
-Run `setup-windows.ps1` (or the wizard) once per config dir:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
-    "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Vaults\Ai-Brain"
-powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
-    "$env:USERPROFILE\.claude-work" "$env:USERPROFILE\Vaults\Ai-Brain"
-```
-
-Or in one `brain-setup.py` call:
+Run the wizard once per config dir, or do both in one call:
 
 ```powershell
 python C:\src\Ai-Brain\brain-setup.py `
@@ -290,5 +243,6 @@ old session checkpoints and is rarely read.
 - `ROADMAP.md` — Phase 2B for design notes and the list of Windows-specific verification
   steps.
 - `CLAUDE.md` — architecture, gotchas, and testing guidance shared across platforms.
-- `setup-mac.sh` — the macOS counterpart. Diffs between the two are deliberate: hooks and MCP
-  server are cross-platform; only the bootstrap and hook-launch mechanism differ.
+- `brain-setup.py` — the installer itself. It is one cross-platform script: the hooks, the MCP
+  server and the templates are platform-independent, and only the bootstrap and the
+  hook-launch mechanism (the generated `.cmd` wrappers) differ on Windows.

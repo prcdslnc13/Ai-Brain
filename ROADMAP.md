@@ -309,7 +309,9 @@ the vault is the complementary control, and is not built.
 
 ### 3G — Retire the platform-specific installers
 
-**Phase 1 done 2026-08-25.** `setup-mac.sh`, `setup-linux.sh`, `setup-windows.ps1` and their
+**Done 2026-08-25** — phase 1 (deprecate) and phase 2 (delete) both landed the same day.
+
+**Phase 1.** `setup-mac.sh`, `setup-linux.sh`, `setup-windows.ps1` and their
 three uninstallers are deprecated: header banner, a runtime warning on stderr with a 3-second
 pause, and every user-facing doc repointed at `brain-setup.py` / `brain-uninstall.py`. They
 still work and still produce a correct install.
@@ -336,13 +338,27 @@ its `find_python3` then locates a proper 3.11+ for the venv. Verified 2026-08-25
 26.5.1 with `/usr/bin/python3` = 3.9.6: it runs fine. The shell scripts buy nothing on a
 machine with no Python at all, since they need one to build the venv either way.
 
-**Phase 2 — delete them.** Unblocked by that 3.9.6 check; not done yet, deliberately, so the
-deprecation gets a cycle of real use first. When it happens: delete all six scripts, collapse
-`test_installer_parity.py`'s `ALL_INSTALLERS` / `POSIX_INSTALLERS` parametrize to the two
-Python entry points, and drop the assertions that exist only to police those files (the PS 5.1
-native-call guard, the UTF-8 template read/write check, the POSIX-installer sync check). That
-test file is the main reason to do phase 2 rather than leave the banners: it currently spends
-most of its assertions keeping dead code honest.
+**Phase 2.** All six scripts deleted; `test_installer_parity.py` collapsed onto the two
+Python entry points. Three assertions existed only to police the shell scripts and went with
+them: the POSIX-installer fork-sync check, and the PS 5.1 native-call guard (the hazard was
+PowerShell's `$ErrorActionPreference='Stop'` turning native stderr terminating — `brain-setup.py`
+uses `subprocess.run(check=False)`, which cannot reproduce it).
+
+The UTF-8 template check did **not** go with them, and that distinction is the one worth
+keeping. The *script* was deleted; the *bug class* — writing the two load-bearing behavioural
+files in the platform's default encoding — belongs to whoever renders the templates, which is
+now `brain-setup.py` alone. Python is not immune: `read_text()` with no `encoding=` reads
+cp1252 on a stock Windows. The check was rewritten to parse `brain-setup.py` with `ast` and
+assert every file read/write names an encoding. When you retire code, ask which of its tests
+were about the file and which were about a failure mode that outlives it.
+
+Two invariants replaced the phase-1 deprecation assertions: the six scripts stay deleted (the
+next Windows or Linux bring-up is exactly when someone reaches for a platform script again),
+and no doc shows how to *run* one. That second test deliberately allows docs to *discuss* them
+— "3G retired setup-mac.sh, do not add a platform script back" is what CLAUDE.md should tell
+the next session, and banning the substring would delete the institutional memory along with
+the file. It flags only invocations: a path, a `-File` argument, or a line inside a fenced
+command block.
 
 
 ---

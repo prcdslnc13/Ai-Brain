@@ -202,23 +202,28 @@ def test_forget_cannot_delete_outside_the_vault(vault_dir: Path, secret: Path) -
     assert secret.exists()
 
 
-# --------------------------------------------------- every installer sets it ----
+# --------------------------------------------------- the installer sets it ------
 
-INSTALLER_EXPECTATIONS = {
-    "brain-setup.py": ['set "BRAIN_AGENT_SURFACE=1"', "BRAIN_AGENT_SURFACE=1 BRAIN_VAULT="],
-    "setup-windows.ps1": ['set "BRAIN_AGENT_SURFACE=1"'],
-    "setup-mac.sh": ["BRAIN_AGENT_SURFACE=1 BRAIN_VAULT="],
-    "setup-linux.sh": ["BRAIN_AGENT_SURFACE=1 BRAIN_VAULT="],
-}
+# Both spellings, because the pre-approved command is built two ways: the generated
+# Windows `brain.cmd` wrapper sets the variable with `set`, while the POSIX BRAIN_CMD
+# is an env prefix on the command itself. ROADMAP 3G retired the three platform
+# installers on 2026-08-25, so one file now has to carry both.
+INSTALLER_FRAGMENTS = ['set "BRAIN_AGENT_SURFACE=1"', "BRAIN_AGENT_SURFACE=1 BRAIN_VAULT="]
 
 
-@pytest.mark.parametrize("installer", sorted(INSTALLER_EXPECTATIONS))
-def test_every_installer_bakes_the_gate_into_the_approved_command(installer: str) -> None:
-    """Four installers, one boundary. An installer that forgets the variable produces
-    a pre-approved command with the FULL CLI surface, and nothing else would notice."""
-    src = (REPO_ROOT / installer).read_text(encoding="utf-8")
-    for fragment in INSTALLER_EXPECTATIONS[installer]:
-        assert fragment in src, f"{installer} no longer sets {cli.AGENT_SURFACE_ENV}"
+def test_the_installer_bakes_the_gate_into_the_approved_command() -> None:
+    """One installer, one boundary — and it must hold on both platforms.
+
+    The pre-approval is a *prefix* match, so narrowing the rule cannot express
+    "no --file"; the variable baked into the approved command is the only thing that
+    can. An installer that forgets it produces a pre-approved command with the FULL
+    CLI surface, and nothing else in the system would notice.
+    """
+    src = (REPO_ROOT / "brain-setup.py").read_text(encoding="utf-8")
+    for fragment in INSTALLER_FRAGMENTS:
+        assert fragment in src, (
+            f"brain-setup.py no longer sets {cli.AGENT_SURFACE_ENV} via {fragment!r}"
+        )
 
 
 def test_the_skill_does_not_pre_approve_the_whole_cli() -> None:
