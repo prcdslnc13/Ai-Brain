@@ -1048,10 +1048,16 @@ def render_banner(findings: list[dict], min_severity: str = "warn") -> str:
     visible = [f for f in findings if SEVERITY_ORDER.index(f["severity"]) >= min_idx]
     if not visible:
         return ""
+    # The banner sits *outside* the memory fence, i.e. in the position the model reads
+    # as ours — and several findings interpolate vault filenames into their message.
+    # A file named after a fence marker would otherwise close the fence from trusted
+    # ground, so findings are defanged too (ROADMAP 3F).
+    from . import vault
+
     lines = ["## Brain Health", ""]
     for f in visible:
         label = f["severity"].upper()
-        line = f"- **[{label}]** `{f['code']}` — {f['message']}"
+        line = f"- **[{label}]** `{f['code']}` — {vault.neutralize_fence(f['message'])}"
         if f.get("hint"):
             line += f"  \n  *{f['hint']}*"
         lines.append(line)

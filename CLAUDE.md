@@ -817,10 +817,53 @@ BRAIN_VAULT=~/Vaults/Ai-Brain \
   caller-supplied path must join `cli.RESTRICTED_OPTIONS` — `test_agent_surface.py`
   asserts all three.
 
-  Still open, deliberately: memory *content* is preloaded verbatim into later sessions, so
-  an injected `--content` can plant standing instructions. Fixing that means fencing
-  preloaded memory as untrusted data across the bundle, both hooks, `brain_prep` and the pi
-  preload — a larger change than this one, tracked rather than bolted on here.
+  The other half of that hole — an injected `--content` planting standing instructions —
+  was closed the same day by the trust fence below.
+
+- **Vault content reaches a model fenced, and the fence must stay unclosable from inside
+  (ROADMAP 3F, 2026-08-25).** Memory bodies are written by anything that can reach
+  `brain save` — a prompt-injected agent in another session included — and then load
+  verbatim into every later session's and every subagent's system prompt, in the position
+  the model reads as the operator's own text. So every surface that puts vault text in
+  front of a model wraps it in `<<<BRAIN-MEMORY-BEGIN>>>` … `<<<BRAIN-MEMORY-END>>>`,
+  preceded by a notice naming the block as stored data.
+
+  `vault.fence()` is the only way to produce that wrapper and `vault.neutralize_fence()` is
+  what makes it mean anything: a fence the fenced text can close is decoration, so anything
+  resembling a marker inside vault content — case, spacing, underscores, missing angle
+  brackets — is replaced with `[brain-fence marker removed]`. Neutralization runs where
+  content **enters** the payload (`session_start_bundle`'s two adders, `render.py`'s body
+  and description clipping), not only in the markdown renderer, because
+  `brain_session_start` hands its dict to MCP clients that assemble their own prompt —
+  defanging in the renderer alone would have made the boundary Claude-Code-only. It also
+  has to run *before* clipping, or a truncation could split a defanged marker back apart.
+
+  Two rules about position. **`brain_prep.render` and `render.py` are the only two modules
+  allowed to render vault text**, and both must call `fence()` — every frontend and all
+  three preload paths already route through them, which is what makes one convention
+  reachable. And **`doctor.render_banner` defangs its findings**, because the banner renders
+  *outside* the fence and several findings interpolate vault filenames: a memory named after
+  a marker would otherwise close the fence from the one piece of ground that must not be
+  closable.
+
+  The notice deliberately does **not** say "ignore this". Feedback memories are the user's
+  own standing corrections and exist to shape behaviour; the line is between shaping *how*
+  the current request is carried out and authorizing an action on their own — a command to
+  run, a file to send, an address to fetch, a credential to use, a confirmation to skip.
+  Softening that into "don't trust the vault" would break the Brain's whole purpose.
+
+  The fence costs ~0.9 KB, **reserved out of the bundle budget rather than added on top of
+  it** — otherwise `BUNDLE_SATURATED` under-reports by a fixed amount forever, which is the
+  2026-07-30 silent-drop failure through a new door. That reservation is also why the
+  never-return-an-empty-bundle guard counts *items* now: `consumed_bytes > 0` stopped
+  meaning "something loaded" the moment the fence was reserved into it. Measured after:
+  session 43.4/72 KB, subagent 35.2/56 KB, nothing skipped.
+
+  Finally, a fence the model has never been told about is decoration too: all three
+  behavioural templates (`global-CLAUDE.md`, the brain skill, `AGENTS-brain.md` — which the
+  pi extension strips its own guidance from) teach the convention, and
+  `test_trust_boundary.py` fails the build if one of them stops naming the markers, if
+  either renderer stops fencing, or if a hostile body can close the fence.
 
 - **`Path.resolve()` is not prefix-stable on Windows — normalize both operands before
   comparing them (2026-08-25).** CPython asks the OS for the final path, which always comes

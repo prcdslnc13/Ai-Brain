@@ -18,6 +18,11 @@ Hard limits (env-overridable):
 Rendered output is compact markdown, not pretty-printed JSON — models read it
 just as well and it avoids spending ~25-30% of the tokens on JSON syntax and
 repeated keys.
+
+It is also *fenced*: bodies and descriptions are vault content, so they go inside
+`vault.fence()` behind a notice naming them as data (ROADMAP 3F). This module and
+`brain_prep` are the only two that render vault text to a model, which is what makes
+one trust convention reachable — keep it that way.
 """
 
 from __future__ import annotations
@@ -99,7 +104,7 @@ def recall_payload(
     overflow_paths: list[str] = []
 
     for m in matches[:top_k]:
-        body, clipped = _clip(m.body, per_body)
+        body, clipped = _clip(vault.neutralize_fence(m.body), per_body)
         rel = str(m.path.relative_to(vault.vault_root().parent))
         if consumed + len(body) > total_budget and results:
             overflow_paths.append(rel)
@@ -146,8 +151,15 @@ def render_recall(payload: dict) -> str:
         lines.append("No memories matched.")
         return "\n".join(lines)
 
+    # Recall is the other door onto the same content the preload carries, so it
+    # gets the same fence (ROADMAP 3F) — the short notice, because unlike the
+    # preload this is paid per call. See vault.fence.
+    lines.append("")
+    lines.append(vault.TRUST_NOTICE_SHORT)
+
+    bodies: list[str] = []
     for r in payload["results"]:
-        lines.append("")
+        bodies.append("")
         suffix = ""
         if r["body_truncated"]:
             suffix = (
@@ -158,8 +170,10 @@ def render_recall(payload: dict) -> str:
         tag = r["type"]
         if r.get("machine"):
             tag += f" @ {r['machine']}"
-        lines.append(f"### {r['path']}  [{tag}]{suffix}")
-        lines.append(r["body"])
+        bodies.append(f"### {r['path']}  [{tag}]{suffix}")
+        bodies.append(r["body"])
+
+    lines.append(vault.fence("\n".join(bodies)))
 
     if payload["overflow_paths"]:
         lines.append("")
@@ -248,7 +262,7 @@ def list_payload(
     for m in _round_robin_by_type(memories):
         if len(entries) >= item_cap:
             break
-        desc, _ = _clip(m.description, desc_cap)
+        desc, _ = _clip(vault.neutralize_fence(m.description), desc_cap)
         rel = str(m.path.relative_to(root_parent))
         # Char budget is the backstop for a corpus of few but enormous descriptions;
         # `and entries` keeps a pathological first item from yielding an empty list.
@@ -291,11 +305,18 @@ def render_list(payload: dict) -> str:
     by_type: dict[str, list[dict]] = {}
     for m in payload["memories"]:
         by_type.setdefault(m["type"], []).append(m)
+    # No bodies here, but a description is still writer-controlled text arriving in
+    # the model's context — same fence, so the convention has no exceptions.
+    body: list[str] = []
     for t in sorted(by_type):
-        lines.append("")
-        lines.append(f"## {t}")
+        body.append("")
+        body.append(f"## {t}")
         for m in by_type[t]:
             desc = f" — {m['description']}" if m["description"] else ""
             machine = f" [{m['machine']}]" if m.get("machine") else ""
-            lines.append(f"- {m['path']}{machine}{desc}")
+            body.append(f"- {m['path']}{machine}{desc}")
+    if body:
+        lines.append("")
+        lines.append(vault.TRUST_NOTICE_SHORT)
+        lines.append(vault.fence("\n".join(body)))
     return "\n".join(lines)

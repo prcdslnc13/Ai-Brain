@@ -276,6 +276,9 @@ async def call_tool(name: str, arguments: dict | None) -> list[TextContent]:
     args = arguments or {}
     try:
         if name == "brain_session_start":
+            # Item contents arrive already defanged, and the bundle carries
+            # `trust_notice` + `fence` so a client assembling its own prompt renders
+            # the same boundary the hooks do (ROADMAP 3F).
             return _ok(vault.session_start_bundle(args.get("project")))
         if name == "brain_recall":
             payload = render.recall_payload(
