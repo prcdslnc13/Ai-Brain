@@ -314,14 +314,93 @@ BRAIN_VAULT=~/Vaults/Ai-Brain \
   **`EMBED_TEXT_VERSION` must be bumped whenever `embed_text()` changes what it feeds the
   model**, and the budget is part of the recipe identity. Vectors from different recipes
   aren't comparable, and the mtime staleness check cannot notice — the files didn't
-  change, the recipe did — so the index would silently mix two vector spaces forever. On
-  mismatch an *unbounded* sync wipes and rebuilds; a **foreground sync deliberately
-  refuses to**, because wiping mid-recall would leave the rest of the session querying a
-  near-empty index. Doctor's `INDEX_RECIPE_STALE` warns until a reindex runs.
+  change, the recipe did — so the index would silently mix two vector spaces forever. A
+  **foreground sync deliberately refuses to transition it**, because doing that mid-recall
+  would leave the rest of the session querying a half-built index. Doctor's
+  `INDEX_RECIPE_STALE` warns until a reindex runs.
+
+  An unbounded pass handles the mismatch **in place, without wiping first** (2026-08-24).
+  It used to commit a `DELETE FROM embeddings` and *then* spend ~300s refilling, so every
+  other process read a near-empty index for the whole rebuild and silently degraded to
+  ripgrep — and since the SessionStart kick is what performs the rebuild, the session that
+  triggered it was precisely the one querying the gutted index. Now `sync()` sets
+  `rebuilding`, which makes every row count as pending (`prior = None if rebuilding else …`)
+  and replaces them one chunk at a time, so the index stays whole and queryable throughout.
+  The recipe is stamped **after** the last chunk, never up front: an interrupted rebuild
+  must not look complete, or the un-re-embedded remainder is stranded in the old recipe
+  forever — the mtime check cannot tell the difference, so nothing would ever come back for
+  it. A **model** change is the one case that still wipes (`_wipe_for_model_change`): those
+  vectors need not even share a dimensionality, so `np.vstack` on the mixture raises rather
+  than merely ranking badly.
 
   An **empty** index is never "changed" — there are no vectors to invalidate — but it must
   still be *stamped*, or it looks permanently changed and every foreground sync bails out
-  at 0 and the index never fills. Keep the empty-index branch stamping.
+  at 0 and the index never fills. Keep the empty-index branch stamping — and note the stamp
+  is written by `_connect()`, not `sync()`, because `upsert()`/`delete()` populate an index
+  without ever calling `sync()`: a fresh vault whose first operation was `brain save` used to
+  end up with a one-row *unstamped* index, which is not empty, therefore reads as
+  "recipe changed" forever, so every later foreground sync returned 0 and the index never
+  filled (fixed 2026-08-24). The stamp requires an explicit `COUNT` of 0 — a read that
+  *errors* must never be mistaken for an empty index, or one transient failure blesses two
+  incompatible vector spaces as one.
+
+  A recipe bump also has to **spawn** the rebuild, and `backlog()` cannot see one: it
+  compares mtimes, and a recipe change touches no files. `spawn_background_reindex()`
+  therefore gates on `text_recipe_changed() or backlog_count() >= min_backlog`, checking the
+  recipe first because it is one sqlite read where `backlog_count()` stats the whole vault.
+  Without that clause nothing ever transitions the index on a CLI-first install — the
+  foreground sync refuses to, and there is no MCP warmup — so it serves superseded vectors
+  until a human notices `INDEX_RECIPE_STALE` and runs `brain reindex` by hand.
+
+- **Index rows are keyed on a vault-*relative*, forward-slashed path — keep the API boundary
+  absolute (2026-08-24).** Absolute keys tie the index to one filesystem location, so moving
+  the vault (`D:` → `C:`, a renamed home dir, a restore onto a differently-shaped machine)
+  made every stored path miss against `_indexable()`; `sync()` then deleted all ~900 rows as
+  "stale" and re-embedded the corpus from scratch — ~300s to reconstruct vectors that were
+  still perfectly valid. The rule is **relative inside the DB, absolute at every API surface**:
+  `EmbedIndex.query()` still returns absolute paths, because `vault.search_memories` resolves
+  and stats them and a relative string would silently resolve against the process cwd.
+  `_index_key()` / `_key_path()` / `_normalize_key()` are the only places that know the
+  format; `doctor`'s near-duplicate check reads the column directly and has its own
+  absolute-ize step. Upgrading is a **rename, not a re-embed** — `_migrate_path_format()`
+  runs from `_connect()`, rewrites the keys in one transaction (908 rows, ~1s), stamps
+  `path_format` in `meta`, and clears `_MATRIX_CACHE`, whose `(project, count, max mtime)`
+  key a pure rename would otherwise slip straight past.
+
+  **This is not what keeps the index machine-local, and a previous session's claim that it
+  was is wrong.** `.index` is a hidden directory that is not `.obsidian`, so Obsidian never
+  enumerates it and Obsidian Sync never propagates it. Verified 2026-08-24 against this
+  vault's own record: four machines across two OSes (`spanier-geekom-ai01` 196 memories,
+  `joes-macbook-pro-3` 119, `strixlappy` 7, `joes-macbook-air` 3) over four months, zero
+  conflict files, no thrash. A shared sqlite would have made a full ~900-file re-embed the
+  cost of *every* Mac↔Windows switch. So don't drop a platform to "fix" this, and adding a
+  Mac back is not blocked. What does remain true: machine-locality is a property of the sync
+  tool, not of the code. Dropbox, OneDrive, iCloud, Syncthing and git all copy dotfiles;
+  relative keys stop the path thrash there but a live sqlite file under two writers still
+  risks real corruption. Keep the vault on Obsidian Sync.
+
+- **`_MATRIX_CACHE` is keyed on a `vector_epoch` counter, not just row shape — and never
+  name a loop variable `key` in `_normalized_matrix` again (2026-08-24).** The cache
+  signature was `(project, row count, max mtime)`, which are all *row* properties: any write
+  that changes a vector's contents while leaving the row set alone slips straight past it.
+  That was sound until a recipe rebuild existed (same paths, same mtimes, new vectors) and
+  the path-format migration (a pure rename). `_bump_vector_epoch()` lives in `meta` rather
+  than clearing the in-memory dict specifically so it works **cross-process** — a long-lived
+  MCP server has to notice a `brain reindex` that ran elsewhere, and clearing its own dict
+  cannot tell it that. Every vector write bumps it: sync's chunk commits and stale deletes,
+  `upsert`, `delete`, the wipe, the migration.
+
+  The row loop uses `row_key`, because naming it `key` shadows the signature computed a few
+  lines above: the cache then stored the *last row's path* as its key, so every lookup
+  compared a `str` against a tuple, missed, and re-read every BLOB on every query. That
+  regression was introduced and caught the same afternoon — the test that catches it asserts
+  the key's first three components are identical across a rebuild while the epoch differs.
+
+- **`embed_text()` reads each file once.** It needs the raw text for its fallback path
+  anyway, so it parses via `vault.Memory.from_text(path, raw_text)` rather than
+  `from_file()`, which would re-read the same file from disk — doubled I/O across a
+  ~900-file rebuild for nothing. `from_file()` is now a one-line wrapper over `from_text()`;
+  keep the split.
 
 - **Lexical-only hits get a reserved slot every 3rd position — don't "simplify" that back to
   appending them (fixed 2026-08-24).** `search_memories` used to append *all* ripgrep hits
