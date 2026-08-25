@@ -81,51 +81,21 @@ python3 ~/src/Ai-Brain/brain-setup.py --non-interactive \
     --claude-dir ~/.claude-personal --claude-dir ~/.claude-work
 ```
 
-### Deprecated: platform shell scripts
+The wizard is the only install path — it covers macOS, Linux and Windows, gates on
+Python >= 3.11, writes the Windows `brain.cmd` / `brain-launch.cmd` wrappers where
+needed, and runs the test suite as its last step. The old per-platform shell scripts
+were retired on 2026-08-25 (see ROADMAP 3G).
 
-**Use `brain-setup.py` above.** The three platform shell installers are deprecated as of
-2026-08-25 and print a warning when run. They still work, but they do not gate on Python
->= 3.11 the way `brain-setup.py` does — `setup-mac.sh` runs a bare `python3 -m venv`, and a
-stock macOS `/usr/bin/python3` is 3.9, which `pyproject.toml` refuses — and they do not
-install the pytest extra or self-test after installing. They are documented here only so an
-existing muscle-memory invocation still resolves.
-
-Each one takes
-`<claude-config-dir> <vault-path>` — the config dir can be any name you like
-(e.g. `~/.claude`, `~/.claude-personal`, `~/.claude-work`, `~/.claude-projectX`):
-
-```bash
-# macOS — single account (default config dir)
-~/src/Ai-Brain/setup-mac.sh ~/.claude ~/Vaults/Ai-Brain
-
-# macOS — multiple accounts (re-run once per config dir)
-~/src/Ai-Brain/setup-mac.sh ~/.claude-personal ~/Vaults/Ai-Brain
-~/src/Ai-Brain/setup-mac.sh ~/.claude-work     ~/Vaults/Ai-Brain
-```
-
-```bash
-# Linux (Debian Trixie, Raspberry Pi OS, Ubuntu 22.04+)
-~/src/Ai-Brain/setup-linux.sh ~/.claude ~/Vaults/Ai-Brain
-```
-
-On Ubuntu 22.04 the default `python3` is 3.10 (too old). Install a newer
-interpreter first via the deadsnakes PPA: `sudo apt install python3.11
-python3.11-venv`. Debian Trixie / Raspberry Pi OS (2025+) ship Python 3.13
-and only need `sudo apt install python3-venv`.
-
-```powershell
-# Windows
-powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
-    "$env:USERPROFILE\.claude" "$env:USERPROFILE\Vaults\Ai-Brain"
-```
-
-All three are idempotent. See `WINDOWS-SETUP.md` for Windows-specific guidance.
+On Ubuntu 22.04 the default `python3` is 3.10 (too old for `brain-mcp`); the wizard
+will find a newer interpreter if one is installed — `sudo apt install python3.11
+python3.11-venv` via the deadsnakes PPA. Debian Trixie / Raspberry Pi OS (2025+) ship
+Python 3.13 and only need `sudo apt install python3-venv`. See `WINDOWS-SETUP.md` for
+Windows-specific guidance.
 
 **MCP is opt-in.** By default no MCP server is registered with Claude Code — the model drives
 the Brain through the `brain` CLI (via the installed skill and global CLAUDE.md), which avoids
 loading ~3k tokens of tool schemas into every session. Re-running setup without the flag also
-*removes* any existing user-scope `brain` registration. Pass `--with-mcp` (shell scripts and
-`brain-setup.py`) or `-WithMcp` (`setup-windows.ps1`) to register the MCP server for Claude
+*removes* any existing user-scope `brain` registration. Pass `--with-mcp` to register the MCP server for Claude
 Code as well. LMStudio/Ollama registration is separate (in that app's own config) and is
 unaffected by this flag.
 
@@ -168,14 +138,7 @@ alias claude-personal='CLAUDE_CONFIG_DIR=$HOME/.claude-personal claude'
 alias claude-work='CLAUDE_CONFIG_DIR=$HOME/.claude-work claude'
 ```
 
-Then install the Brain wiring into each:
-
-```bash
-~/src/Ai-Brain/setup-mac.sh ~/.claude-personal ~/Vaults/Ai-Brain
-~/src/Ai-Brain/setup-mac.sh ~/.claude-work     ~/Vaults/Ai-Brain
-```
-
-Or do both in one call with the cross-platform wizard:
+Then install the Brain wiring into each — one call covers both:
 
 ```bash
 python3 ~/src/Ai-Brain/brain-setup.py \
@@ -215,10 +178,10 @@ function claude-work {
 Then install the Brain wiring into each:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
-    "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Vaults\Ai-Brain"
-powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
-    "$env:USERPROFILE\.claude-work" "$env:USERPROFILE\Vaults\Ai-Brain"
+python C:\src\Ai-Brainrain-setup.py --non-interactive `
+    --vault "$env:USERPROFILE\Vaults\Ai-Brain" `
+    --claude-dir "$env:USERPROFILE\.claude-personal" `
+    --claude-dir "$env:USERPROFILE\.claude-work"
 ```
 
 ### Notes
@@ -229,7 +192,7 @@ powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
   If you want partitioned memories instead, pass a different vault path per
   install (e.g. `~/Vaults/Ai-Brain-Work`).
 - **The default `~/.claude` still works.** You don't have to use `CLAUDE_CONFIG_DIR`
-  at all — single-account users can run `setup-mac.sh ~/.claude <vault>` and
+  at all — single-account users can install into `~/.claude` and
   launch `claude` with no env var. The installer auto-detects whether the target
   is the default config dir and writes the MCP registration to the right
   `.claude.json` either way.

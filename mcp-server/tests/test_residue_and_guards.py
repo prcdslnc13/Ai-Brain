@@ -87,12 +87,8 @@ def test_mcp_warmup_takes_the_reindex_lock() -> None:
     assert warmup.index("acquire_reindex_lock") < warmup.index("EmbedIndex.sync")
 
 
-UNINSTALLERS = [
-    "brain-uninstall.py",
-    "uninstall-mac.sh",
-    "uninstall-linux.sh",
-    "uninstall-windows.ps1",
-]
+# ROADMAP 3G retired the three shell uninstallers on 2026-08-25.
+UNINSTALLERS = ["brain-uninstall.py"]
 
 
 @pytest.mark.parametrize("uninstaller", UNINSTALLERS)

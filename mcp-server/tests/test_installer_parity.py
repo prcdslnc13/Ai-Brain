@@ -1,21 +1,28 @@
-"""Static parity checks across the four installers.
+"""Parity checks across the install path.
 
-The Brain has four independent install paths (`brain-setup.py`, `setup-mac.sh`,
-`setup-linux.sh`, `setup-windows.ps1`) that must produce equivalent installs. Every
-one of them is hand-maintained, so a fix reliably lands in whichever one the session
-was looking at and the other three silently keep the bug. Two live instances found
-2026-08-24: the `permissions.allow` rule reached `setup-mac.sh` (a596572) and
-`setup-windows.ps1` but never `brain-setup.py` — the primary installer — or
-`setup-linux.sh`; and PR #16's PowerShell stderr guard landed on one of the two
-identical `claude mcp remove` call sites.
+There were four independent installers (`brain-setup.py`, `setup-mac.sh`,
+`setup-linux.sh`, `setup-windows.ps1`) plus four uninstallers, all hand-maintained,
+so a fix reliably landed in whichever one the session was looking at while the others
+silently kept the bug. Two live instances found 2026-08-24: the `permissions.allow`
+rule reached `setup-mac.sh` (a596572) and `setup-windows.ps1` but never
+`brain-setup.py` — the primary installer — or `setup-linux.sh`; and PR #16's
+PowerShell stderr guard landed on one of two identical `claude mcp remove` call sites.
 
-These are text assertions, not behavioural ones: running four installers for real
-needs four operating systems. Text is enough to catch drift, which is the actual
-failure mode.
+ROADMAP 3G retired the six shell/PowerShell scripts (deprecated then deleted,
+2026-08-25), so "parity" now spans two Python entry points that already share
+`brain_settings_merge.py`. Most of what this file used to assert was keeping the
+duplicates honest and went away with them. What remains is the part that was never
+about duplication: properties a single installer can still get wrong, each of which
+has been gotten wrong before.
+
+These are text assertions, not behavioural ones — running an installer for real needs
+a machine per platform. Text is enough to catch drift, which is the actual failure
+mode.
 """
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -24,23 +31,17 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-POSIX_INSTALLERS = ["setup-mac.sh", "setup-linux.sh"]
-ALL_INSTALLERS = ["brain-setup.py", "setup-mac.sh", "setup-linux.sh", "setup-windows.ps1"]
-ALL_UNINSTALLERS = [
-    "brain-uninstall.py", "uninstall-mac.sh", "uninstall-linux.sh", "uninstall-windows.ps1",
-]
+ALL_INSTALLERS = ["brain-setup.py"]
+ALL_UNINSTALLERS = ["brain-uninstall.py"]
 SHARED_MERGE = "brain_settings_merge.py"
 
-# Deprecated 2026-08-25 (ROADMAP 3G). These still work and still have to satisfy every
-# parity assertion above -- a deprecated installer that quietly breaks is worse than one
-# that was deleted -- but they must also *say* they are deprecated, in the header and at
-# runtime. The docs drifted out of sync with the code for months before this; a text
-# assertion is the only thing that keeps a banner honest.
-DEPRECATED_SCRIPTS = [
+# ROADMAP 3G deleted these on 2026-08-25. Named here so the test below can prove they
+# are gone *and* unreferenced: a deleted script that a doc still recommends is a worse
+# failure than the duplication, because the user follows the doc and gets nothing.
+DELETED_SCRIPTS = [
     "setup-mac.sh", "setup-linux.sh", "setup-windows.ps1",
     "uninstall-mac.sh", "uninstall-linux.sh", "uninstall-windows.ps1",
 ]
-SUPPORTED_ENTRY_POINTS = ["brain-setup.py", "brain-uninstall.py"]
 
 
 def read(name: str) -> str:
@@ -121,24 +122,6 @@ def test_every_installer_passes_the_brain_command(installer):
     )
 
 
-@pytest.mark.parametrize("installer", POSIX_INSTALLERS)
-def test_posix_installers_stay_in_sync(installer):
-    """setup-linux.sh is a fork of setup-mac.sh and drifts when only one is edited."""
-    src = read(installer)
-    required = [
-        ("--with-mcp opt-in", "--with-mcp"),
-        ("MCP deregistration on CLI-first installs", "mcp remove"),
-        ("hooks template merge", "settings.hooks.json"),
-        ("global CLAUDE.md render", "__BRAIN_CMD__"),
-        ("brain skill install", "skills/brain"),
-        ("embedder warm-up", "EmbedIndex"),
-        ("package install", "pip"),
-        ("shared settings merge", SHARED_MERGE),
-    ]
-    missing = [label for label, needle in required if needle not in src]
-    assert not missing, f"{installer} is missing: {', '.join(missing)}"
-
-
 @pytest.mark.parametrize("installer", ALL_INSTALLERS)
 def test_no_installer_installs_the_package_editable(installer):
     """`pip install -e` breaks `import brain_mcp` from a foreign cwd.
@@ -155,50 +138,34 @@ def test_no_installer_installs_the_package_editable(installer):
     assert "--editable" not in src, f"{installer} installs brain-mcp editable"
 
 
-def test_windows_native_calls_are_guarded():
-    """Every `claude mcp remove` in the PowerShell installer needs its own catch.
+def test_the_installer_reads_and_writes_templates_as_utf8():
+    """Every file read/write in the installer names an encoding.
 
-    `setup-windows.ps1` runs under Windows PowerShell 5.1 (the documented invocation
-    is `powershell -ExecutionPolicy Bypass -File ...`), where
-    `$ErrorActionPreference='Stop'` turns *any* native stderr into a terminating
-    NativeCommandError. "No MCP server named brain in user scope" is the expected
-    output when there is nothing to remove, so an unguarded call fails the whole
-    install on its own idempotent path. Redirecting with `2>$null` does NOT suppress
-    it — verified against 5.1 on 2026-08-24 — so try/catch is the only fix.
-    """
-    lines = read("setup-windows.ps1").splitlines()
-    unguarded = []
-    for i, line in enumerate(lines):
-        if "mcp remove" not in line or "&" not in line:
-            continue
-        if "catch" not in "\n".join(lines[i:i + 4]):
-            unguarded.append(i + 1)
-    assert not unguarded, (
-        f"setup-windows.ps1 line(s) {unguarded}: `claude mcp remove` is not wrapped in "
-        f"a try/catch. Under PS 5.1 the expected 'nothing to remove' stderr becomes a "
-        f"terminating error, so setup exits 1 after every step already succeeded."
-    )
-
-
-def test_windows_templates_are_read_and_written_as_utf8():
-    """PS 5.1's Get-Content/Set-Content default to the ANSI codepage.
-
-    On 2026-08-24 that silently produced 43 mojibake sequences in the generated global
-    CLAUDE.md and 7 in the brain skill — the two load-bearing behavioural files,
-    corrupted by the one step whose whole job is to write them. The templates
+    On 2026-08-24 `setup-windows.ps1` produced 43 mojibake sequences in the generated
+    global CLAUDE.md and 7 in the brain skill — the two load-bearing behavioural
+    files, corrupted by the one step whose whole job is to write them. The templates
     themselves were clean, so nothing upstream showed the damage.
+
+    That script is gone (ROADMAP 3G) but the bug class is not: it belongs to whoever
+    renders the templates, which is now `brain-setup.py` alone. Python is not immune —
+    `read_text()` with no encoding uses the locale default, which is cp1252 on a
+    stock Windows, reintroducing exactly this.
+
+    Parsed rather than grepped: a regex for the call stops at the first `)`, so
+    `write_text(t.replace(a, b), encoding="utf-8")` reads as unqualified.
     """
-    src = read("setup-windows.ps1")
-    assert src.count("ReadAllText") >= 2, (
-        "both behavioural templates must be read with [System.IO.File]::ReadAllText"
+    tree = ast.parse(read("brain-setup.py"))
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr not in ("read_text", "write_text", "open"):
+            continue
+        if not any(kw.arg == "encoding" for kw in node.keywords):
+            offenders.append(f"line {node.lineno}: .{node.func.attr}()")
+    assert not offenders, (
+        "brain-setup.py has file I/O with no explicit encoding: " + "; ".join(offenders)
     )
-    assert "Encoding]::UTF8" in src, "template reads must name UTF-8 explicitly"
-    assert "UTF8Encoding" in src, "template writes must pass an explicit no-BOM UTF8Encoding"
-    for hazard in ("Get-Content", "-Raw"):
-        assert hazard not in src or "ReadAllText" in src, (
-            f"setup-windows.ps1 still uses {hazard} to read a template; that decodes as "
-            f"ANSI under PS 5.1"
-        )
 
 
 def test_hook_templates_cover_the_same_events():
@@ -293,66 +260,71 @@ def test_the_self_test_does_not_inherit_the_users_real_vault():
     )
 
 
-# ---------------------------------------------------------------- deprecation (3G)
+# ------------------------------------------------------------------- retirement (3G)
 
 
-@pytest.mark.parametrize("script", DEPRECATED_SCRIPTS)
-def test_deprecated_scripts_say_so_in_the_header(script):
-    """The banner names the replacement, so reading the file is enough to redirect."""
-    text = read(script)
-    head = text[:2500]
-    assert "DEPRECATED" in head, f"{script} carries no deprecation banner"
-    replacement = "brain-uninstall.py" if script.startswith("uninstall") else "brain-setup.py"
-    assert replacement in head, f"{script}'s banner does not name {replacement}"
+@pytest.mark.parametrize("script", DELETED_SCRIPTS)
+def test_the_retired_scripts_are_gone(script):
+    """Deleted on 2026-08-25, and they must not come back by copy-paste.
 
-
-@pytest.mark.parametrize("script", DEPRECATED_SCRIPTS)
-def test_deprecated_scripts_warn_at_runtime(script):
-    """A header comment nobody reads is the red herring, not the fix.
-
-    The notice has to reach the operator's terminal. It must also be a *warning* --
-    an installer that aborted over its own deprecation would cost someone their Brain
-    to make a bookkeeping point, which is strictly worse than the duplication 3G is
-    retiring.
+    Re-adding one is how the N-way duplication returns: the next Windows or Linux
+    bring-up is exactly the moment someone reaches for a platform script again.
     """
-    text = read(script)
-    if script.endswith(".ps1"):
-        # Write-Warning, never a native stderr write: $ErrorActionPreference='Stop'
-        # turns native stderr into a terminating NativeCommandError under PS 5.1.
-        assert 'Write-Warning "' in text and "is DEPRECATED" in text, (
-            f"{script} never warns at runtime"
-        )
-        assert "exit 1" not in text.split("Write-Warning")[1][:200], (
-            f"{script} aborts on its own deprecation notice"
-        )
-    else:
-        assert 'echo "WARNING:' in text and "is DEPRECATED" in text, (
-            f"{script} never warns at runtime"
-        )
-        warn_block = text.split('echo "WARNING:')[1][:400]
-        assert "exit 1" not in warn_block, (
-            f"{script} aborts on its own deprecation notice"
-        )
+    assert not (REPO_ROOT / script).exists(), (
+        f"{script} is back. Install behaviour belongs in brain-setup.py — see ROADMAP 3G "
+        f"for why four installers cost more than they bought."
+    )
 
 
-@pytest.mark.parametrize("entry", SUPPORTED_ENTRY_POINTS)
-def test_the_supported_entry_points_are_not_marked_deprecated(entry):
-    """Guards the obvious copy-paste: banner pasted into the thing it points at."""
-    assert "DEPRECATED" not in read(entry)[:2500], f"{entry} is the replacement, not deprecated"
+def _runnable_mentions(doc: str, script: str) -> list[str]:
+    """Lines that tell a reader to *run* `script`, ignoring lines that discuss it.
 
-
-def test_user_docs_point_at_the_supported_installer():
-    """Every install guide names `brain-setup.py`.
-
-    The four docs referenced the shell scripts as the primary route long after
-    `brain-setup.py` became the one people ran -- which is how a stock-3.9 macOS
-    install path stayed documented as the recommended one.
+    The distinction is the point. "ROADMAP 3G retired setup-mac.sh; do not add a
+    platform script back" is exactly what CLAUDE.md should say to the next session —
+    banning the substring would delete the institutional memory along with the file.
+    What must not survive is an invocation: a path, a `-File` argument, or a line
+    inside a fenced command block.
     """
+    hits, in_fence = [], False
+    for line in read(doc).splitlines():
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if script not in line:
+            continue
+        if in_fence or f"/{script}" in line or f"{_BSLASH}{script}" in line or "-File " in line:
+            hits.append(line.strip())
+    return hits
+
+
+_BSLASH = chr(92)
+
+USER_DOCS = ["README.md", "WINDOWS-SETUP.md", "LMSTUDIO-SETUP.md", "PI-SETUP.md", "CLAUDE.md"]
+
+
+@pytest.mark.parametrize("script", DELETED_SCRIPTS)
+def test_no_doc_still_tells_a_user_to_run_a_retired_script(script):
+    """A doc recommending a deleted script is worse than the duplication was.
+
+    The duplication produced installs that were subtly wrong; a stale doc produces no
+    install at all, from a user following the instructions correctly.
+    """
+    offenders = {d: _runnable_mentions(d, script) for d in USER_DOCS}
+    offenders = {d: lines for d, lines in offenders.items() if lines}
+    assert not offenders, (
+        f"these docs still show how to run the retired {script}: "
+        + "; ".join(f"{d}: {lines[0]!r}" for d, lines in offenders.items())
+    )
+
+
+def test_the_docs_name_the_installer_that_does_exist():
+    """Every install guide points at the one supported entry point."""
     for doc in ("README.md", "WINDOWS-SETUP.md", "LMSTUDIO-SETUP.md", "PI-SETUP.md"):
         assert "brain-setup.py" in read(doc), f"{doc} never names the supported installer"
 
 
-def test_the_roadmap_entry_the_banners_cite_exists():
-    """Each banner says 'See ROADMAP ...' -- a dangling pointer is worse than none."""
+def test_the_roadmap_records_the_retirement():
+    """The commit message and code comments point here; a dangling pointer is worse
+    than none, and 3G is where the reasoning (and the 3.9.6 bootstrap check) lives."""
     roadmap = read("ROADMAP.md")
     assert "Retire the platform-specific installers" in roadmap
