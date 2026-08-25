@@ -270,6 +270,14 @@ BRAIN_VAULT=~/Vaults/Ai-Brain \
   exit in seconds and a daemon thread dies with them. `BRAIN_AUTO_REINDEX=0` disables it;
   doctor's `INDEX_STALE` warns at >=50 pending so the latency can't hide again.
 
+  **A foreground sync returns immediately while the reindex lock is held, and every
+  connection carries a 30s busy timeout (`SQLITE_BUSY_TIMEOUT_S`) — both are load-bearing
+  (2026-08-24).** A recall during a running reindex used to kill it with "database is
+  locked": sqlite's default busy timeout is 5s, and the reindex is the process that loses
+  that race because it holds the longer transaction. The backlog it was draining then
+  silently never drained — and since SessionStart kicks a reindex and sessions usually open
+  with a recall, that was an ordinary session start, not a corner case.
+
   A time-boxed (foreground) sync also **skips session checkpoints entirely** — they are
   68.7% of the vault's files (616 of 897) and `render.recall_payload` filters them out of
   default recall anyway, so a recall spending its slice on one buys nothing. They get their
@@ -310,6 +318,10 @@ BRAIN_VAULT=~/Vaults/Ai-Brain \
   mismatch an *unbounded* sync wipes and rebuilds; a **foreground sync deliberately
   refuses to**, because wiping mid-recall would leave the rest of the session querying a
   near-empty index. Doctor's `INDEX_RECIPE_STALE` warns until a reindex runs.
+
+  An **empty** index is never "changed" — there are no vectors to invalidate — but it must
+  still be *stamped*, or it looks permanently changed and every foreground sync bails out
+  at 0 and the index never fills. Keep the empty-index branch stamping.
 
 - **Lexical-only hits get a reserved slot every 3rd position — don't "simplify" that back to
   appending them (fixed 2026-08-24).** `search_memories` used to append *all* ripgrep hits

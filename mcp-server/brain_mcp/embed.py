@@ -137,8 +137,15 @@ def _index_path() -> Path:
     return idx_dir / "embeddings.sqlite"
 
 
+# sqlite's default busy timeout is 5s, which a full reindex can outlast: a recall's
+# foreground sync and a background reindex both write, and on 2026-08-24 that collision
+# killed the reindex outright with "database is locked". Waiting is always better than
+# failing here — every writer holds the lock only for one chunk's commit.
+SQLITE_BUSY_TIMEOUT_S = 30.0
+
+
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(_index_path())
+    conn = sqlite3.connect(_index_path(), timeout=SQLITE_BUSY_TIMEOUT_S)
     conn.execute(
         "CREATE TABLE IF NOT EXISTS embeddings ("
         "  path TEXT PRIMARY KEY,"
@@ -235,29 +242,49 @@ def stored_text_recipe(conn=None) -> str | None:
     return row[0] if row else None
 
 
-def text_recipe_changed(conn=None) -> bool:
-    """True when the index was built by a different embed_text() recipe.
+def _index_is_empty(conn) -> bool:
+    try:
+        return conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0] == 0
+    except sqlite3.DatabaseError:
+        return True
 
-    An empty index counts as unchanged — there is nothing to invalidate, and the
-    first sync stamps the current recipe.
+
+def text_recipe_changed(conn=None) -> bool:
+    """True when a *populated* index was built by a different embed_text() recipe.
+
+    An empty index is never "changed": there are no vectors to invalidate, so the
+    answer is no even though it carries no stamp yet.
     """
-    if conn is not None:
+    own = conn is None
+    if own:
+        idx = _index_path()
+        if not idx.exists():
+            return False
         try:
-            if conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0] == 0:
-                return False
+            conn = sqlite3.connect(f"file:{idx}?mode=ro", uri=True)
         except sqlite3.DatabaseError:
             return False
-    return stored_text_recipe(conn) != _text_recipe_id()
+    try:
+        if _index_is_empty(conn):
+            return False
+        return stored_text_recipe(conn) != _text_recipe_id()
+    finally:
+        if own:
+            conn.close()
 
 
-def _rebuild_for_recipe(conn) -> None:
-    conn.execute("DELETE FROM embeddings")
+def _stamp_recipe(conn) -> None:
     conn.execute(
         "INSERT INTO meta(key, value) VALUES('text_recipe', ?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         (_text_recipe_id(),),
     )
     conn.commit()
+
+
+def _rebuild_for_recipe(conn) -> None:
+    conn.execute("DELETE FROM embeddings")
+    _stamp_recipe(conn)
 
 
 def embed_text(path: Path) -> str:
@@ -493,19 +520,33 @@ class EmbedIndex:
             deadline = None if budget_seconds <= 0 else time.monotonic() + budget_seconds
             foreground = deadline is not None
 
+            # A reindex is already draining the whole backlog; a foreground pass would
+            # only contend with it for the write lock and duplicate its work. The
+            # background pass is the one that dies in that race (it holds the longer
+            # transaction), which would leave the backlog permanently undrained —
+            # precisely the failure INDEX_STALE exists to surface.
+            if foreground and reindex_lock_held():
+                return 0
+
             root = vault.vault_root()
             conn = _connect()
             try:
-                if text_recipe_changed(conn):
-                    # Wiping mid-recall would leave the rest of the session querying a
-                    # near-empty index — worse than briefly serving old-recipe vectors,
-                    # which are at least self-consistent. Let an unbounded pass (reindex,
-                    # MCP warmup, the SessionStart kick) do the transition instead.
-                    if foreground:
+                if stored_text_recipe(conn) != _text_recipe_id():
+                    if _index_is_empty(conn):
+                        # Nothing to invalidate. Stamp now — an index that is never
+                        # stamped looks permanently "changed", which would make every
+                        # later foreground sync bail out and never index anything.
+                        _stamp_recipe(conn)
+                    elif foreground:
+                        # Wiping mid-recall would leave the rest of the session querying
+                        # a near-empty index — worse than briefly serving old-recipe
+                        # vectors, which are at least self-consistent. Let an unbounded
+                        # pass (reindex, MCP warmup, SessionStart kick) transition it.
                         return 0
-                    print("brain embed: embedding recipe changed, rebuilding index",
-                          file=sys.stderr)
-                    _rebuild_for_recipe(conn)
+                    else:
+                        print("brain embed: embedding recipe changed, rebuilding index",
+                              file=sys.stderr)
+                        _rebuild_for_recipe(conn)
 
                 existing: dict[str, float] = {}
                 for path, mtime in conn.execute("SELECT path, mtime FROM embeddings"):
