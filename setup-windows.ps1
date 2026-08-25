@@ -167,14 +167,23 @@ $BrainCmdToken = $BrainCmdFile.Replace('\', '/')
 
 # 5. Write the global CLAUDE.md with __BRAIN_VAULT__ / __BRAIN_CMD__ substituted
 #    (preserving LF line endings), and the brain skill with __BRAIN_CMD__.
+#
+#    Read and write UTF-8 *explicitly*. Windows PowerShell 5.1 -- which the documented
+#    `powershell -ExecutionPolicy Bypass -File ...` invocation runs, and which is not
+#    pwsh 7 despite the shebang -- defaults Get-Content to the ANSI codepage, so it
+#    decodes the templates' UTF-8 em dashes and ellipses as cp1252 and writes the
+#    mojibake straight back out. That silently corrupted 43 sequences in the global
+#    CLAUDE.md and 7 in the skill: the load-bearing files, in the one step whose whole
+#    job is to produce them. Same failure class as the 2026-07-29 CLI stdin incident.
 Write-Host "[3/6] writing $ClaudeDir\CLAUDE.md and skills\brain\SKILL.md"
-$globalTemplate = Get-Content (Join-Path $TemplatesDir 'global-CLAUDE.md') -Raw
+$Utf8NoBom = New-Object System.Text.UTF8Encoding $false
+$globalTemplate = [System.IO.File]::ReadAllText((Join-Path $TemplatesDir 'global-CLAUDE.md'), [System.Text.Encoding]::UTF8)
 $globalRendered = $globalTemplate.Replace('__BRAIN_VAULT__', $VaultRoot).Replace('__BRAIN_CMD__', $BrainCmdToken)
-[System.IO.File]::WriteAllText((Join-Path $ClaudeDir 'CLAUDE.md'), $globalRendered)
+[System.IO.File]::WriteAllText((Join-Path $ClaudeDir 'CLAUDE.md'), $globalRendered, $Utf8NoBom)
 
-$skillTemplate = Get-Content (Join-Path $TemplatesDir 'skills\brain\SKILL.md') -Raw
+$skillTemplate = [System.IO.File]::ReadAllText((Join-Path $TemplatesDir 'skills\brain\SKILL.md'), [System.Text.Encoding]::UTF8)
 $skillRendered = $skillTemplate.Replace('__BRAIN_CMD__', $BrainCmdToken)
-[System.IO.File]::WriteAllText((Join-Path $ClaudeDir 'skills\brain\SKILL.md'), $skillRendered)
+[System.IO.File]::WriteAllText((Join-Path $ClaudeDir 'skills\brain\SKILL.md'), $skillRendered, $Utf8NoBom)
 
 # 6. Generate the per-install brain-launch.cmd wrapper.
 #    Unix-style "VAR=val cmd" env prefix does not work on Windows, and inline cmd.exe /c
@@ -346,7 +355,16 @@ if ($WithMcp) {
     Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue
     if (-not $IsDefaultTarget) { $env:CLAUDE_CONFIG_DIR = $ClaudeDir }
     try {
-      & $ClaudeBin mcp remove brain --scope user 2>$null | Out-Null
+      # "No MCP server named brain in user scope" is the *expected* result on a
+      # CLI-first install with nothing to remove, but claude writes it to stderr and
+      # $ErrorActionPreference='Stop' turns any native stderr into a terminating
+      # NativeCommandError -- so the idempotent path exited 1 and the whole setup
+      # reported failure after all six steps had already succeeded.
+      try {
+        & $ClaudeBin mcp remove brain --scope user 2>&1 | Out-Null
+      } catch {
+        # nothing registered; that is the state we wanted anyway
+      }
     } finally {
       Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue
     }
