@@ -414,7 +414,43 @@ def merge_settings_json(claude_dir: Path, vault_root: Path) -> None:
     for event, definition in hooks_block.items():
         settings["hooks"][event] = definition  # overwrite brain block; preserve others
 
+    _merge_permission_rule(settings, brain_cmd_token(claude_dir, vault_root))
+
     settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+
+
+def _merge_permission_rule(settings: dict, brain_cmd: str) -> None:
+    """Pre-approve the brain CLI so proactive saves don't hit permission prompts.
+
+    Without this, every proactive `brain save` outside a /brain skill turn raises an
+    approval prompt — and an unanswered prompt is indistinguishable from the model
+    deciding not to save, so the Brain looks like it is quietly ignoring the user.
+    The rule reached setup-mac.sh in a596572 (2026-07-28) and setup-windows.ps1, but
+    not this installer, which is the one most installs actually run.
+
+    Prune Brain-owned rules before re-adding so a re-run cannot accumulate
+    duplicates. The two rule shapes are pruned separately because they share no
+    prefix: POSIX writes an env-prefixed venv console script, Windows writes the
+    generated brain.cmd wrapper path.
+    """
+    perms = settings.get("permissions")
+    if not isinstance(perms, dict):
+        perms = {}
+    allow = perms.get("allow")
+    if not isinstance(allow, list):
+        allow = []
+
+    def _is_brain_rule(r: object) -> bool:
+        if not isinstance(r, str) or not r.startswith("Bash("):
+            return False
+        return "brain.cmd" in r.lower() or (
+            r.startswith("Bash(BRAIN_VAULT=") and "/bin/brain" in r
+        )
+
+    allow = [r for r in allow if not _is_brain_rule(r)]
+    allow.append(f"Bash({brain_cmd}:*)")
+    perms["allow"] = allow
+    settings["permissions"] = perms
 
 
 def _is_default_claude_dir(claude_dir: Path) -> bool:
