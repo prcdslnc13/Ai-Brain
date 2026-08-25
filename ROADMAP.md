@@ -252,26 +252,59 @@ Don't build this speculatively — only if the user asks for it.
 `Brain/activity.md` grows unbounded (one line per assistant turn). Add a monthly log-rotation
 helper that moves lines older than 90 days into `Brain/activity-archive/YYYY-MM.md`. Low urgency.
 
-### 3F — Treat preloaded memory as untrusted data
+### 3F — Treat preloaded memory as untrusted data — **DONE 2026-08-25**
 
-**Deferred deliberately on 2026-08-25**, during the code-review remediation that closed the
-CLI's file-import hole (see the agent-surface gotcha in `CLAUDE.md`).
+Deferred during that morning's code-review remediation (which closed the CLI's file-import
+hole), then done the same day.
 
-Memory *content* is preloaded verbatim into every later session's system prompt. A
-prompt-injected agent that reaches `brain save --content …` — still allowed, and rightly so,
-since inline saves are the whole point — can therefore plant standing instructions that load
-unasked into future sessions and subagents. The file-import gate stops exfiltration *in*; it
-does nothing about influence *out*.
+**The problem.** Memory content is preloaded verbatim into every later session's and every
+subagent's system prompt. A prompt-injected agent that reaches `brain save --content …` —
+still allowed, and rightly so, since inline saves are the whole point — could therefore plant
+standing instructions that load unasked, in the position the model reads as the operator's own
+text. The file-import gate stopped exfiltration *in*; nothing addressed influence *out*.
 
-A real fix means marking preloaded memory as data rather than instructions, consistently
-across `vault.preload_text` / `session_start_bundle`, `hooks/session_start.py`,
-`hooks/subagent_start.py`, `brain_prep.py` and the pi extension's preload — plus a fencing
-convention the model actually honours. That is a wider change than the five review items put
-together, and it lands in the preload path that was reworked on 2026-08-25 (two-tier
-`**Why:**` deferral), so it wants its own pass rather than being bolted onto that one.
+**The shape of the fix.** One fence, everywhere vault text meets a model:
 
-Worth scoping when someone next touches the bundle. Not urgent while the user is the only
-writer to the vault.
+```
+<<<BRAIN-MEMORY-BEGIN>>>
+…stored vault content…
+<<<BRAIN-MEMORY-END>>>
+```
+
+preceded by a notice naming the block as data. `vault.fence()` / `vault.neutralize_fence()`
+are the primitives; `vault.TRUST_NOTICE` (preload) and `TRUST_NOTICE_SHORT` (recall and list,
+paid per call) are the wording. Rendering routes through the two modules that already own
+model-facing output — `brain_prep.render` (both hooks, `brain-prep`, the pi preload) and
+`render.py` (recall and list, on both frontends) — so a new frontend inherits the boundary
+instead of having to remember it.
+
+Four decisions worth keeping:
+
+- **Neutralization is what makes it a boundary.** A fence the fenced text can close is
+  decoration, so anything resembling a marker inside vault content becomes
+  `[brain-fence marker removed]`, case- and spacing-insensitively. It runs where content
+  *enters* the payload, not just in the markdown renderer, so the MCP `brain_session_start`
+  dict is defanged for clients that assemble their own prompt.
+- **The notice does not say "ignore this".** Feedback memories are the user's own standing
+  corrections and exist precisely to shape behaviour. The line drawn is between shaping *how*
+  the current request is carried out and authorizing an action on their own — no command to
+  run, file to send, address to fetch, credential to use, or confirmation to skip.
+- **The health banner is defanged too.** It renders outside the fence, on trusted ground, and
+  several findings interpolate vault filenames — so a file named after a marker could have
+  closed the fence from the one place that must not be closable.
+- **The fence's ~0.9 KB is reserved out of the bundle budget**, not added on top of it, or
+  `BUNDLE_SATURATED` would under-report by a fixed amount forever. Measured after: session
+  43.4/72 KB, subagent 35.2/56 KB, nothing skipped.
+
+The three behavioural templates (global CLAUDE.md, the brain skill, `AGENTS-brain.md`) all
+teach the convention — a fence the model has never been told about is decoration — and
+`tests/test_trust_boundary.py` asserts that, the closable-once property, and that both
+renderers actually call `fence()`.
+
+**Still open.** The boundary is a convention the model honours, not an enforcement: it raises
+the cost of a planted instruction and makes one visible when reported, but a sufficiently
+persuasive body inside the fence is still text the model reads. Narrowing *who can write* to
+the vault is the complementary control, and is not built.
 
 ---
 

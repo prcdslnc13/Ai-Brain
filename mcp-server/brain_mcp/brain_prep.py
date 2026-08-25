@@ -42,12 +42,22 @@ def render(bundle: dict) -> str:
             f"reasoning behind it — for an edge case, or before overriding it."
         )
         lines.append("")
+    # Everything above this point is ours; everything below is vault content, so it
+    # goes inside the trust fence (ROADMAP 3F). `vault.fence` defangs forged markers
+    # across the whole block — section labels and paths included, since a label
+    # carries a project name and a path a filename, both writer-controlled.
+    body: list[str] = []
     for section in bundle.get("sections", []):
-        lines.append(f"## {section['label']}")
+        body.append(f"## {section['label']}")
         for item in section["items"]:
-            lines.append(f"### {item['path']}")
-            lines.append(item["content"].strip())
-            lines.append("")
+            body.append(f"### {item['path']}")
+            body.append(item["content"].strip())
+            body.append("")
+    if body:
+        lines.append(bundle.get("trust_notice") or vault.TRUST_NOTICE)
+        lines.append("")
+        lines.append(vault.fence("\n".join(body)))
+        lines.append("")
     return "\n".join(lines)
 
 
