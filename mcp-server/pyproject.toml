@@ -19,6 +19,12 @@ dependencies = [
     "numpy>=1.24,<3",
 ]
 
+[project.optional-dependencies]
+# Install with: .venv/bin/pip install -e '.[dev]'  -- no: see CLAUDE.md, never
+# editable. Use: .venv/bin/pip install '.[dev]' from the mcp-server directory,
+# or just `pip install "pytest>=8,<9"` into the existing venv.
+dev = ["pytest>=8,<9"]
+
 [project.scripts]
 brain = "brain_mcp.cli:main"
 brain-mcp = "brain_mcp.__main__:main"
@@ -32,4 +38,16 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
+# tests/ is deliberately excluded from the wheel: it imports from the source tree
+# (conftest puts mcp-server/ and hooks/ on sys.path) and asserts against installer
+# scripts that only exist in the repo, so a packaged copy could never run.
 include = ["brain_mcp*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Tests import brain_mcp from the *source* tree, not site-packages. The package is
+# installed non-editable (see CLAUDE.md), so without this a test run would silently
+# grade the last-installed copy instead of the working tree — which is exactly how
+# a 2026-08-24 session spent an hour debugging a fix that was never under test.
+pythonpath = [".", "../hooks"]
+filterwarnings = ["error::DeprecationWarning:brain_mcp.*"]

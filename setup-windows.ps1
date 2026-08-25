@@ -328,7 +328,16 @@ if ($WithMcp) {
     Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue
     if (-not $IsDefaultTarget) { $env:CLAUDE_CONFIG_DIR = $ClaudeDir }
     try {
-      & $ClaudeBin mcp remove brain --scope user 2>$null | Out-Null
+      # Same guard as the CLI-first branch below: `2>$null` does NOT stop
+      # $ErrorActionPreference='Stop' turning native stderr into a terminating
+      # NativeCommandError (verified against PS 5.1, 2026-08-24), so on a machine
+      # with nothing registered this expected "no server named brain" aborted the
+      # whole -WithMcp install before it ever reached `mcp add`.
+      try {
+        & $ClaudeBin mcp remove brain --scope user 2>&1 | Out-Null
+      } catch {
+        # nothing registered yet; `mcp add` below is the point of this branch
+      }
       # Capture stdout+stderr so a silent CLI failure doesn't vanish into Out-Null.
       $addOutput = (& $ClaudeBin mcp add brain --scope user -e "BRAIN_VAULT=$VaultRoot" -- $VenvPython -m brain_mcp 2>&1 | Out-String).Trim()
       $addRc = $LASTEXITCODE

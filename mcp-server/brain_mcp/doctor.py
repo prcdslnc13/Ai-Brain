@@ -177,6 +177,57 @@ def _check_frontmatter(brain: Path) -> list[Finding]:
     )]
 
 
+INDEX_BUSY_TIMEOUT_DEFAULT_S = 2.0
+
+
+def index_busy_timeout() -> float:
+    """How long a health check waits for the vector index's lock.
+
+    Deliberately *much* shorter than `embed.SQLITE_BUSY_TIMEOUT_S`. Those 30s belong
+    to writers, where waiting always beats failing. Doctor is read-only and runs
+    inside the SessionStart hook, which Claude Code kills at 15s — and a killed hook
+    drops the entire preload, which is strictly worse than the false INDEX_CORRUPT
+    this replaced. Waiting longer cannot improve the diagnosis either: "someone holds
+    the write lock" is the same answer at 2s as at 30s.
+
+    Measured 2026-08-24: a single `PRAGMA integrity_check` against a locked index
+    took 41.8s at the writer's 30s setting — nearly 3x the whole hook's budget.
+    """
+    raw = os.environ.get("BRAIN_DOCTOR_INDEX_TIMEOUT_S", "")
+    if not raw:
+        return INDEX_BUSY_TIMEOUT_DEFAULT_S
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return INDEX_BUSY_TIMEOUT_DEFAULT_S
+
+
+def _reindex_running() -> bool:
+    """True when a `brain reindex` holds the cross-process lock.
+
+    Checked before touching sqlite at all: it is a single file stat, where every
+    index check below would otherwise pay the busy timeout in turn. Three of them
+    connect, so without this the hook's cost under a reindex is additive.
+    """
+    try:
+        from . import embed
+        return embed.reindex_lock_held()
+    except Exception:
+        return False
+
+
+def _is_lock_error(exc: BaseException) -> bool:
+    """True when sqlite refused because someone else holds the write lock.
+
+    A locked database is a *healthy* database with a writer in it — during a reindex
+    that is the expected state, not a fault.
+    """
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    msg = str(exc).lower()
+    return "locked" in msg or "busy" in msg
+
+
 def _check_vector_index(brain: Path) -> list[Finding]:
     idx = brain / ".index" / "embeddings.sqlite"
     if not idx.exists():
@@ -185,13 +236,34 @@ def _check_vector_index(brain: Path) -> list[Finding]:
             "Vector index not yet built.",
             "The MCP server warms it up on startup; first brain_recall builds it otherwise.",
         )]
+    if _reindex_running():
+        return [Finding(
+            "info", "INDEX_BUSY",
+            "A reindex is running; skipped the integrity check rather than wait for it.",
+            "Nothing to do — re-run `brain doctor` once it finishes.",
+        )]
     try:
-        conn = sqlite3.connect(f"file:{idx}?mode=ro", uri=True)
+        conn = sqlite3.connect(
+            f"file:{idx}?mode=ro", uri=True, timeout=index_busy_timeout()
+        )
         try:
             row = conn.execute("PRAGMA integrity_check").fetchone()
         finally:
             conn.close()
     except sqlite3.DatabaseError as e:
+        # A lock is not corruption. This check used to report both as INDEX_CORRUPT
+        # and tell the user to delete the index — advice that costs a ~300s rebuild
+        # of perfectly valid vectors. A reindex holds the write lock for its chunk
+        # commits, and SessionStart both kicks a reindex and renders this banner, so
+        # a healthy index hitting the old 5s default timeout was an ordinary session
+        # start, not a corner case (reproduced 2026-08-24).
+        if _is_lock_error(e):
+            return [Finding(
+                "info", "INDEX_BUSY",
+                f"Vector index is locked by another process: {e}",
+                "A reindex is most likely running. Nothing to do — recall falls back "
+                "to ripgrep meanwhile, and this clears on its own.",
+            )]
         return [Finding(
             "warn", "INDEX_CORRUPT",
             f"Vector index at {idx} is unreadable: {e}",
@@ -220,6 +292,10 @@ def _check_index_stale(brain: Path) -> list[Finding]:
     """
     if os.environ.get("BRAIN_EMBED", "1") == "0":
         return []
+    if _reindex_running():
+        # The backlog is being drained right now; reporting it as stale would be both
+        # wrong and expensive — backlog() connects, so it would sit on the lock.
+        return [Finding("info", "INDEX_REINDEXING", "a reindex is draining the backlog")]
     try:
         from . import embed
         pending = embed.EmbedIndex.backlog()
@@ -249,6 +325,10 @@ def _check_index_recipe(brain: Path) -> list[Finding]:
     if the background reindex never ran.
     """
     if os.environ.get("BRAIN_EMBED", "1") == "0":
+        return []
+    if _reindex_running():
+        # A reindex is what transitions the recipe. Reporting it stale mid-rebuild is
+        # both wrong and, because text_recipe_changed() connects, slow.
         return []
     try:
         from . import embed
@@ -769,6 +849,8 @@ def _check_near_duplicates(brain: Path) -> list[Finding]:
     idx = brain / ".index" / "embeddings.sqlite"
     if not idx.exists():
         return []
+    if _reindex_running():
+        return []  # corpus hygiene can wait; the lock costs more than the finding
     try:
         import numpy as np
 
@@ -778,7 +860,9 @@ def _check_near_duplicates(brain: Path) -> list[Finding]:
 
         paths: list[Path] = []
         vectors: list = []
-        conn = sqlite3.connect(f"file:{idx}?mode=ro", uri=True)
+        conn = sqlite3.connect(
+            f"file:{idx}?mode=ro", uri=True, timeout=index_busy_timeout()
+        )
         try:
             for raw_path, blob in conn.execute("SELECT path, vector FROM embeddings"):
                 p = Path(raw_path)

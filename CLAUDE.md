@@ -546,8 +546,32 @@ BRAIN_VAULT=~/Vaults/Ai-Brain \
 
 ## Testing
 
-There is no test suite yet. Verification is manual and lives in the README's verification matrix.
-When making a non-trivial change:
+```bash
+# From mcp-server/ (pytest config lives in pyproject.toml)
+.venv/bin/python -m pytest -q
+# Windows: mcp-server\.venv\Scripts\python.exe -m pytest -q
+```
+
+The suite runs against the **source tree**, not the installed copy — `pythonpath` in
+`[tool.pytest.ini_options]` puts `mcp-server/` and `hooks/` first. That is load-bearing: the
+package is installed non-editable, so without it a run would silently grade whatever was last
+`pip install`ed. Tests never touch the real vault; `conftest.py`'s `vault_dir` fixture builds a
+throwaway one and points `BRAIN_VAULT` at it.
+
+What the suite is *for*: this repo duplicates every concern across parallel sites — four
+installers, two frontends, two hook templates — and every bug cluster so far has been a fix
+landing at one of N sites. So the highest-value tests are the **invariant** ones, which assert a
+property across all sites at once rather than exercising one path:
+
+- `test_installer_parity.py` — every installer writes the permission rule, no installer installs
+  editable, both hook templates wire the same events, every PowerShell native call is guarded.
+- `test_doctor_index_locks.py::test_every_index_connection_sets_a_busy_timeout` — no
+  `sqlite3.connect` may keep sqlite's 5s default.
+
+When you fix something, ask what the *class* of bug is and assert that, not the instance.
+
+Manual verification still matters for anything crossing a process or a platform boundary — a
+test cannot run four operating systems. After a non-trivial change:
 
 1. Re-run `setup-mac.sh` (or the platform equivalent) for both Claude config dirs.
 2. Sanity-check `BRAIN_VAULT=... .venv/bin/python -c "from brain_mcp import vault, server"` from
