@@ -1,6 +1,20 @@
 #!/usr/bin/env pwsh
 # uninstall-windows.ps1 - remove the Brain wiring from a Claude Code config dir on Windows.
 #
+# DEPRECATED (2026-08-25) — use brain-uninstall.py.
+#
+#     python3 <repo>/brain-uninstall.py <claude-config-dir>
+#
+# brain-uninstall.py is the cross-platform inverse of brain-setup.py, the installer
+# this repo's docs and CLAUDE.md point at. It prunes the same Brain-owned hook and
+# permission entries through the same brain_settings_merge.py, so it shares the one
+# ownership predicate — which is the whole reason install and uninstall must stay
+# symmetric. Keeping four of each is what let the permissions.allow rule be written
+# by the installers on 2026-07-28 and removed by none of them until 2026-08-24.
+#
+# uninstall-windows.ps1 still works and still removes a Brain install correctly. It will
+# not receive new behaviour. See ROADMAP 'Retire the platform-specific installers'.
+#
 # Usage:
 #     powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\uninstall-windows.ps1 <claude-config-dir>
 #
@@ -40,6 +54,16 @@ function Expand-UserPath([string]$p) {
 
 $ClaudeDir    = Expand-UserPath $ClaudeDir
 $RepoDir      = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# A header comment nobody reads is exactly the red herring deprecating this is meant
+# to remove, so say it where the operator is looking. Write-Warning, not a native
+# write to stderr: $ErrorActionPreference = 'Stop' turns any native stderr into a
+# terminating NativeCommandError under PS 5.1, and failing over a deprecation notice
+# would be worse than the duplication it is meant to retire.
+Write-Warning "uninstall-windows.ps1 is DEPRECATED and no longer receives new behaviour."
+Write-Warning "Use the cross-platform uninstaller instead: python3 '$RepoDir\brain-uninstall.py' '$ClaudeDir'"
+Write-Warning "Continuing anyway in 3s (Ctrl-C to abort)..."
+Start-Sleep -Seconds 3
 $McpServerDir = Join-Path $RepoDir 'mcp-server'
 $VenvDir      = Join-Path $McpServerDir '.venv'
 $VenvPython   = Join-Path $VenvDir 'Scripts\python.exe'

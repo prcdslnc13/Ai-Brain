@@ -19,7 +19,7 @@ detects the snippet and skips injecting its own copy of the same instructions.
 ## Prerequisites
 
 1. **The brain venv installed on this machine.** Run any of the setup paths
-   (`brain-setup.py`, `setup-mac.sh`, `setup-linux.sh`, `setup-windows.ps1`) at least once so
+   (`brain-setup.py`) at least once so
    `mcp-server/.venv` exists and the `brain` console script is in it. The Claude-Code-specific
    parts of setup (hooks, skill) are harmless if you don't use Claude Code.
 2. **The Obsidian vault synced down** to this machine.
@@ -94,8 +94,8 @@ The repo root carries the `package.json` manifest that points pi at `pi/extensio
 subdirectory of a git repo is not addressable on its own, which is why the manifest sits at
 the top.
 
-The extension needs the venv from any of the setup paths (`brain-setup.py`, `setup-mac.sh`,
-`setup-linux.sh`, `setup-windows.ps1`) — it resolves `mcp-server/.venv/bin/brain` inside its
+The extension needs the venv that `brain-setup.py` builds — it resolves
+`mcp-server/.venv/bin/brain` inside its
 own package directory. **If `BRAIN_VAULT` is unset and `~/Vaults/Ai-Brain` has no `Brain/`
 directory, the extension disables itself with one notice**, so a machine that has never synced
 the vault still runs pi normally.

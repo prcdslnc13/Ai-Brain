@@ -1,6 +1,23 @@
 #!/usr/bin/env bash
 # setup-mac.sh — install the Brain wiring into a Claude Code config dir on macOS.
 #
+# DEPRECATED (2026-08-25) — use brain-setup.py.
+#
+#     python3 <repo>/brain-setup.py            # interactive
+#     python3 <repo>/brain-setup.py --non-interactive --vault P --claude-dir D
+#
+# brain-setup.py is cross-platform and is the installer this repo's docs,
+# CLAUDE.md, and the generated wrappers all point at. It does everything this
+# script does, and additionally gates on Python >= 3.11. THIS script does not:
+# it runs a bare `python3 -m venv`, and a stock macOS /usr/bin/python3 is 3.9,
+# which pyproject.toml refuses. It works only if a newer python3 happens to be
+# earlier on PATH.
+#
+# setup-mac.sh still works and still installs a correct Brain. It will not
+# receive new behaviour — PR #25's pytest extra and post-install self-test
+# already landed only in brain-setup.py. See ROADMAP 'Retire the
+# platform-specific installers'.
+#
 # Usage:
 #     ~/src/Ai-Brain/setup-mac.sh <claude-config-dir> <vault-path> [--with-mcp]
 #
@@ -46,6 +63,18 @@ for arg in "$@"; do
   esac
 done
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# A header comment nobody reads is exactly the red herring deprecating this is meant
+# to remove, so say it on stderr where the operator is actually looking. Warn only --
+# this script still works, and failing an install over a deprecation would be worse
+# than the duplication it is meant to retire.
+echo "" >&2
+echo "WARNING: setup-mac.sh is DEPRECATED and no longer receives new behaviour." >&2
+echo "         Use the cross-platform installer instead:" >&2
+echo "           python3 \"$REPO_DIR/brain-setup.py\"" >&2
+echo "         Continuing anyway in 3s (Ctrl-C to abort)..." >&2
+echo "" >&2
+sleep 3
 HOOKS_DIR="$REPO_DIR/hooks"
 MCP_SERVER_DIR="$REPO_DIR/mcp-server"
 TEMPLATES_DIR="$REPO_DIR/templates"

@@ -52,15 +52,23 @@ python C:\src\Ai-Brain\brain-setup.py --non-interactive `
     --claude-dir "$env:USERPROFILE\.claude-work"
 ```
 
-The `--claude-dir` values can be any path you like — `brain-setup.py` and
-`setup-windows.ps1` treat them as opaque strings. `~\.claude-personal` /
+The `--claude-dir` values can be any path you like — `brain-setup.py` treats them as
+opaque strings. `~\.claude-personal` /
 `~\.claude-work` are used as examples throughout, but any name that starts
 with `.claude` (e.g. `.claude-clientX`) is picked up by the installer's
 auto-discovery.
 
-### Fallback: the PowerShell installer
+### Deprecated: the PowerShell installer
 
-If you prefer a native PowerShell install:
+**Use `brain-setup.py` above.** `setup-windows.ps1` is deprecated as of 2026-08-25 and prints
+a warning when run. It still works, but it accepts any `py -3` / `python` / `python3` it finds
+with no `>= 3.11` gate (its error text still says "3.10+", which `pyproject.toml` refuses), it
+does not install the pytest extra or self-test after installing, and it runs under Windows
+PowerShell 5.1 — whose ANSI-default file reads have silently corrupted the generated
+`CLAUDE.md` before. `brain-setup.py` has none of those failure modes and writes the same two
+`brain.cmd` / `brain-launch.cmd` wrappers.
+
+Kept documented only so an existing muscle-memory invocation still resolves:
 
 ```powershell
 # Run setup for each Claude Code config dir you use.
@@ -149,10 +157,10 @@ Symptom: Claude Code logs an error like
 Notice the path has no backslashes — they were eaten by Git Bash, which Claude
 Code uses to run hooks on many Windows setups.
 
-Both `brain-setup.py` and `setup-windows.ps1` write **forward-slash** paths into
+`brain-setup.py` (and the deprecated `setup-windows.ps1`) write **forward-slash** paths into
 `settings.json` for exactly this reason (`C:/Users/<you>/.claude/brain-launch.cmd`).
 Forward slashes survive bash, work in cmd.exe, and are accepted by `python.exe`.
-If you have an old install, re-run the wizard or `setup-windows.ps1` to refresh the
+If you have an old install, re-run the wizard to refresh the
 hook block.
 
 ### Hooks don't fire at all (no SessionStart preload, no breadcrumbs in `Brain\activity.md`)

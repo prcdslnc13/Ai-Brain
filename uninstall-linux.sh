@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 # uninstall-linux.sh — remove the Brain wiring from a Claude Code config dir on Linux.
 #
+# DEPRECATED (2026-08-25) — use brain-uninstall.py.
+#
+#     python3 <repo>/brain-uninstall.py <claude-config-dir>
+#
+# brain-uninstall.py is the cross-platform inverse of brain-setup.py, the installer
+# this repo's docs and CLAUDE.md point at. It prunes the same Brain-owned hook and
+# permission entries through the same brain_settings_merge.py, so it shares the one
+# ownership predicate — which is the whole reason install and uninstall must stay
+# symmetric. Keeping four of each is what let the permissions.allow rule be written
+# by the installers on 2026-07-28 and removed by none of them until 2026-08-24.
+#
+# uninstall-linux.sh still works and still removes a Brain install correctly. It will
+# not receive new behaviour. See ROADMAP 'Retire the platform-specific installers'.
+#
 # Tested on Debian Trixie (Raspberry Pi OS) and Ubuntu 22.04.
 #
 # Usage:
@@ -36,6 +50,18 @@ fi
 
 CLAUDE_DIR="${1/#\~/$HOME}"
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# A header comment nobody reads is exactly the red herring deprecating this is meant
+# to remove, so say it on stderr where the operator is actually looking. Warn only --
+# this script still works, and failing an install over a deprecation would be worse
+# than the duplication it is meant to retire.
+echo "" >&2
+echo "WARNING: uninstall-linux.sh is DEPRECATED and no longer receives new behaviour." >&2
+echo "         Use the cross-platform uninstaller instead:" >&2
+echo "           python3 \"$REPO_DIR/brain-uninstall.py\" \"$CLAUDE_DIR\"" >&2
+echo "         Continuing anyway in 3s (Ctrl-C to abort)..." >&2
+echo "" >&2
+sleep 3
 MCP_SERVER_DIR="$REPO_DIR/mcp-server"
 VENV_DIR="$MCP_SERVER_DIR/.venv"
 VENV_PYTHON="$VENV_DIR/bin/python"

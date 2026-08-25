@@ -191,7 +191,7 @@ The moving parts fit together as follows:
   `_assert_block_is_ownable()` fails the install if a template command isn't detectable as ours,
   because such a command could never be pruned and would duplicate on every run.
 
-- **`setup-mac.sh`** — idempotent bootstrap. Installs brain-mcp into `mcp-server/.venv`, writes the
+- **`setup-mac.sh`** — **DEPRECATED 2026-08-25 (ROADMAP 3G); use `brain-setup.py`.** Still works, still warns on stderr, no longer receives new behaviour — and it has no Python >= 3.11 gate at all, so a stock macOS `/usr/bin/python3` (3.9) breaks the install unless a newer one sorts earlier on PATH. Idempotent bootstrap. Installs brain-mcp into `mcp-server/.venv`, writes the
   global CLAUDE.md and brain skill (with `__BRAIN_CMD__` substituted; the skill frontmatter
   pre-approves the brain CLI via `allowed-tools`), merges one `permissions.allow` rule
   **per agent subcommand** (`Bash(<BRAIN_CMD> recall:*)`, `… save:*`, …) so proactive CLI
@@ -202,7 +202,7 @@ The moving parts fit together as follows:
   opt-in**: only `--with-mcp` runs `claude mcp add`; without it, any existing user-scope `brain`
   registration is *removed* so the CLI-first token saving actually lands.
 
-- **`setup-windows.ps1`** — the Windows counterpart to `setup-mac.sh`. Same arguments (`-WithMcp`
+- **`setup-windows.ps1`** — **DEPRECATED 2026-08-25 (ROADMAP 3G); use `brain-setup.py`**, which writes the same two wrappers without the PS 5.1 encoding hazard below. The Windows counterpart to `setup-mac.sh`. Same arguments (`-WithMcp`
   switch), same idempotency guarantee. Generates two per-install wrappers (Unix-style env prefixes
   don't work on Windows): `<config-dir>\brain-launch.cmd` for hook commands in `settings.json`
   (`<launch.cmd> <hook-name>`, no JSON quote-escaping) and `<config-dir>\brain.cmd` — the CLI
@@ -248,12 +248,12 @@ The moving parts fit together as follows:
   oversight. If you port it, extend the parametrize in `test_installer_parity.py` rather than
   adding a second copy of the check.
 
-- **`setup-linux.sh`** — a fork of `setup-mac.sh` for Debian Trixie / Raspberry Pi OS /
+- **`setup-linux.sh`** — **DEPRECATED 2026-08-25 (ROADMAP 3G); use `brain-setup.py`.** A fork of `setup-mac.sh` for Debian Trixie / Raspberry Pi OS /
   Ubuntu 22.04. Adds a `find_python()` that rejects anything below 3.11 (Ubuntu 22.04 ships
   3.10, which `pyproject.toml` refuses). Otherwise it should stay byte-for-byte equivalent in
   behaviour; when you touch one, touch both.
 
-- **`brain-uninstall.py` / `uninstall-mac.sh` / `uninstall-linux.sh` / `uninstall-windows.ps1`** —
+- **`brain-uninstall.py`** (the three `uninstall-*` shell scripts are **DEPRECATED 2026-08-25**, ROADMAP 3G) —
   the inverses. Each prunes Brain-owned hook entries *and* every Brain `permissions.allow` rule
   from `settings.json` — through `brain_settings_merge.py prune`, the same module and therefore
   the same ownership predicate the installers use — deletes the generated wrappers, removes the
@@ -282,15 +282,16 @@ The moving parts fit together as follows:
 ## Common commands
 
 ```bash
-# Re-install into a Claude Code config dir (idempotent) — macOS
+# Re-install into a Claude Code config dir (idempotent), every platform.
 # The config dir can be any path. Single-account users typically use ~/.claude;
 # multi-account users pick their own names (e.g. ~/.claude-personal, ~/.claude-work).
-~/src/Ai-Brain/setup-mac.sh ~/.claude-personal ~/Vaults/Ai-Brain
-~/src/Ai-Brain/setup-mac.sh ~/.claude-work     ~/Vaults/Ai-Brain
+# This is THE installer — the setup-mac/linux/windows scripts are deprecated (ROADMAP 3G).
+python3 ~/src/Ai-Brain/brain-setup.py --non-interactive \
+    --vault ~/Vaults/Ai-Brain \
+    --claude-dir ~/.claude-personal --claude-dir ~/.claude-work
 
-# Windows equivalent (PowerShell)
-# powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 `
-#     "$env:USERPROFILE\.claude-personal" "$env:USERPROFILE\Vaults\Ai-Brain"
+# ...or run it with no arguments for the interactive wizard.
+python3 ~/src/Ai-Brain/brain-setup.py
 
 # Exercise the brain CLI directly (the primary interface; same caps/rendering as MCP)
 BRAIN_VAULT=~/Vaults/Ai-Brain ~/src/Ai-Brain/mcp-server/.venv/bin/brain stats
@@ -925,7 +926,7 @@ When you fix something, ask what the *class* of bug is and assert that, not the 
 Manual verification still matters for anything crossing a process or a platform boundary — a
 test cannot run four operating systems. After a non-trivial change:
 
-1. Re-run `setup-mac.sh` (or the platform equivalent) for both Claude config dirs.
+1. Re-run `brain-setup.py` for both Claude config dirs (it self-tests as its last step).
 2. Sanity-check `BRAIN_VAULT=... .venv/bin/python -c "from brain_mcp import vault, server"` from
    `/tmp` (catches editable-install regressions).
 3. Exercise the CLI: `BRAIN_VAULT=... .venv/bin/brain recall <something>` and `... brain stats`.
