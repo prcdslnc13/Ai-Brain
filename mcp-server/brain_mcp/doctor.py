@@ -130,15 +130,30 @@ def _check_frontmatter(brain: Path) -> list[Finding]:
     `name: F1 Ultra job path: .xf is a tar`, invalid YAML, and four notes
     lost their type without any error surfacing anywhere.
     """
+    from . import vault
+
     bad: list[tuple[Path, str]] = []
     for d in MEMORY_DIRS:
         droot = brain / d
         if not droot.exists():
             continue
         for p in droot.rglob("*.md"):
-            if any(part in ("archive", "_setup", ".index") for part in p.parts):
+            # Route through the shared predicates rather than re-listing the
+            # exclusions here — a third copy of EXCLUDE_DIRS is exactly how the
+            # three enumerations drifted apart before is_memory_path() unified
+            # them.
+            if not vault.is_memory_path(p, brain):
                 continue
-            if p.name.startswith("_"):
+            # Session checkpoints and their daily/weekly rollups are written by
+            # the transcript renderer and brain-compact, not by a user-supplied
+            # save title, so they cannot exhibit the failure this check is for --
+            # and the hint below ("re-save with `brain save`") is meaningless for
+            # a machine-generated rollup. On 2026-08-25 the first real
+            # brain-compact run wrote 61 rollups and this check flagged every one
+            # of them, which is how a standing 61-file WARN teaches you to ignore
+            # the check that exists to catch genuine save corruption.
+            # `_check_near_duplicates` already skips sessions the same way.
+            if vault.is_session_path(p):
                 continue
             try:
                 text = p.read_text(encoding="utf-8")
@@ -715,6 +730,8 @@ def _check_memory_sizes(brain: Path) -> list[Finding]:
 
     Scans project-scoped feedback (projects/*/feedback/) too — it fills the same
     bundles as global feedback, just for fewer sessions."""
+    from . import vault
+
     oversized: list[tuple[int, str]] = []
     dirs = [brain / "user", brain / "feedback"]
     projects = brain / "projects"
@@ -725,6 +742,10 @@ def _check_memory_sizes(brain: Path) -> list[Finding]:
             continue
         sub = str(d.relative_to(brain))
         for f in sorted(d.rglob("*.md")):
+            # Safe today -- these dirs hold no sessions -- but an unguarded rglob
+            # is the shape that let doctor drift from the shared predicate before.
+            if not vault.is_memory_path(f, brain):
+                continue
             try:
                 size = f.stat().st_size
             except OSError:
@@ -823,7 +844,7 @@ def _check_stub_only_projects(brain: Path) -> list[Finding]:
             continue
         memories = [
             p for p in proj.rglob("*.md")
-            if "sessions" not in p.relative_to(proj).parts and p != ov
+            if not vault.is_session_path(p) and vault.is_memory_path(p, brain) and p != ov
         ]
         if memories:
             continue

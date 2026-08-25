@@ -70,7 +70,58 @@ def _existing_sources(target: Path) -> set[str]:
     return set(_SOURCE_HEADER_RE.findall(text))
 
 
-def _concat(target: Path, sources: list[Path], dry_run: bool) -> int:
+def _rollup_frontmatter(target: Path, project: str, kind: str) -> str:
+    """Frontmatter for a rollup file.
+
+    A rollup lives inside `projects/`, which is a memory dir, so it needs a
+    parseable header like every other note there. Without one it reads as type
+    `unknown`, drops out of every type-filtered recall (including
+    `--include-sessions`), and `doctor._check_frontmatter` flags it. The first
+    real brain-compact run (2026-08-25) wrote 61 headerless rollups and doctor
+    reported all 61 as MALFORMED_FRONTMATTER with a remediation hint -- "re-save
+    with `brain save`" -- that cannot apply to a machine-written rollup.
+
+    Built with `vault._frontmatter()` rather than an f-string: `project` and the
+    period land in YAML scalars, and an interpolated colon is what silently
+    destroyed four notes' types in the 2026-07-28 Windows incident.
+    """
+    period = target.stem
+    return vault._frontmatter({
+        "name": f"session rollup {period} ({project})",
+        "description": f"{kind} rollup of session checkpoints for {project} covering {period}",
+        "type": "session",
+        "project": project,
+        "rollup": kind,
+        "period": period,
+    })
+
+
+def _backfill_frontmatter(rollup_dir: Path, project: str, kind: str, dry_run: bool) -> int:
+    """Give pre-existing headerless rollups a frontmatter block. Returns count fixed.
+
+    Self-healing so a vault compacted before the header existed converges on the
+    next run, instead of carrying a permanent doctor WARN clearable only by
+    hand-editing every file.
+    """
+    if not rollup_dir.exists():
+        return 0
+    fixed = 0
+    for f in sorted(rollup_dir.glob("*.md")):
+        if not f.is_file():
+            continue
+        try:
+            text = f.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if text.startswith("---"):
+            continue
+        fixed += 1
+        if not dry_run:
+            vault._atomic_write(f, _rollup_frontmatter(f, project, kind) + text.lstrip("\n"))
+    return fixed
+
+
+def _concat(target: Path, sources: list[Path], dry_run: bool, project: str, kind: str) -> int:
     """Append `sources` into `target`, deduped by source filename. Returns count added."""
     already = _existing_sources(target)
     parts: list[str] = []
@@ -89,12 +140,17 @@ def _concat(target: Path, sources: list[Path], dry_run: bool) -> int:
     if dry_run:
         return added
     target.parent.mkdir(parents=True, exist_ok=True)
+    body = "\n".join(parts)
     if target.exists():
-        with target.open("a", encoding="utf-8") as f:
-            f.write("\n")
-            f.write("\n".join(parts))
+        prior = target.read_text(encoding="utf-8").rstrip("\n")
+        text = f"{prior}\n\n{body}"
     else:
-        target.write_text("\n".join(parts), encoding="utf-8")
+        text = _rollup_frontmatter(target, project, kind) + body
+    # Atomic, not append-in-place: a rollup is a vault note like any other, and a
+    # mid-write failure on the append path truncates a file that is by then the
+    # only copy of the checkpoints it absorbed -- the sources are unlinked
+    # immediately after.
+    vault._atomic_write(target, text)
     return added
 
 
@@ -116,6 +172,14 @@ def _compact_project(project_dir: Path, archive_root: Path, dry_run: bool) -> Co
         return counts
 
     now = datetime.now().timestamp()
+    project = project_dir.name
+
+    # Backfill first, so a vault compacted before rollups carried frontmatter
+    # converges on the next run rather than only on the next rollup write.
+    counts["frontmatter_backfilled"] += _backfill_frontmatter(
+        sessions / "daily", project, "daily", dry_run)
+    counts["frontmatter_backfilled"] += _backfill_frontmatter(
+        sessions / "weekly", project, "weekly", dry_run)
 
     raw = [p for p in sessions.glob("*.md") if p.is_file()]
     aging_raw = [p for p in raw if (now - p.stat().st_mtime) >= DAILY_AGE_MIN.total_seconds()]
@@ -124,7 +188,7 @@ def _compact_project(project_dir: Path, archive_root: Path, dry_run: bool) -> Co
         if len(files) < 2:
             continue
         target = sessions / "daily" / f"{day}.md"
-        added = _concat(target, files, dry_run)
+        added = _concat(target, files, dry_run, project, "daily")
         if added:
             counts["raw_to_daily"] += added
             counts["daily_files"] += 1
@@ -138,7 +202,7 @@ def _compact_project(project_dir: Path, archive_root: Path, dry_run: bool) -> Co
         by_week = _bucket_by_iso_week(aging_dailies)
         for week, files in by_week.items():
             target = sessions / "weekly" / f"{week}.md"
-            added = _concat(target, files, dry_run)
+            added = _concat(target, files, dry_run, project, "weekly")
             if added:
                 counts["daily_to_weekly"] += added
                 counts["weekly_files"] += 1
@@ -197,11 +261,16 @@ def main() -> None:
         totals += _compact_project(proj, archive_root, args.dry_run)
 
     prefix = "[dry-run] " if args.dry_run else ""
-    print(
+    line = (
         f"{prefix}compacted {totals['raw_to_daily']} raw -> {totals['daily_files']} daily, "
         f"{totals['daily_to_weekly']} daily -> {totals['weekly_files']} weekly, "
         f"archived {totals['archived']}"
     )
+    # Reported, not silent: a run whose only effect was repairing headers would
+    # otherwise print all zeros and read as a no-op.
+    if totals["frontmatter_backfilled"]:
+        line += f", backfilled frontmatter on {totals['frontmatter_backfilled']}"
+    print(line)
 
 
 if __name__ == "__main__":
