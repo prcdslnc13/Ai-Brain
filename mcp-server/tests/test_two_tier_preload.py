@@ -200,3 +200,93 @@ def test_malformed_hook_payload_is_announced(capsys):
     finally:
         _sys.stdin = real_stdin
     assert "unparseable payload" in capsys.readouterr().err
+
+
+# --- doctor's soft limit measures the same thing the preload does --------------------
+
+RULE = "Always branch off fresh origin/main.\n\n"
+WHY = "**Why:** " + ("an incident narrative that is pure rationale. " * 60) + "\n\n"
+HOW = "**How to apply:** fetch, then switch -c.\n"
+
+
+def _mem(path: Path, body: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "---\nname: x\ndescription: x\ntype: feedback\n---\n\n" + body, encoding="utf-8"
+    )
+    return path
+
+
+def test_a_big_file_with_a_deferred_why_is_not_flagged(vault_dir: Path) -> None:
+    """The regression: `st_size` reported files whose preload cost was already fine.
+
+    Five of the eight OVERSIZED_MEMORIES on 2026-08-25 preloaded under the limit, and
+    acting on that finding means lossily rewriting the user's own corrections to buy
+    budget the deferral had already recovered.
+    """
+    from brain_mcp import doctor
+
+    f = _mem(vault_dir / "feedback" / "big-why.md", RULE + WHY + HOW)
+    assert f.stat().st_size > doctor.MEMORY_BODY_SOFT_LIMIT, "must be big on disk"
+
+    codes = [x.code for x in doctor._check_memory_sizes(vault_dir)]
+    assert "OVERSIZED_MEMORIES" not in codes
+    assert "MEMORY_SIZES_OK" in codes
+
+
+def test_a_memory_that_is_all_rule_text_is_still_flagged(vault_dir: Path) -> None:
+    """The opposite miss: no Why to defer, so every byte lands in the bundle."""
+    from brain_mcp import doctor
+
+    _mem(vault_dir / "feedback" / "all-rule.md", "Do the thing. " * 200)
+
+    codes = [x.code for x in doctor._check_memory_sizes(vault_dir)]
+    assert "OVERSIZED_MEMORIES" in codes
+
+
+def test_the_finding_reports_preload_cost_and_what_was_deferred(vault_dir: Path) -> None:
+    _mem(vault_dir / "feedback" / "all-rule.md", "Do the thing. " * 200)
+    _mem(vault_dir / "feedback" / "mixed.md", ("Do the thing. " * 200) + "\n\n" + WHY + HOW)
+
+    from brain_mcp import doctor
+
+    finding = [x for x in doctor._check_memory_sizes(vault_dir)
+               if x.code == "OVERSIZED_MEMORIES"][0]
+    assert "preloaded" in finding.message
+    assert "already deferred to recall" in finding.message, (
+        "the deferred figure is what stops a reader concluding the file must be cut down"
+    )
+    assert "file size" in finding.hint
+
+
+def test_the_knob_changes_what_counts_as_oversized(vault_dir: Path,
+                                                   monkeypatch: pytest.MonkeyPatch) -> None:
+    """With deferral off, whole bodies load again and the raw size is the true cost."""
+    from brain_mcp import doctor
+
+    _mem(vault_dir / "feedback" / "big-why.md", RULE + WHY + HOW)
+    assert "OVERSIZED_MEMORIES" not in [
+        x.code for x in doctor._check_memory_sizes(vault_dir)
+    ]
+
+    monkeypatch.setenv("BRAIN_PRELOAD_DEFER_WHY", "0")
+    assert "OVERSIZED_MEMORIES" in [
+        x.code for x in doctor._check_memory_sizes(vault_dir)
+    ]
+
+
+def test_the_check_and_the_bundle_agree_on_cost(vault_dir: Path) -> None:
+    """The invariant: doctor must measure exactly what the bundle carries.
+
+    Asserted against `vault.preload_text` rather than a copy of its logic, so a
+    change to what the preload defers cannot silently desynchronise the check that
+    polices its budget.
+    """
+    from brain_mcp import doctor
+
+    body = RULE + WHY + HOW
+    f = _mem(vault_dir / "feedback" / "x.md", body)
+    raw = f.read_text(encoding="utf-8")
+
+    assert doctor._preload_cost(raw) == len(vault.preload_text(raw).encode("utf-8"))
+    assert doctor._preload_cost(raw) < len(raw.encode("utf-8")), "the Why must be deferred"

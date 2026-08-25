@@ -725,14 +725,42 @@ def _check_bundle_budget(project: str | None) -> list[Finding]:
     return findings
 
 
-def _check_memory_sizes(brain: Path) -> list[Finding]:
-    """Oversized user/feedback bodies crowd the preload budget and push others out.
+def _preload_cost(text: str) -> int:
+    """Bytes this memory actually contributes to a preload bundle.
 
-    Scans project-scoped feedback (projects/*/feedback/) too — it fills the same
-    bundles as global feedback, just for fewer sessions."""
+    Not `st_size`. Since the two-tier preload (2026-08-25) the bundle carries
+    `vault.preload_text()` -- the rule and the how-to-apply, with the `**Why:**`
+    replaced by a one-line marker -- so a memory's size on disk and its cost in
+    context have diverged. Measured over this vault's flagged memories the day
+    after: 20480 B on disk, 12653 B actually preloaded.
+
+    Honours `BRAIN_PRELOAD_DEFER_WHY`: with deferral off, whole bodies load again
+    and the raw text is the true cost.
+    """
     from . import vault
 
-    oversized: list[tuple[int, str]] = []
+    rendered = vault.preload_text(text) if vault.defer_why_enabled() else text
+    return len(rendered.encode("utf-8"))
+
+
+def _check_memory_sizes(brain: Path) -> list[Finding]:
+    """Memories whose *preloaded* bytes crowd the budget and push others out.
+
+    Scans project-scoped feedback (projects/*/feedback/) too — it fills the same
+    bundles as global feedback, just for fewer sessions.
+
+    The soft limit is measured against preload cost rather than file size, because
+    protecting the bundle budget is the only reason a memory's length ever mattered.
+    Measuring `st_size` instead flagged files that cost nothing -- five of the eight
+    it reported on 2026-08-25 preloaded under the limit already -- and acting on that
+    means lossily rewriting the user's own corrections to buy budget already
+    recovered, which is the exact failure deferral was chosen to avoid. It would
+    equally miss the opposite case: a memory that is small on disk and entirely
+    rule text, which is 100% preload cost.
+    """
+    from . import vault
+
+    oversized: list[tuple[int, int, str]] = []
     dirs = [brain / "user", brain / "feedback"]
     projects = brain / "projects"
     if projects.exists():
@@ -747,27 +775,37 @@ def _check_memory_sizes(brain: Path) -> list[Finding]:
             if not vault.is_memory_path(f, brain):
                 continue
             try:
-                size = f.stat().st_size
+                raw = f.read_text(encoding="utf-8")
             except OSError:
                 continue
-            if size > MEMORY_BODY_SOFT_LIMIT:
-                oversized.append((size, f"{sub}/{f.name}"))
+            cost = _preload_cost(raw)
+            if cost > MEMORY_BODY_SOFT_LIMIT:
+                oversized.append((cost, len(raw.encode("utf-8")), f"{sub}/{f.name}"))
 
     if not oversized:
         return [Finding(
             "ok", "MEMORY_SIZES_OK",
-            f"all user/feedback memories within the {MEMORY_BODY_SOFT_LIMIT} B soft limit",
+            f"all user/feedback memories preload within the {MEMORY_BODY_SOFT_LIMIT} B "
+            f"soft limit",
         )]
 
     oversized.sort(reverse=True)
-    total_kb = sum(s for s, _ in oversized) / 1024.0
-    worst = ", ".join(name for _, name in oversized[:3])
+    total_kb = sum(c for c, _, _ in oversized) / 1024.0
+    deferred_kb = sum(r - c for c, r, _ in oversized) / 1024.0
+    worst = ", ".join(name for _, _, name in oversized[:3])
+    # Both numbers, always: "3.3 KB preloaded" is the actionable one, and the
+    # deferred figure is what stops a reader concluding the file must be cut down.
+    deferred_note = (
+        f", {deferred_kb:.1f} KB more already deferred to recall" if deferred_kb >= 0.05 else ""
+    )
     return [Finding(
         "info", "OVERSIZED_MEMORIES",
-        f"{len(oversized)} memories exceed the {MEMORY_BODY_SOFT_LIMIT} B soft limit "
-        f"({total_kb:.1f} KB total); largest: {worst}.",
-        "global-CLAUDE.md asks for the rule plus Why / How-to-apply, a few sentences each. "
-        "Reference the file, commit or doc instead of copying its detail into the memory.",
+        f"{len(oversized)} memories exceed the {MEMORY_BODY_SOFT_LIMIT} B preload soft "
+        f"limit ({total_kb:.1f} KB preloaded{deferred_note}); largest: {worst}.",
+        "This is preload cost, not file size. If a memory has no `**Why:**` section, "
+        "restructuring it into rule / Why / How-to-apply is lossless and usually enough. "
+        "Only then compact: reference the file, commit or doc instead of copying its "
+        "detail into the memory.",
     )]
 
 
