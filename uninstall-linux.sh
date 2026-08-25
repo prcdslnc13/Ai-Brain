@@ -96,7 +96,7 @@ else
   fi
 fi
 
-# 2. Prune Brain-owned hook entries from settings.json.
+# 2. Prune Brain-owned entries from settings.json.
 SETTINGS_FILE="$CLAUDE_DIR/settings.json"
 echo "[2/5] pruning Brain hooks from $SETTINGS_FILE"
 if [ ! -f "$SETTINGS_FILE" ]; then
@@ -159,11 +159,33 @@ if existing:
 else:
     settings.pop("hooks", None)
 
+# Drop the Bash(<brain_cmd>:*) pre-approval the installer writes. Install and
+# uninstall have to be symmetric: the uninstaller deletes the brain wrapper but used
+# to leave its allow-rule behind, so settings.json kept a standing unprompted Bash
+# approval for a path that no longer exists -- harmless until something else creates
+# that path, at which point it is already approved.
+perms = settings.get("permissions")
+if isinstance(perms, dict) and isinstance(perms.get("allow"), list):
+    def _is_brain_rule(r):
+        if not isinstance(r, str) or not r.startswith("Bash("):
+            return False
+        return "brain.cmd" in r.lower() or (
+            r.startswith("Bash(BRAIN_VAULT=") and "/bin/brain" in r
+        )
+    kept = [r for r in perms["allow"] if not _is_brain_rule(r)]
+    removed += len(perms["allow"]) - len(kept)
+    if kept:
+        perms["allow"] = kept
+    else:
+        perms.pop("allow", None)
+    if not perms:
+        settings.pop("permissions", None)
+
 with open(settings_path, "w", encoding="utf-8") as f:
     json.dump(settings, f, indent=2)
     f.write("\n")
 
-print(f"       ✓ removed {removed} Brain-owned hook entr{'y' if removed == 1 else 'ies'}")
+print(f"       ✓ removed {removed} Brain-owned entr{'y' if removed == 1 else 'ies'}")
 PY
 fi
 

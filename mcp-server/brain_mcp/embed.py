@@ -513,13 +513,17 @@ def embed_text(path: Path) -> str:
 # session while hand-written memories grow slowly, so an unbounded index trends
 # toward being nothing but checkpoints — hence the knob.
 #
-# It defaults to 0 (index everything) because dropping a file's vector currently
-# makes it near-unfindable, not merely un-ranked: search_memories appends *all*
-# ripgrep hits after *all* 20 vector hits, so a file with no vector lands at the
-# bottom no matter how well it matches. Measured 2026-08-24 on a synthetic vault:
-# a query whose literal text appeared in exactly one aged-out checkpoint ranked
-# that checkpoint 21st of 21, invisible at any sane top_k. Until ripgrep-only hits
-# are ranked fairly, set this only if you accept that trade.
+# It defaults to 0 (index everything), but no longer because dropping a vector makes
+# a file unreachable — vault._merge_lexical now reserves every 3rd slot for
+# lexical-only hits, so an un-vectorized file is never worse than position 3. (The
+# old rationale here described the pre-fix ranking, where such a file sorted below
+# *every* vector hit and measured 21st of 21.)
+#
+# The remaining cost is narrower but real: an excluded checkpoint is findable only
+# *lexically*, so a query that is semantically related without literally matching
+# won't reach it at all. Measured benefit is ~15% fewer indexed files for a one-time
+# indexing cost; the price is a permanent loss of semantic reach over old
+# checkpoints. Turn it on deliberately, for a vault where index size actually hurts.
 SESSION_INDEX_DAYS_DEFAULT = 0
 
 
@@ -671,11 +675,16 @@ class EmbedIndex:
         except EmbedUnavailable as e:
             print(f"brain embed warm-up skipped: {e}", file=sys.stderr)
 
-    # A foreground recall must not block on a large backlog. Embedding cost is
-    # ~fixed per document (measured 2026-08-24: ~400 ms/doc for bge-small on CPU,
-    # independent of body length — fastembed pads every input to the model's
-    # 512-token window, so truncating bodies buys nothing), which means the only
-    # way to bound recall latency is to bound the document count per pass.
+    # A foreground recall must not block on a large backlog, and the only way to bound
+    # its latency is to bound the document count per pass.
+    #
+    # Cost is ~400 ms/doc for bge-small on CPU once a document reaches the model's
+    # 512-token cap, and *flat* above it — but it scales with token count below that,
+    # which is the whole reason embed_text() feeds a bounded slice (see
+    # EMBED_TEXT_CHARS_DEFAULT: a 1000-char budget cut a full rebuild 27%, 433s ->
+    # 315s). This comment used to assert the opposite, which was true of the raw-file
+    # recipe it was written for and false the moment the slice landed in the same
+    # file — so if you change the recipe, re-read this paragraph too.
     # Small: the deadline is only checked between chunks, so chunk size is the
     # overshoot granularity. Batching buys almost nothing here (measured: 464
     # ms/doc at batch=1 vs 419 at batch=32), so keeping it low is nearly free.

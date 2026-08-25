@@ -84,8 +84,10 @@ The moving parts fit together as follows:
   - `subagent_start.py` — injects a *slim* bundle (index + user + feedback, no project
     overview/checkpoint) into every subagent via the SubagentStart event. Claude 5-era models
     delegate heavily, and the SessionStart preload reaches only the main session — without this,
-    delegated work runs without the user's behavioral rules. ~39KB per subagent by default — the
-    whole of user + feedback. `BRAIN_SUBAGENT_BUDGET_KB` tunes it, but note the bundle fills with
+    delegated work runs without the user's behavioral rules. The budget is
+    `vault.SUBAGENT_BUDGET_DEFAULT_KB` (56 KB; measured 50.9 KB consumed on 2026-08-24, i.e.
+    **91% full** — this has silently saturated twice already, so treat a new feedback memory as
+    something that can push the corpus over). `BRAIN_SUBAGENT_BUDGET_KB` tunes it, but note the bundle fills with
     `user/` *before* `feedback/`, so lowering it drops the behavioral rules first: the old 12 KB
     default delivered 11 user entries and zero feedback, defeating the hook's entire purpose
     (found 2026-07-30). `BRAIN_SUBAGENT_PRELOAD=0` disables. Verified
@@ -190,6 +192,35 @@ The moving parts fit together as follows:
   venv's `brain.exe`. Uses `templates/settings.hooks.win.json` as the template. Python hooks and
   server/CLI code are unchanged between platforms.
 
+- **`brain-setup.py`** — the interactive cross-platform wizard, and **the installer most
+  installs actually run**. Same end state as the shell/PowerShell scripts: venv, non-editable
+  install, global CLAUDE.md, brain skill, hooks block, `permissions.allow` rule, `--with-mcp`
+  opt-in. Runs interactively by default; `--non-interactive --vault P --claude-dir D` for
+  scripted use. Because it is a fourth hand-maintained copy of the same logic it is the one
+  most likely to be missed — the permission rule reached `setup-mac.sh` on 2026-07-28 and only
+  got here on 2026-08-24. `mcp-server/tests/test_installer_parity.py` exists to catch that.
+
+- **`setup-linux.sh`** — a fork of `setup-mac.sh` for Debian Trixie / Raspberry Pi OS /
+  Ubuntu 22.04. Adds a `find_python()` that rejects anything below 3.11 (Ubuntu 22.04 ships
+  3.10, which `pyproject.toml` refuses). Otherwise it should stay byte-for-byte equivalent in
+  behaviour; when you touch one, touch both.
+
+- **`brain-uninstall.py` / `uninstall-mac.sh` / `uninstall-linux.sh` / `uninstall-windows.ps1`** —
+  the inverses. Each prunes Brain-owned hook entries *and* the `Bash(<brain_cmd>:*)` allow rule
+  from `settings.json`, deletes the generated wrappers, removes the MCP registration, and
+  deletes `CLAUDE.md`/the skill only when they carry the managed-by marker. Install and
+  uninstall must stay symmetric: until 2026-08-24 the allow rule was written by the installers
+  and removed by none of them, leaving a standing unprompted Bash approval for a deleted path.
+
+- **`brain-compact`** (`brain_mcp/compact.py`) — rolls old session checkpoints into
+  `sessions/daily/` (7-30 days), then `sessions/weekly/` (30-365), then
+  `Brain/archive/…` (365+). All transforms are idempotent and merge by source filename.
+  This is the mechanism that bounds checkpoint growth, and nothing runs it automatically —
+  on 2026-08-24 the vault held 629 checkpoints, 69% of all files. `--dry-run` reports
+  without writing; `--project X` scopes it. The layout is load-bearing: the session bundle
+  globs `sessions/*.md` non-recursively, so anything moved into a subdirectory becomes
+  invisible to the preload, which is exactly the intent.
+
 - **`WINDOWS-SETUP.md`, `LMSTUDIO-SETUP.md`, `PI-SETUP.md`, `LOCAL-HARNESS-SETUP.md`** —
   user-facing install guides for the Windows bring-up, the LMStudio MCP registration, the pi
   (pi.dev) CLI wiring, and llama.cpp/cherryd (bundle sizing plus timer-driven checkpoints for
@@ -240,6 +271,11 @@ BRAIN_VAULT=~/Vaults/Ai-Brain pi -e ~/src/Ai-Brain -p "Say only: brain ok"
 # Drain the vector-index backlog (recall only syncs a 5s slice per call)
 BRAIN_VAULT=~/Vaults/Ai-Brain ~/src/Ai-Brain/mcp-server/.venv/bin/brain reindex
 
+# Roll old checkpoints into daily/weekly/archive buckets. Nothing runs this
+# automatically, and checkpoints are ~69% of the vault's files — check first.
+BRAIN_VAULT=~/Vaults/Ai-Brain ~/src/Ai-Brain/mcp-server/.venv/bin/brain-compact --dry-run
+BRAIN_VAULT=~/Vaults/Ai-Brain ~/src/Ai-Brain/mcp-server/.venv/bin/brain-compact
+
 # Health check — run anytime, especially when the Brain feels stale or broken
 BRAIN_VAULT=~/Vaults/Ai-Brain \
   ~/src/Ai-Brain/mcp-server/.venv/bin/brain-doctor --project MyProject
@@ -271,12 +307,28 @@ BRAIN_VAULT=~/Vaults/Ai-Brain \
   doctor's `INDEX_STALE` warns at >=50 pending so the latency can't hide again.
 
   **A foreground sync returns immediately while the reindex lock is held, and every
-  connection carries a 30s busy timeout (`SQLITE_BUSY_TIMEOUT_S`) — both are load-bearing
+  *writer* carries a 30s busy timeout (`SQLITE_BUSY_TIMEOUT_S`) — both are load-bearing
   (2026-08-24).** A recall during a running reindex used to kill it with "database is
   locked": sqlite's default busy timeout is 5s, and the reindex is the process that loses
   that race because it holds the longer transaction. The backlog it was draining then
   silently never drained — and since SessionStart kicks a reindex and sessions usually open
   with a recall, that was an ordinary session start, not a corner case.
+
+  **Readers must NOT copy the writers' 30s.** `doctor` connects read-only from inside the
+  SessionStart hook, which Claude Code kills at 15s — and a killed hook drops the entire
+  preload, which is worse than any finding it could have produced. One `PRAGMA
+  integrity_check` against a locked index measured **41.8s** at the writer's setting. So
+  doctor checks the cross-process reindex lock *first* (one file stat, and four of its
+  checks touch the index, so the busy timeouts would otherwise be additive) and waits
+  `doctor.index_busy_timeout()` — 2s — when it does connect. Waiting longer cannot improve
+  the diagnosis: "someone holds the write lock" is the same answer at 2s as at 30s.
+
+  Relatedly: **a locked index is not a corrupt one.** `_check_vector_index` used to map
+  every `DatabaseError` — `database is locked` included — onto `INDEX_CORRUPT`, whose hint
+  says to delete the index. Since SessionStart both kicks a reindex and renders that banner,
+  and global CLAUDE.md tells the model to *act on* the banner, a perfectly healthy index
+  could instruct the model to delete ~900 valid vectors and pay a 300s rebuild. Locks now
+  report `INDEX_BUSY`/info with no destructive hint; genuine corruption still warns.
 
   A time-boxed (foreground) sync also **skips session checkpoints entirely** — they are
   68.7% of the vault's files (616 of 897) and `render.recall_payload` filters them out of
@@ -442,6 +494,26 @@ BRAIN_VAULT=~/Vaults/Ai-Brain \
   which never matches Windows backslash paths — use `vault.path_in_project()` (path
   components) everywhere, including `embed.py`. `brain doctor` now flags
   `MALFORMED_FRONTMATTER`; if it fires, re-save the note or fix the YAML.
+
+- **`vault.is_memory_path()` is the ONLY answer to "is this a memory" (unified
+  2026-08-24).** There were three, and they disagreed: `iter_indexable_md` applied
+  `EXCLUDE_DIRS` + `EXCLUDE_FILES`, `list_memories` applied its own `_setup`/leading-underscore
+  filter, and `doctor.NON_MEMORY_NAMES` was a third list that alone knew about `README.md`.
+  So `brain list` returned `activity.md` — the 224 KB Stop-hook audit log — and the vault's
+  README as memories of type `unknown`, while both were correctly absent from recall and from
+  the index. Route every vault enumeration through the predicate; a test fails if any module
+  names those filenames literally again.
+
+- **`brain list` is capped too, and its truncation is round-robin across types — don't
+  "simplify" that to a slice (2026-08-24).** `list` was the one path through `render.py` with
+  no cap, in a module whose entire purpose is bounding payloads: 287 entries / 57 KB by
+  default, 916 / 140 KB (~35k tokens) with `--include-sessions`, growing by one checkpoint per
+  session forever. But capping it in `list_memories`' path order (feedback, projects,
+  references, user) exhausted the budget inside the 224-entry project bucket and dropped
+  **every** user and reference memory — losing a whole category is much worse than losing a
+  slice of each, and user/feedback are the two the model's behaviour depends on. Selection is
+  now round-robin by type so the large bucket absorbs the truncation, and the omission is
+  always reported with the filters that would narrow it.
 
 - **Recall/list output is deliberately capped — don't "fix" that by removing the caps
   (added 2026-07-11).** Before `render.py`, `brain_recall` honored a model-supplied `top_k`

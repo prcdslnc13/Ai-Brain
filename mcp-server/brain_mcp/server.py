@@ -334,9 +334,19 @@ def _background_embed_warmup() -> None:
         return
     try:
         from . import embed
-        # Off the critical path already — take the whole backlog, not the
-        # 5s foreground slice a recall would get.
-        embed.EmbedIndex.sync(budget_seconds=0)
+        # Take the cross-process reindex lock like `brain reindex` does. This was the
+        # one unbounded sync that didn't, so an MCP server starting while a
+        # SessionStart-spawned reindex was draining the backlog had both processes
+        # embedding the same files and contending for the write lock. `sync()` only
+        # checks the lock on its *foreground* path, so nothing else stopped it.
+        if not embed.acquire_reindex_lock():
+            return
+        try:
+            # Off the critical path already — take the whole backlog, not the
+            # 5s foreground slice a recall would get.
+            embed.EmbedIndex.sync(budget_seconds=0)
+        finally:
+            embed.release_reindex_lock()
     except Exception as e:
         print(f"brain embed background warmup: {e}", file=sys.stderr)
 
