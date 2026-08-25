@@ -20,9 +20,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Install with: .venv/bin/pip install -e '.[dev]'  -- no: see CLAUDE.md, never
-# editable. Use: .venv/bin/pip install '.[dev]' from the mcp-server directory,
-# or just `pip install "pytest>=8,<9"` into the existing venv.
+# brain-setup.py installs this extra automatically (and then runs the suite), so a
+# venv it built already has pytest. The shell/PowerShell installers do not, so on
+# one of those: .venv/bin/pip install '.[dev]' from the mcp-server directory, or
+# just `pip install "pytest>=8,<9"` into the existing venv. Never `-e '.[dev]'` --
+# see CLAUDE.md, editable installs break `import brain_mcp` from a foreign cwd.
 dev = ["pytest>=8,<9"]
 
 [project.scripts]

@@ -14,6 +14,7 @@ repo's bug pattern is a fix landing at one of N parallel sites.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import sys
 from pathlib import Path
@@ -300,18 +301,42 @@ def test_the_owner_module_still_has_exactly_one_builder() -> None:
 
 _BS = "\\"
 
+# Prefix stripping is pure string work, so it is testable everywhere. Case folding is
+# not: `_comparable` gets it from `os.path.normcase`, which folds only where the
+# platform's paths are case-insensitive and is a deliberate no-op on POSIX -- folding
+# there would make two genuinely distinct directories compare equal. So gate that case
+# on the platform actually providing it, rather than asserting Windows behaviour on a
+# Mac and leaving the suite permanently red.
+_NORMCASE_FOLDS = os.path.normcase("A") != "A"
+
 
 @pytest.mark.parametrize(
     "left,right",
     [
         (_BS * 2 + "?" + _BS + "C:" + _BS + "V" + _BS + "Brain", "C:" + _BS + "V" + _BS + "Brain"),
         (_BS * 2 + "?" + _BS + "UNC" + _BS + "srv" + _BS + "sh", _BS * 2 + "srv" + _BS + "sh"),
-        ("C:" + _BS + "Vaults" + _BS + "Ai", "c:" + _BS + "vaults" + _BS + "ai"),
+        pytest.param(
+            "C:" + _BS + "Vaults" + _BS + "Ai",
+            "c:" + _BS + "vaults" + _BS + "ai",
+            marks=pytest.mark.skipif(
+                not _NORMCASE_FOLDS, reason="os.path.normcase only folds case on Windows"
+            ),
+        ),
     ],
     ids=["extended-length", "extended-unc", "case-fold"],
 )
 def test_comparable_normalizes_windows_path_spellings(left: str, right: str) -> None:
     assert vault._comparable(Path(left)) == vault._comparable(Path(right))
+
+
+def test_comparable_defers_case_folding_to_the_platform() -> None:
+    """The fold must come from `normcase`, not a hardcoded `.lower()`.
+
+    Lower-casing unconditionally would let two distinct POSIX directories -- which a
+    case-sensitive filesystem keeps genuinely separate -- pass the containment guard.
+    """
+    folded = vault._comparable(Path("/Vaults/Ai")) == vault._comparable(Path("/vaults/ai"))
+    assert folded is _NORMCASE_FOLDS
 
 
 def test_extended_prefix_constants_are_spelled_correctly() -> None:
