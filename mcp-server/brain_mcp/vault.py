@@ -124,6 +124,22 @@ def _atomic_write(path: Path, text: str) -> None:
             pass
 
 
+def _fm_str(value, default: str) -> str:
+    """Coerce a frontmatter scalar to str, falling back to `default` when absent.
+
+    Frontmatter is hand-editable YAML, so an unquoted date or number parses to a
+    date/int, not a str — while every consumer of Memory assumes str. This used to
+    be a whole-vault outage rather than a one-file glitch: `description: 2026-07-11`
+    made embed_text() raise AttributeError on `.strip()`, which is not an OSError, so
+    the sync batch loop didn't catch it, it escaped sync(), and search_memories
+    reported it as "brain embed unavailable, falling back to ripgrep" — one bad note
+    silently disabling vector search on every recall, with the blame on the embedder.
+    """
+    if value is None:
+        return default
+    return value if isinstance(value, str) else str(value)
+
+
 @dataclass
 class Memory:
     path: Path
@@ -146,10 +162,10 @@ class Memory:
             if end != -1:
                 try:
                     fm = yaml.safe_load(text[3:end]) or {}
-                    name = fm.get("name", name)
-                    description = fm.get("description", "")
-                    mtype = fm.get("type", mtype)
-                    machine = str(fm.get("machine") or "")
+                    name = _fm_str(fm.get("name"), name)
+                    description = _fm_str(fm.get("description"), "")
+                    mtype = _fm_str(fm.get("type"), mtype)
+                    machine = _fm_str(fm.get("machine"), "")
                     body = text[end + 4 :].lstrip()
                 except yaml.YAMLError:
                     pass

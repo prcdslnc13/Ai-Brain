@@ -160,6 +160,7 @@ def _connect() -> sqlite3.Connection:
         "INSERT OR IGNORE INTO meta(key, value) VALUES('model', ?), ('dim', ?)",
         (EMBED_MODEL, str(EMBED_DIM)),
     )
+    _stamp_recipe_if_empty(conn)
     return conn
 
 
@@ -229,7 +230,9 @@ def stored_text_recipe(conn=None) -> str | None:
             idx = _index_path()
             if not idx.exists():
                 return None
-            conn = sqlite3.connect(f"file:{idx}?mode=ro", uri=True)
+            conn = sqlite3.connect(
+                f"file:{idx}?mode=ro", uri=True, timeout=SQLITE_BUSY_TIMEOUT_S
+            )
         except sqlite3.DatabaseError:
             return None
     try:
@@ -261,7 +264,9 @@ def text_recipe_changed(conn=None) -> bool:
         if not idx.exists():
             return False
         try:
-            conn = sqlite3.connect(f"file:{idx}?mode=ro", uri=True)
+            conn = sqlite3.connect(
+                f"file:{idx}?mode=ro", uri=True, timeout=SQLITE_BUSY_TIMEOUT_S
+            )
         except sqlite3.DatabaseError:
             return False
     try:
@@ -282,6 +287,32 @@ def _stamp_recipe(conn) -> None:
     conn.commit()
 
 
+def _stamp_recipe_if_empty(conn) -> None:
+    """Stamp an empty index with the current recipe.
+
+    Called from _connect(), so *every* write path is covered — not just sync().
+    upsert() and delete() create the tables and populate them without ever going
+    through sync(), so a fresh vault whose first operation is `brain save` used to
+    end up with a one-row index carrying no stamp. That index is not empty, so
+    text_recipe_changed() reports True forever, and every later foreground sync
+    takes the "populated + changed + foreground" branch and returns 0 without
+    indexing anything. The index then never fills — the same deadlock the
+    empty-index stamp inside sync() exists to prevent, reached through the door
+    sync() doesn't guard.
+
+    Requires an explicit COUNT of 0: a read that *errors* must never be mistaken
+    for an empty index, or one transient failure would stamp the current recipe
+    over a populated index built by an older one and silently bless two
+    incompatible vector spaces as one.
+    """
+    try:
+        (count,) = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()
+        if count == 0:
+            _stamp_recipe(conn)
+    except sqlite3.DatabaseError:
+        return
+
+
 def _rebuild_for_recipe(conn) -> None:
     conn.execute("DELETE FROM embeddings")
     _stamp_recipe(conn)
@@ -298,22 +329,29 @@ def embed_text(path: Path) -> str:
     raw_text = Path(path).read_text(encoding="utf-8")
     if budget <= 0:
         return raw_text
+    # The whole slice-building path is inside the try, not just from_file(): the
+    # fields it hands back are parsed YAML, and reading them is exactly as capable
+    # of raising as parsing them was. Anything that escapes here escapes sync()
+    # too — the batch loop only catches OSError — and search_memories turns that
+    # into "embed unavailable", so one unparseable note would take vector search
+    # down for the entire vault. Falling back to the raw file keeps the blast
+    # radius at the one file, which is what the promise above says.
     try:
         mem = vault.Memory.from_file(Path(path))
+        parts = [mem.name or Path(path).stem]
+        body = (mem.body or "").strip()
+        desc = (mem.description or "").strip()
+        # write_memory derives description from the body's first line, so for most
+        # memories it is already a prefix of the body — repeating it would burn budget
+        # on a duplicate rather than buying any signal.
+        if desc and not body.startswith(desc[:80]):
+            parts.append(desc)
+        if body:
+            parts.append("")
+            parts.append(body)
+        text = "\n".join(parts).strip()
     except Exception:
         return raw_text[:budget]
-    parts = [mem.name or Path(path).stem]
-    body = (mem.body or "").strip()
-    desc = (mem.description or "").strip()
-    # write_memory derives description from the body's first line, so for most
-    # memories it is already a prefix of the body — repeating it would burn budget
-    # on a duplicate rather than buying any signal.
-    if desc and not body.startswith(desc[:80]):
-        parts.append(desc)
-    if body:
-        parts.append("")
-        parts.append(body)
-    text = "\n".join(parts).strip()
     return text[:budget] if text else raw_text[:budget]
 
 
@@ -430,7 +468,15 @@ def spawn_background_reindex(min_backlog: int = 1) -> bool:
     try:
         if reindex_lock_held():
             return False
-        if backlog_count() < max(1, min_backlog):
+        # A recipe change is invisible to backlog(), which compares mtimes only —
+        # the files did not change, the recipe did. Without this clause nothing
+        # ever spawns the rebuild: the foreground sync refuses to do it (wiping
+        # mid-recall is worse), and on a CLI-first install there is no MCP warmup
+        # either, so the index serves superseded vectors until a human notices
+        # doctor's INDEX_RECIPE_STALE and runs `brain reindex` by hand. Checked
+        # first because it is one cheap sqlite read; backlog_count() stats the
+        # whole vault.
+        if not text_recipe_changed() and backlog_count() < max(1, min_backlog):
             return False
         import subprocess
 
@@ -620,7 +666,9 @@ class EmbedIndex:
             return len(_indexable(root))
         existing: dict[str, float] = {}
         try:
-            conn = sqlite3.connect(f"file:{idx}?mode=ro", uri=True)
+            conn = sqlite3.connect(
+                f"file:{idx}?mode=ro", uri=True, timeout=SQLITE_BUSY_TIMEOUT_S
+            )
             try:
                 for path, mtime in conn.execute("SELECT path, mtime FROM embeddings"):
                     existing[path] = mtime
