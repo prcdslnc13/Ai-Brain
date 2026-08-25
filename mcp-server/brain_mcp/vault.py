@@ -400,16 +400,37 @@ def search_memories(query: str, mtype: str | None = None, project: str | None = 
             print(f"brain embed unavailable, falling back to ripgrep: {e}", file=sys.stderr)
 
     rg_hits = _ripgrep_search(query, root)
+
+    def _mtime(p: Path) -> float:
+        # A file can vanish between ripgrep listing it and this sort reading it — a
+        # checkpoint rollup, a `brain forget`, an Obsidian Sync delete. Raising from
+        # inside a sort key would take the whole recall down, and every other failure
+        # path in this function degrades instead.
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+
     extras = sorted(
         (p for p in rg_hits if p not in seen),
-        key=lambda p: (-rg_hits[p], -p.stat().st_mtime),
+        key=lambda p: (-rg_hits[p], -_mtime(p)),
     )
     # Only the head participates in the merge; the tail still just appends, so the
     # total match count a caller sees is unchanged.
     ordered_paths = _merge_lexical(ordered_paths, extras[:LEXICAL_MERGE_CAP])
     ordered_paths.extend(extras[LEXICAL_MERGE_CAP:])
 
-    candidates = [Memory.from_file(p) for p in ordered_paths]
+    # Read defensively rather than in a comprehension. A file can vanish between
+    # ripgrep listing it and this loop reading it — a checkpoint rollup, a `brain
+    # forget`, an Obsidian Sync delete — and the vector path already drops missing
+    # files (`if not p.exists()`) while the lexical path did not, so one deleted file
+    # took the whole recall down with a FileNotFoundError.
+    candidates = []
+    for p in ordered_paths:
+        try:
+            candidates.append(Memory.from_file(p))
+        except OSError:
+            continue
     if mtype:
         candidates = [m for m in candidates if m.type == mtype]
     if project:
@@ -799,8 +820,14 @@ def forget_memory(rel_or_abs_path: str) -> Path:
                 break
     if not p.exists():
         raise FileNotFoundError(f"memory not found: {rel_or_abs_path}")
-    if root not in p.resolve().parents and p.resolve() != root:
+    resolved = p.resolve()
+    # The old guard was `root not in parents and resolved != root`, which *permitted*
+    # the Brain directory itself — the one path that should be refused hardest — and
+    # then fell through to unlink() on a directory.
+    if root not in resolved.parents:
         raise PermissionError(f"refusing to delete outside the Brain dir: {p}")
+    if resolved.is_dir():
+        raise IsADirectoryError(f"refusing to delete a directory: {p}")
     p.unlink()
     _try_embed_delete(p)
     return p

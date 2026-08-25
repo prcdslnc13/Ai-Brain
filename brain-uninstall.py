@@ -253,9 +253,47 @@ def prune_settings_hooks(claude_dir: Path) -> None:
     else:
         settings.pop("hooks", None)
 
+    removed += _prune_permission_rules(settings)
+
     settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     word = "entry" if removed == 1 else "entries"
-    info(f"       ✓ removed {removed} Brain-owned hook {word}")
+    info(f"       ✓ removed {removed} Brain-owned {word}")
+
+
+def _prune_permission_rules(settings: dict) -> int:
+    """Drop the `Bash(<brain_cmd>:*)` pre-approval the installers write.
+
+    Install and uninstall have to be symmetric. The uninstaller deletes brain.cmd but
+    used to leave its allow-rule behind, so settings.json kept a standing unprompted
+    Bash approval for a path that no longer exists — harmless until something else
+    creates that path, at which point it is pre-approved.
+    """
+    perms = settings.get("permissions")
+    if not isinstance(perms, dict):
+        return 0
+    allow = perms.get("allow")
+    if not isinstance(allow, list):
+        return 0
+
+    def _is_brain_rule(r: object) -> bool:
+        if not isinstance(r, str) or not r.startswith("Bash("):
+            return False
+        return "brain.cmd" in r.lower() or (
+            r.startswith("Bash(BRAIN_VAULT=") and "/bin/brain" in r
+        )
+
+    kept = [r for r in allow if not _is_brain_rule(r)]
+    removed = len(allow) - len(kept)
+    if not removed:
+        return 0
+    if kept:
+        perms["allow"] = kept
+    else:
+        perms.pop("allow", None)
+    # Don't leave an empty `permissions: {}` behind if we emptied it.
+    if not perms:
+        settings.pop("permissions", None)
+    return removed
 
 
 def remove_managed_claude_md(claude_dir: Path) -> None:
