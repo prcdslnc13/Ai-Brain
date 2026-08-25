@@ -314,10 +314,24 @@ BRAIN_VAULT=~/Vaults/Ai-Brain \
   **`EMBED_TEXT_VERSION` must be bumped whenever `embed_text()` changes what it feeds the
   model**, and the budget is part of the recipe identity. Vectors from different recipes
   aren't comparable, and the mtime staleness check cannot notice — the files didn't
-  change, the recipe did — so the index would silently mix two vector spaces forever. On
-  mismatch an *unbounded* sync wipes and rebuilds; a **foreground sync deliberately
-  refuses to**, because wiping mid-recall would leave the rest of the session querying a
-  near-empty index. Doctor's `INDEX_RECIPE_STALE` warns until a reindex runs.
+  change, the recipe did — so the index would silently mix two vector spaces forever. A
+  **foreground sync deliberately refuses to transition it**, because doing that mid-recall
+  would leave the rest of the session querying a half-built index. Doctor's
+  `INDEX_RECIPE_STALE` warns until a reindex runs.
+
+  An unbounded pass handles the mismatch **in place, without wiping first** (2026-08-24).
+  It used to commit a `DELETE FROM embeddings` and *then* spend ~300s refilling, so every
+  other process read a near-empty index for the whole rebuild and silently degraded to
+  ripgrep — and since the SessionStart kick is what performs the rebuild, the session that
+  triggered it was precisely the one querying the gutted index. Now `sync()` sets
+  `rebuilding`, which makes every row count as pending (`prior = None if rebuilding else …`)
+  and replaces them one chunk at a time, so the index stays whole and queryable throughout.
+  The recipe is stamped **after** the last chunk, never up front: an interrupted rebuild
+  must not look complete, or the un-re-embedded remainder is stranded in the old recipe
+  forever — the mtime check cannot tell the difference, so nothing would ever come back for
+  it. A **model** change is the one case that still wipes (`_wipe_for_model_change`): those
+  vectors need not even share a dimensionality, so `np.vstack` on the mixture raises rather
+  than merely ranking badly.
 
   An **empty** index is never "changed" — there are no vectors to invalidate — but it must
   still be *stamped*, or it looks permanently changed and every foreground sync bails out
@@ -364,6 +378,29 @@ BRAIN_VAULT=~/Vaults/Ai-Brain \
   tool, not of the code. Dropbox, OneDrive, iCloud, Syncthing and git all copy dotfiles;
   relative keys stop the path thrash there but a live sqlite file under two writers still
   risks real corruption. Keep the vault on Obsidian Sync.
+
+- **`_MATRIX_CACHE` is keyed on a `vector_epoch` counter, not just row shape — and never
+  name a loop variable `key` in `_normalized_matrix` again (2026-08-24).** The cache
+  signature was `(project, row count, max mtime)`, which are all *row* properties: any write
+  that changes a vector's contents while leaving the row set alone slips straight past it.
+  That was sound until a recipe rebuild existed (same paths, same mtimes, new vectors) and
+  the path-format migration (a pure rename). `_bump_vector_epoch()` lives in `meta` rather
+  than clearing the in-memory dict specifically so it works **cross-process** — a long-lived
+  MCP server has to notice a `brain reindex` that ran elsewhere, and clearing its own dict
+  cannot tell it that. Every vector write bumps it: sync's chunk commits and stale deletes,
+  `upsert`, `delete`, the wipe, the migration.
+
+  The row loop uses `row_key`, because naming it `key` shadows the signature computed a few
+  lines above: the cache then stored the *last row's path* as its key, so every lookup
+  compared a `str` against a tuple, missed, and re-read every BLOB on every query. That
+  regression was introduced and caught the same afternoon — the test that catches it asserts
+  the key's first three components are identical across a rebuild while the epoch differs.
+
+- **`embed_text()` reads each file once.** It needs the raw text for its fallback path
+  anyway, so it parses via `vault.Memory.from_text(path, raw_text)` rather than
+  `from_file()`, which would re-read the same file from disk — doubled I/O across a
+  ~900-file rebuild for nothing. `from_file()` is now a one-line wrapper over `from_text()`;
+  keep the split.
 
 - **Lexical-only hits get a reserved slot every 3rd position — don't "simplify" that back to
   appending them (fixed 2026-08-24).** `search_memories` used to append *all* ripgrep hits

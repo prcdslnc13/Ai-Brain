@@ -151,7 +151,16 @@ class Memory:
 
     @classmethod
     def from_file(cls, path: Path) -> "Memory":
-        text = path.read_text(encoding="utf-8")
+        return cls.from_text(path, path.read_text(encoding="utf-8"))
+
+    @classmethod
+    def from_text(cls, path: Path, text: str) -> "Memory":
+        """Parse an already-read file.
+
+        Split out for callers that hold the text anyway: embed_text() needs the raw
+        string for its fallback path, so going through from_file() made it read every
+        file twice — doubled I/O across a ~900-file rebuild for nothing.
+        """
         name = path.stem
         description = ""
         mtype = "unknown"

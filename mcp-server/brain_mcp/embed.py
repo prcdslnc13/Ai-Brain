@@ -215,7 +215,9 @@ def _connect() -> sqlite3.Connection:
 
 _SYNC_LOCK = threading.Lock()
 # Cache the normalized vector matrix so repeat queries don't re-read every BLOB.
-# Signature = (project_filter, row count, max mtime) — cheap sqlite query.
+# Signature = (project_filter, row count, max mtime, vector epoch) — cheap sqlite
+# queries. The epoch covers writes that change vectors without changing the row set;
+# see _bump_vector_epoch().
 _MATRIX_CACHE: dict = {"key": None, "paths": None, "mat": None}
 
 
@@ -362,6 +364,38 @@ def _stamp_recipe_if_empty(conn) -> None:
         return
 
 
+def _bump_vector_epoch(conn) -> None:
+    """Advance the counter that tells a cached matrix its vectors are stale.
+
+    `_MATRIX_CACHE` keys on (project, row count, max mtime) — all *row* properties.
+    Any write that changes a vector's contents without changing which rows exist or
+    when they were modified slips straight past it. A recipe rebuild does exactly
+    that (same paths, same mtimes, new vectors), and so does the path-format
+    migration. The key was sound before those existed, because a row's vector only
+    ever changed when its mtime did.
+
+    Stored in the DB rather than cleared in memory because it has to work
+    cross-process: a long-lived MCP server must notice a `brain reindex` that ran in
+    another process, and no amount of clearing its own dict will tell it that.
+
+    Caller commits — every call site is already inside a transaction it commits.
+    """
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES('vector_epoch', '1') "
+        "ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)"
+    )
+
+
+def _vector_epoch(conn) -> str:
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key='vector_epoch'").fetchone()
+    except sqlite3.DatabaseError:
+        # Unreadable meta must not let a stale matrix look fresh: a value nothing
+        # else returns forces a cache miss rather than a false hit.
+        return "?"
+    return row[0] if row else "0"
+
+
 def _migrate_path_format(conn) -> None:
     """One-time rewrite of absolute row keys to vault-relative ones.
 
@@ -400,6 +434,11 @@ def _migrate_path_format(conn) -> None:
             )
         if drops:
             conn.executemany("DELETE FROM embeddings WHERE path = ?", drops)
+        if renames or drops:
+            # A rename moves neither row count nor max mtime, so without this a
+            # matrix cached before the migration would go on serving pre-migration
+            # paths.
+            _bump_vector_epoch(conn)
         conn.execute(
             "INSERT INTO meta(key, value) VALUES('path_format', ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -409,15 +448,26 @@ def _migrate_path_format(conn) -> None:
     except (sqlite3.DatabaseError, OSError):
         return
 
-    if renames or drops:
-        # _MATRIX_CACHE keys on (project, row count, max mtime) — a rename moves
-        # neither, so a matrix cached before the migration would go on serving
-        # pre-migration paths for the life of the process.
-        _MATRIX_CACHE.update(key=None, paths=None, mat=None)
+
+def _recipe_model(recipe: str | None) -> str | None:
+    """The model component of a recipe id (`v{version}:{budget}:{model}`)."""
+    if not recipe:
+        return None
+    parts = recipe.split(":", 2)
+    return parts[2] if len(parts) == 3 else None
 
 
-def _rebuild_for_recipe(conn) -> None:
+def _wipe_for_model_change(conn) -> None:
+    """Empty the index because the *model* changed.
+
+    The only case that still justifies a wipe. Vectors from two models do not share
+    a space and need not even share a dimensionality, so mixing them is not merely
+    inaccurate — `np.vstack` on ragged rows raises, taking vector search down for the
+    whole rebuild. A version or budget bump keeps the model, so those rows stay
+    stackable and comparable and get replaced in place instead (see sync()).
+    """
     conn.execute("DELETE FROM embeddings")
+    _bump_vector_epoch(conn)
     _stamp_recipe(conn)
 
 
@@ -440,7 +490,7 @@ def embed_text(path: Path) -> str:
     # down for the entire vault. Falling back to the raw file keeps the blast
     # radius at the one file, which is what the promise above says.
     try:
-        mem = vault.Memory.from_file(Path(path))
+        mem = vault.Memory.from_text(Path(path), raw_text)
         parts = [mem.name or Path(path).stem]
         body = (mem.body or "").strip()
         desc = (mem.description or "").strip()
@@ -680,7 +730,12 @@ class EmbedIndex:
             root = vault.vault_root()
             conn = _connect()
             try:
-                if stored_text_recipe(conn) != _text_recipe_id():
+                # Set when the whole corpus must be re-embedded under a new slice
+                # recipe. Nothing is deleted for it; every row is simply treated as
+                # missing so it gets replaced in place.
+                rebuilding = False
+                stored = stored_text_recipe(conn)
+                if stored != _text_recipe_id():
                     if _index_is_empty(conn):
                         # Nothing to invalidate. Stamp now — an index that is never
                         # stamped looks permanently "changed", which would make every
@@ -692,10 +747,23 @@ class EmbedIndex:
                         # vectors, which are at least self-consistent. Let an unbounded
                         # pass (reindex, MCP warmup, SessionStart kick) transition it.
                         return 0
-                    else:
-                        print("brain embed: embedding recipe changed, rebuilding index",
+                    elif _recipe_model(stored) != EMBED_MODEL:
+                        print("brain embed: embedding model changed, rebuilding index",
                               file=sys.stderr)
-                        _rebuild_for_recipe(conn)
+                        _wipe_for_model_change(conn)
+                    else:
+                        # Same model, different slice recipe. Re-embed every row, but
+                        # *in place*: the old wipe-then-refill committed a DELETE and
+                        # then spent ~300s refilling, during which every other process
+                        # read a near-empty index and silently degraded to ripgrep —
+                        # and since the SessionStart kick is what performs the rebuild,
+                        # the session that triggered it was precisely the one querying
+                        # the gutted index. Replacing row by row keeps the index whole
+                        # and queryable throughout; the vectors it serves meanwhile are
+                        # from the same model, so they remain comparable.
+                        print("brain embed: embedding recipe changed, re-embedding in place",
+                              file=sys.stderr)
+                        rebuilding = True
 
                 existing: dict[str, float] = {}
                 for path, mtime in conn.execute("SELECT path, mtime FROM embeddings"):
@@ -709,11 +777,14 @@ class EmbedIndex:
                 stale = [p for p in existing if p not in current]
                 if stale:
                     conn.executemany("DELETE FROM embeddings WHERE path = ?", ((p,) for p in stale))
+                    _bump_vector_epoch(conn)
                     conn.commit()
 
                 pending: list[tuple[str, float]] = []
                 for key, mtime in current.items():
-                    prior = existing.get(key)
+                    # A rebuild ignores what is already stored — every row's vector
+                    # is from the superseded recipe, however fresh its mtime is.
+                    prior = None if rebuilding else existing.get(key)
                     if prior is None or mtime > prior + 1e-6:
                         if foreground and vault.is_session_path(_key_path(key, root)):
                             continue
@@ -728,9 +799,11 @@ class EmbedIndex:
                 )
 
                 done = 0
+                truncated = False
                 for i in range(0, len(pending), cls.SYNC_CHUNK):
                     # `and done` guarantees forward progress even on a zero budget.
                     if deadline is not None and done and time.monotonic() >= deadline:
+                        truncated = True
                         break
                     batch: list[tuple[str, float, str]] = []
                     for key, mtime in pending[i:i + cls.SYNC_CHUNK]:
@@ -746,10 +819,19 @@ class EmbedIndex:
                         "ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, vector=excluded.vector",
                         [(pa, mt, _vec_to_blob(v)) for (pa, mt, _), v in zip(batch, vectors)],
                     )
+                    _bump_vector_epoch(conn)
                     # Commit per chunk, not once at the end: a time-boxed pass must
                     # keep its progress or successive recalls redo the same work.
                     conn.commit()
                     done += len(batch)
+
+                if rebuilding and not truncated:
+                    # Stamp only once every row carries the new recipe. Stamping up
+                    # front (as the wipe-first version did) would make an interrupted
+                    # rebuild look complete, stranding the un-re-embedded remainder in
+                    # the old recipe forever — the mtime check cannot see the
+                    # difference, so nothing would ever come back for them.
+                    _stamp_recipe(conn)
 
                 return done
             finally:
@@ -808,6 +890,7 @@ class EmbedIndex:
                 "ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, vector=excluded.vector",
                 (_index_key(Path(path), root), mtime, _vec_to_blob(vec)),
             )
+            _bump_vector_epoch(conn)
             conn.commit()
         finally:
             conn.close()
@@ -821,6 +904,7 @@ class EmbedIndex:
                 "DELETE FROM embeddings WHERE path = ?",
                 (_index_key(Path(path), root),),
             )
+            _bump_vector_epoch(conn)
             conn.commit()
         finally:
             conn.close()
@@ -833,7 +917,9 @@ class EmbedIndex:
         conn = _connect()
         try:
             row = conn.execute("SELECT COUNT(*), COALESCE(MAX(mtime), 0) FROM embeddings").fetchone()
-            key = (project_filter, row[0], row[1])
+            # The epoch is what makes this key able to see a vector change that left
+            # the row set alone — a recipe rebuild, or the path-format migration.
+            key = (project_filter, row[0], row[1], _vector_epoch(conn))
             if _MATRIX_CACHE["key"] == key and _MATRIX_CACHE["mat"] is not None:
                 return _MATRIX_CACHE["paths"], _MATRIX_CACHE["mat"]
 
@@ -843,8 +929,11 @@ class EmbedIndex:
             root = vault.vault_root()
             paths: list[str] = []
             vectors: list = []
-            for key, blob in conn.execute("SELECT path, vector FROM embeddings"):
-                p = _key_path(key, root)
+            # Not `key` — that name holds the cache signature above, and shadowing it
+            # here silently stored the last row's path as the cache key, so every
+            # lookup compared a str against a tuple and missed.
+            for row_key, blob in conn.execute("SELECT path, vector FROM embeddings"):
+                p = _key_path(row_key, root)
                 if project_filter and not vault.path_in_project(p, project_filter):
                     continue
                 paths.append(str(p))
