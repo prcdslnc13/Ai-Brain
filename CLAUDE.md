@@ -495,6 +495,31 @@ BRAIN_VAULT=~/Vaults/Ai-Brain \
   components) everywhere, including `embed.py`. `brain doctor` now flags
   `MALFORMED_FRONTMATTER`; if it fires, re-save the note or fix the YAML.
 
+- **The preload carries the rule, not the case history — `**Why:**` is deferred to recall
+  (2026-08-25).** Every feedback memory is a rule lead, a `**Why:**` recounting the incident
+  that produced it, and a `**How to apply:**`. The lead and the how-to-apply are directives;
+  the Why is evidence for judging edge cases, and it is **37% of the feedback corpus by
+  bytes**. `vault.preload_text()` replaces it with a short marker in the elastic sections
+  only, taking the session bundle 59.1 → 49.7 KB and the subagent bundle (the binding
+  constraint) from **91% → 74%** of its budget.
+
+  This is **lossless and reversible**: nothing on disk changes, `brain recall` still returns
+  the whole body, the marker tells the model the rationale is one recall away, and
+  `BRAIN_PRELOAD_DEFER_WHY=0` restores full bodies. That property is the whole reason to
+  prefer it over summarizing — these files are the record of corrections the user has given,
+  and a lossy rewrite of that record is the failure the Brain exists to prevent. `preload_text`
+  is deliberately conservative: it only cuts between a `**Why:**` and a following
+  `**How to apply:**`, so a memory whose entire substance is its rationale is left whole.
+
+  **Project-scoping is NOT the lever here, despite an earlier session claiming it was.**
+  Measured 2026-08-25: only 3 of 23 global feedback entries (4.7 KB, 9%) are genuinely
+  project-specific — two paseo, one LB-RAG. The 2026-08-06 scoping pass already took the
+  40% win; there is no second one. Useful detector if you look again: a global entry with
+  high cosine to an existing *project-scoped* entry is probably mis-scoped — that is how all
+  three surfaced. There are also no true duplicates left (nothing ≥ 0.85), though a
+  git-workflow cluster of 6 files sits at 0.79–0.83 and is one topic spread across six
+  memories.
+
 - **`vault.is_memory_path()` is the ONLY answer to "is this a memory" (unified
   2026-08-24).** There were three, and they disagreed: `iter_indexable_md` applied
   `EXCLUDE_DIRS` + `EXCLUDE_FILES`, `list_memories` applied its own `_setup`/leading-underscore

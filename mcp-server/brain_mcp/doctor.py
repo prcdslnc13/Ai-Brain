@@ -692,7 +692,11 @@ def _check_bundle_budget(project: str | None) -> list[Finding]:
                 "Those memories are saved but never loaded, so their rules stop applying with "
                 f"no visible failure. Raise {knob}, or compact oversized memories.",
             )
-        return Finding("ok", ok_code, f"{label} preload {used}/{limit} KB, nothing skipped")
+        deferred = bundle.get("deferred_why_kb") or 0
+        note = f", {deferred} KB of **Why:** deferred to recall" if deferred else ""
+        return Finding(
+            "ok", ok_code, f"{label} preload {used}/{limit} KB, nothing skipped{note}"
+        )
 
     findings.append(size_one(
         "SessionStart", "BUNDLE_SATURATED", "BUNDLE_BUDGET_OK",

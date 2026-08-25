@@ -33,6 +33,15 @@ def render(bundle: dict) -> str:
         skip_str = f" · skipped {', '.join(skip_parts)}" if skip_parts else ""
         lines.append(f"> budget: {consumed}/{limit} KB{skip_str}")
         lines.append("")
+    if bundle.get("deferred_why_kb"):
+        # Explained once here rather than per entry, so the marker itself stays short.
+        lines.append(
+            f"> Entries marked `{vault._WHY_DEFERRED_MARKER}` had their **Why:** section "
+            f"left out of this preload ({bundle['deferred_why_kb']} KB). The rule and its "
+            f"**How to apply:** are intact; recall the memory by name when you need the "
+            f"reasoning behind it — for an edge case, or before overriding it."
+        )
+        lines.append("")
     for section in bundle.get("sections", []):
         lines.append(f"## {section['label']}")
         for item in section["items"]:
