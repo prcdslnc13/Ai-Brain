@@ -26,7 +26,6 @@ WHAT THIS DOES NOT TOUCH
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import platform
 import shutil
@@ -38,6 +37,12 @@ REPO_DIR = Path(__file__).resolve().parent
 HOOKS_DIR = REPO_DIR / "hooks"
 MCP_SERVER_DIR = REPO_DIR / "mcp-server"
 VENV_DIR = MCP_SERVER_DIR / ".venv"
+
+# Same shared module the installers use. Install and uninstall MUST agree on which
+# hook entries are Brain-owned: a narrower predicate here strands orphan hooks, a
+# wider one deletes a third-party hook the user wrote. One predicate, one file.
+sys.path.insert(0, str(REPO_DIR))
+import brain_settings_merge  # noqa: E402  (must follow the REPO_DIR sys.path setup)
 
 IS_WINDOWS = platform.system() == "Windows"
 VENV_PY = VENV_DIR / ("Scripts/python.exe" if IS_WINDOWS else "bin/python")
@@ -195,105 +200,25 @@ def unregister_mcp(claude_dir: Path) -> None:
 
 
 def prune_settings_hooks(claude_dir: Path) -> None:
+    """Remove Brain-owned hooks and the Brain allow-rule from settings.json.
+
+    Third-party hooks registered for the same events are left untouched, including
+    malformed ones we cannot interpret. An unparseable settings.json is left exactly
+    as found — uninstalling is never a reason to destroy a config file.
+    """
     settings_path = claude_dir / "settings.json"
     if not settings_path.exists():
         info("       (no settings.json — nothing to prune)")
         return
     try:
-        settings = json.loads(settings_path.read_text(encoding="utf-8") or "{}")
-    except json.JSONDecodeError:
-        info("       (settings.json unparseable — leaving it alone)")
+        report = brain_settings_merge.prune(settings_path, brain_hooks=str(HOOKS_DIR))
+    except (brain_settings_merge.SettingsError, OSError) as exc:
+        info(f"       (leaving settings.json alone: {exc})")
         return
-
-    hooks_dir_str = str(HOOKS_DIR).lower()
-
-    def is_brain_command(cmd: object) -> bool:
-        if not isinstance(cmd, str):
-            return False
-        low = cmd.lower()
-        return (
-            "brain_vault=" in low
-            or hooks_dir_str in low
-            or "brain-launch" in low
-        )
-
-    existing = settings.get("hooks", {}) or {}
-    if not isinstance(existing, dict):
-        info("       (hooks block malformed — leaving it alone)")
-        return
-
-    removed = 0
-    for event in list(existing.keys()):
-        groups = existing.get(event) or []
-        if not isinstance(groups, list):
-            continue
-        pruned_groups: list = []
-        for group in groups:
-            if not isinstance(group, dict):
-                pruned_groups.append(group)
-                continue
-            inner = group.get("hooks") or []
-            kept = []
-            for h in inner:
-                if isinstance(h, dict) and is_brain_command(h.get("command", "")):
-                    removed += 1
-                else:
-                    kept.append(h)
-            if kept:
-                new_group = dict(group)
-                new_group["hooks"] = kept
-                pruned_groups.append(new_group)
-        if pruned_groups:
-            existing[event] = pruned_groups
-        else:
-            del existing[event]
-
-    if existing:
-        settings["hooks"] = existing
-    else:
-        settings.pop("hooks", None)
-
-    removed += _prune_permission_rules(settings)
-
-    settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
-    word = "entry" if removed == 1 else "entries"
-    info(f"       ✓ removed {removed} Brain-owned {word}")
-
-
-def _prune_permission_rules(settings: dict) -> int:
-    """Drop the `Bash(<brain_cmd>:*)` pre-approval the installers write.
-
-    Install and uninstall have to be symmetric. The uninstaller deletes brain.cmd but
-    used to leave its allow-rule behind, so settings.json kept a standing unprompted
-    Bash approval for a path that no longer exists — harmless until something else
-    creates that path, at which point it is pre-approved.
-    """
-    perms = settings.get("permissions")
-    if not isinstance(perms, dict):
-        return 0
-    allow = perms.get("allow")
-    if not isinstance(allow, list):
-        return 0
-
-    def _is_brain_rule(r: object) -> bool:
-        if not isinstance(r, str) or not r.startswith("Bash("):
-            return False
-        return "brain.cmd" in r.lower() or (
-            r.startswith("Bash(BRAIN_VAULT=") and "/bin/brain" in r
-        )
-
-    kept = [r for r in allow if not _is_brain_rule(r)]
-    removed = len(allow) - len(kept)
-    if not removed:
-        return 0
-    if kept:
-        perms["allow"] = kept
-    else:
-        perms.pop("allow", None)
-    # Don't leave an empty `permissions: {}` behind if we emptied it.
-    if not perms:
-        settings.pop("permissions", None)
-    return removed
+    word = "entry" if report["removed"] == 1 else "entries"
+    info(f"       ✓ removed {report['removed']} Brain-owned {word}")
+    if report["backup"]:
+        info(f"       backup of previous settings.json: {report['backup']}")
 
 
 def remove_managed_claude_md(claude_dir: Path) -> None:

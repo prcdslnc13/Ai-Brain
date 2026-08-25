@@ -7,3 +7,4 @@ mcp-server/build/
 hooks/__pycache__/
 .pytest_cache/
 mcp-server/.pytest_cache/
+node_modules/

@@ -38,13 +38,27 @@ def emit(obj: dict) -> None:
 
 
 def project_basename(payload: dict) -> str | None:
-    cwd = payload.get("cwd")
-    if cwd:
-        return Path(cwd).name
-    cwd = os.environ.get("CLAUDE_PROJECT_DIR")
-    if cwd:
-        return Path(cwd).name
-    return None
+    """The project key for this session, or None.
+
+    Delegates the sanity rules to `vault.project_basename` rather than keeping a
+    second `Path(cwd).name` here: the value is about to be joined into
+    `Brain/projects/`, and one predicate deciding what a project name may be is the
+    same invariant `vault.is_memory_path` enforces for memories.
+
+    Returns None instead of raising, on every path. A hook that raises loses the
+    whole preload — every behavioural rule for that session — which is far worse
+    than a session with no project scope.
+    """
+    cwd = payload.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR")
+    if not cwd:
+        return None
+    try:
+        from brain_mcp import vault
+    except Exception:
+        # brain_mcp itself is unimportable, so nothing downstream can use the name
+        # anyway; session_start.py renders BRAIN_MCP_IMPORT_FAILED for this.
+        return None
+    return vault.project_basename(cwd)
 
 
 def vault_brain() -> Path:

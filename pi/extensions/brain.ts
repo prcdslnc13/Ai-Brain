@@ -172,6 +172,16 @@ export default function brainExtension(pi: ExtensionAPI) {
 	// by wrapping the command; here we own the process, so we set it directly.
 	process.env.BRAIN_VAULT = vault;
 
+	// This extension is the operator, not the model: its checkpoints go through
+	// `brain checkpoint --from-pi <session.jsonl>`, which the agent-surface gate
+	// refuses. resolveBrainCmd() normally lands on the venv binary (which never sets
+	// the flag), but BRAIN_PI_CMD can legitimately point at Claude Code's generated
+	// brain.cmd wrapper, which does — and then every automatic checkpoint would fail
+	// with an exit 2 that nothing surfaces. Clearing it here is safe because the
+	// arguments are ours, not the model's: the tools below expose recall/save/list/
+	// forget/checkpoint bodies, never a caller-supplied path to read.
+	process.env.BRAIN_AGENT_SURFACE = "0";
+
 	interface RunResult {
 		ok: boolean;
 		stdout: string;
@@ -479,7 +489,13 @@ export default function brainExtension(pi: ExtensionAPI) {
 				const text = res.ok ? res.stdout.trim() || "(nothing)" : "brain failed";
 				// nextTurn: the user asked for this, so it belongs in context, but
 				// it should not kick off an LLM turn on its own.
-				await ctx.sendMessage(
+				//
+				// `pi`, not `ctx`: sendMessage lives on ExtensionAPI, not on
+				// ExtensionCommandContext. `ctx.sendMessage` threw "is not a function"
+				// at runtime for every `/brain recall` and `/brain list` — the two
+				// command paths a person invokes by hand. Caught 2026-08-25 by the
+				// typecheck added that day, having gone unnoticed with no typecheck.
+				await pi.sendMessage(
 					{ customType: "brain", content: text, display: true },
 					{ deliverAs: "nextTurn" },
 				);

@@ -31,10 +31,10 @@ The moving parts fit together as follows:
     Ollama frontends, or Claude Code when setup ran with `--with-mcp`.
   - Every save and checkpoint is stamped with the originating machine
     (`vault.machine_name()`: `BRAIN_MACHINE` override → macOS LocalHostName → hostname).
-    Checkpoints carry it in the *filename* (`2026-08-06-1249-joes-macbook-pro-3.md`) so
-    uncommitted work is traceable to the machine it lives on; recall/list render it as
-    `[type @ machine]`. Nothing parses checkpoint filenames (consumers sort by mtime) —
-    keep it that way.
+    Checkpoints carry it in the *filename* (`2026-08-06-124907-joes-macbook-pro-3.md`,
+    plus an `_02` disambiguator on a same-second collision) so uncommitted work is
+    traceable to the machine it lives on; recall/list render it as `[type @ machine]`.
+    Nothing parses checkpoint filenames (consumers sort by mtime) — keep it that way.
   - Feedback can be **project-scoped** (2026-08-06): `brain save feedback --project X` lands in
     `projects/X/feedback/` and preloads only in that project's sessions (and its subagents —
     the slim bundle includes project feedback but not overview/checkpoint). Global feedback
@@ -176,11 +176,29 @@ The moving parts fit together as follows:
   - `AGENTS-brain.md` — the Brain snippet for AGENTS.md-style agents (pi). Manually rendered by
     the user per `PI-SETUP.md` (setup scripts don't know about pi installs).
 
+- **`brain_settings_merge.py`** (repo root) — the ONE settings.json merge/prune, shared by
+  all four installers and all four uninstallers (2026-08-25). `brain-setup.py` and
+  `brain-uninstall.py` import it; the three shell/PowerShell scripts invoke it as a script
+  (`merge`/`prune` subcommands). Stdlib only and runnable by a bare system `python3`, because
+  the uninstallers may run after the venv is gone. It owns four things that must never diverge
+  again: (1) Brain hook groups are **appended** to each event's surviving groups, never assigned
+  over them; (2) Brain-owned entries are pruned first, so a re-run is idempotent; (3) an
+  unparseable `settings.json` is **refused**, never rewritten; (4) mutations are backed up
+  (`settings.json.brain-backup-<ts>`) and written atomically. The ownership predicate
+  (`is_brain_command`: `BRAIN_VAULT=`, `brain-launch`, or the repo `hooks/` dir, either slash
+  direction) is deliberately shared across the install/uninstall boundary — a narrower predicate
+  in the uninstaller strands orphan hooks, a wider one deletes a third-party hook.
+  `_assert_block_is_ownable()` fails the install if a template command isn't detectable as ours,
+  because such a command could never be pruned and would duplicate on every run.
+
 - **`setup-mac.sh`** — idempotent bootstrap. Installs brain-mcp into `mcp-server/.venv`, writes the
   global CLAUDE.md and brain skill (with `__BRAIN_CMD__` substituted; the skill frontmatter
-  pre-approves the brain CLI via `allowed-tools`), merges a `permissions.allow` rule
-  (`Bash(<BRAIN_CMD>:*)`) so proactive CLI saves never hit permission prompts, and merges the hooks block
-  into settings.json. Takes `<claude-config-dir> <vault-path> [--with-mcp]`. **MCP registration is
+  pre-approves the brain CLI via `allowed-tools`), merges one `permissions.allow` rule
+  **per agent subcommand** (`Bash(<BRAIN_CMD> recall:*)`, `… save:*`, …) so proactive CLI
+  saves never hit permission prompts without pre-approving the whole CLI, and merges the hooks block
+  into settings.json **via `brain_settings_merge.py`** — it no longer carries its own copy of that
+  logic, and a refused merge exits 3 after printing which steps did land. Takes
+  `<claude-config-dir> <vault-path> [--with-mcp]`. **MCP registration is
   opt-in**: only `--with-mcp` runs `claude mcp add`; without it, any existing user-scope `brain`
   registration is *removed* so the CLI-first token saving actually lands.
 
@@ -189,16 +207,22 @@ The moving parts fit together as follows:
   don't work on Windows): `<config-dir>\brain-launch.cmd` for hook commands in `settings.json`
   (`<launch.cmd> <hook-name>`, no JSON quote-escaping) and `<config-dir>\brain.cmd` — the CLI
   wrapper substituted for `__BRAIN_CMD__`, which bakes in `BRAIN_VAULT` and forwards args to the
-  venv's `brain.exe`. Uses `templates/settings.hooks.win.json` as the template. Python hooks and
-  server/CLI code are unchanged between platforms.
+  venv's `brain.exe`. Uses `templates/settings.hooks.win.json` as the template, merged by
+  `brain_settings_merge.py` — whose call site needs its own try/catch, because the merge writes
+  its refusal diagnosis to stderr and PS 5.1 turns any native stderr into a terminating
+  `NativeCommandError`. Python hooks and server/CLI code are unchanged between platforms.
 
 - **`brain-setup.py`** — the interactive cross-platform wizard, and **the installer most
   installs actually run**. Same end state as the shell/PowerShell scripts: venv, non-editable
   install, global CLAUDE.md, brain skill, hooks block, `permissions.allow` rule, `--with-mcp`
-  opt-in. Runs interactively by default; `--non-interactive --vault P --claude-dir D` for
+  opt-in (the settings.json half now comes from `brain_settings_merge.py`, and a refused merge
+  makes `main()` exit 1 after reporting the partial install). Runs interactively by default;
+  `--non-interactive --vault P --claude-dir D` for
   scripted use. Because it is a fourth hand-maintained copy of the same logic it is the one
   most likely to be missed — the permission rule reached `setup-mac.sh` on 2026-07-28 and only
-  got here on 2026-08-24. `mcp-server/tests/test_installer_parity.py` exists to catch that.
+  got here on 2026-08-24. `mcp-server/tests/test_installer_parity.py` exists to catch that;
+  `mcp-server/tests/test_settings_merge.py` tests the shared merge's actual behaviour, which no
+  amount of text parity can.
 
 - **`setup-linux.sh`** — a fork of `setup-mac.sh` for Debian Trixie / Raspberry Pi OS /
   Ubuntu 22.04. Adds a `find_python()` that rejects anything below 3.11 (Ubuntu 22.04 ships
@@ -206,11 +230,15 @@ The moving parts fit together as follows:
   behaviour; when you touch one, touch both.
 
 - **`brain-uninstall.py` / `uninstall-mac.sh` / `uninstall-linux.sh` / `uninstall-windows.ps1`** —
-  the inverses. Each prunes Brain-owned hook entries *and* the `Bash(<brain_cmd>:*)` allow rule
-  from `settings.json`, deletes the generated wrappers, removes the MCP registration, and
+  the inverses. Each prunes Brain-owned hook entries *and* every Brain `permissions.allow` rule
+  from `settings.json` — through `brain_settings_merge.py prune`, the same module and therefore
+  the same ownership predicate the installers use — deletes the generated wrappers, removes the
+  MCP registration, and
   deletes `CLAUDE.md`/the skill only when they carry the managed-by marker. Install and
   uninstall must stay symmetric: until 2026-08-24 the allow rule was written by the installers
   and removed by none of them, leaving a standing unprompted Bash approval for a deleted path.
+  Uninstall keeps its own (safer) policy on unparseable settings: leave it alone and report,
+  never fail.
 
 - **`brain-compact`** (`brain_mcp/compact.py`) — rolls old session checkpoints into
   `sessions/daily/` (7-30 days), then `sessions/weekly/` (30-365), then
@@ -481,6 +509,106 @@ BRAIN_VAULT=~/Vaults/Ai-Brain \
   indexing cost; the cost is a permanent loss of semantic reach over old checkpoints. Turn it
   on deliberately, for a vault where index size actually hurts.
 
+- **The installers must APPEND hook groups, never assign the event — and must refuse an
+  unparseable `settings.json` rather than replace it (both fixed 2026-08-25).** Every installer
+  pruned its own stale entries and then did `settings["hooks"][event] = definition`, which threw
+  away every *third-party* group registered for that event: a user with their own SessionStart,
+  Stop or PreCompact hook silently lost it to a Brain install, and `brain-setup.py` — the
+  installer most installs actually run — didn't even prune, it just assigned. Worse, all four
+  caught `json.JSONDecodeError`, treated the file as `{}`, and wrote that back: one stray comma
+  in `settings.json` and installing a memory system deleted the user's entire Claude
+  configuration, silently, while reporting success.
+
+  Both bugs existed in five places at once (`brain-setup.py` plus an embedded Python heredoc in
+  each of the three shell/PowerShell scripts), which is this repo's signature failure mode. The
+  fix is therefore structural: `brain_settings_merge.py` at the repo root is now the only
+  implementation, imported by the two Python entry points and invoked as a script by the other
+  six. **Do not re-inline it.** `test_installer_parity.py` asserts every installer and uninstaller
+  routes through it and that the old fragments (`settings["hooks"][event] = definition`,
+  `settings = {}`, `hooks_block`) never come back; `test_settings_merge.py` asserts the behaviour.
+
+  Three details are load-bearing. **Append + prune-first together** are what make re-running
+  idempotent *and* non-destructive — either alone is a bug (assign loses hooks, append without
+  prune duplicates ours every run), which is why the tests always merge twice. **The refusal is
+  scoped**: a missing or whitespace-only file still means `{}` (the installers used to create
+  exactly that themselves, and there is nothing to lose), but a JSON list, string, `null`, or
+  truncated object is a hard stop with a nonzero exit and a summary of which steps *did* land —
+  a partial install the user knows about beats a complete config the user has lost. And **the
+  write is a same-dir temp file + `os.replace`, with a timestamped backup first** — but only
+  when the content actually changes, or every re-run of setup litters the config dir with
+  identical copies of the same file.
+
+- **A `project` value is a directory basename and nothing else — build every project
+  path with `vault.project_dir()` (added 2026-08-25).** `project` was joined straight
+  into a path at five sites in `vault.py` (`write_memory`, `list_memories`,
+  `session_start_bundle`, `ensure_project_overview_stub`, `write_checkpoint`) plus
+  `doctor` and `brain-compact`, and it arrives from the CLI, the MCP server (i.e. from
+  a model), the hooks' payload `cwd`, and the pi extension. So `..`, `../../x`,
+  `/etc/x`, `C:\Windows` or `\\server\share` wrote outside the vault and made reads
+  enumerate arbitrary markdown on the disk — `session_start_bundle("../../stash")`
+  would preload someone else's `feedback/*.md` into the model's system prompt.
+
+  `vault.validate_project_name()` is THE predicate, in the same sense as
+  `is_memory_path()`, and `vault.project_dir(project, *parts, root=…)` is the only way
+  to turn one into a path; `vault.projects_root()` is the only way to enumerate the
+  directory. The rule is a **blacklist, not a whitelist**: a project name is a
+  basename off the user's own disk, so letters of any script, digits, spaces, dots,
+  dashes, underscores and ordinary punctuation must all survive — a tidy
+  `[a-z0-9-]` whitelist would silently orphan real project directories, which is a
+  worse outcome than the traversal. Rejected: empty; leading/trailing whitespace (a
+  Windows directory silently loses it, so the created dir would not carry the name we
+  validated); `.` / `..` / dots-only / a trailing dot; the characters
+  `/ \ < > : " | ? *` (which alone covers every separator, `C:foo`, UNC, and NTFS
+  alternate data streams); control characters; the Windows device names `CON PRN AUX
+  NUL COM1-9 LPT1-9` — the vault syncs to Windows, so a name only macOS accepts is a
+  project that cannot exist on half the machines; and anything over
+  `PROJECT_NAME_MAX_LEN` (96, chosen so the deepest path this appears in —
+  `<vault>/Brain/projects/<name>/sessions/<stamp>-<machine>_NN.md` — stays inside
+  Windows' 260-char MAX_PATH; the longest real name in the vault is 27). `project_dir`
+  additionally resolves the result and refuses anything not under the resolved
+  `Brain/projects/`, which is what catches a *symlinked* project directory.
+
+  Two boundary rules matter as much as the predicate. **`vault.project_basename()`
+  sanitizes and returns None; it never raises** — it feeds the SessionStart hook, and a
+  hook that raises drops the entire preload, so losing one session's project scope
+  beats losing every behavioural rule. `hooks/_common.project_basename()` delegates to
+  it rather than keeping its own `Path(cwd).name`. And **`doctor.check()` downgrades an
+  invalid project to a `PROJECT_NAME_INVALID` warn and continues unscoped**, for the
+  same reason. The CLI reports the rule with no class name and no traceback (exit 2);
+  the MCP server returns an error *result*, because a raise out of `call_tool` kills the
+  stdio loop and takes the session's whole memory with it.
+  `tests/test_project_path_safety.py` fails the build if any module under `brain_mcp/`
+  or `hooks/` joins a project value under `"projects"` itself — that invariant, not the
+  input battery, is the test that matters here.
+
+- **Checkpoint filenames must be claimed with `O_EXCL`, not composed and hoped for
+  (fixed 2026-08-25).** `write_checkpoint` named files `<YYYY-MM-DD-HHMM>-<machine>.md`
+  — minute precision — so two checkpoints for the same project on the same machine
+  within one minute were the same path and the second silently replaced the first.
+  PreCompact firing and SessionEnd firing seconds later is the ordinary case, not a
+  corner case, and the checkpoint that captured the *most* context was the one
+  destroyed. Seconds in the stamp is not the fix on its own: those two are separate
+  processes, so any exists-then-write still races. `_reserve_checkpoint_path()` claims
+  the name with `os.open(..., O_CREAT | O_EXCL)` and walks `_02`, `_03`, … on
+  collision.
+
+  The disambiguator is introduced by `_`, deliberately: `_` (0x5F) sorts after `.`
+  (0x2E), so `…-host.md` still precedes `…-host_02.md`, whereas the obvious `-02`
+  (0x2D) sorted the *second* checkpoint of a second ahead of the first and broke the
+  string ordering the scheme exists to preserve. It is zero-padded for the same reason.
+  Legacy minute-precision names still sort correctly against the new ones. The
+  reservation is a real empty `.md`, so a failed write unlinks it — left behind it
+  would be the newest file in `sessions/` and therefore the preload's latest-session
+  slot, i.e. a contentless "most recent checkpoint".
+
+  Claiming the destination also makes `_atomic_write`'s temp name unique, which was a
+  live bug one level down: the temp was a fixed `<name>.md.tmp`, so two processes
+  writing the *same* memory interleaved their bytes into one temp file and then both
+  renamed it over the real note. Temp names now carry pid + a process-local counter,
+  and still must not end in `.md` (vault globs, the embed index and Obsidian Sync all
+  key on that). `transcript._save_state` went through `_atomic_write` for the same
+  reason.
+
 - **Frontmatter is machine-written YAML — build it with `vault._frontmatter()` and write with
   `vault._atomic_write()`, never f-strings + `write_text` (fixed 2026-07-29, Windows
   incident).** Three failure modes were live at once: (1) an interpolated title or
@@ -641,13 +769,67 @@ BRAIN_VAULT=~/Vaults/Ai-Brain \
   index. `brain-setup.py`'s `default_vault()` prefers `~/Vaults/Ai-Brain` and only falls back
   to the legacy `~/Documents/Vaults/Ai-Brain` when a vault already exists there.
 
+- **The pre-approved CLI invocation is an *unattended* one — keep the file-import
+  options off it (2026-08-25).** The installers put the Brain command in
+  `permissions.allow` so proactive saves never raise a prompt; an unanswered prompt is
+  indistinguishable from the model deciding not to save, which is the failure the Brain
+  exists to prevent. But pre-approval means a prompt-injected model can run that command
+  with no human in the loop, and `brain save user notes --file ~/.ssh/id_rsa` copies the
+  file into the vault, where an ordinary `brain recall` hands it back and the SessionStart
+  preload may load it unasked. Demonstrated during the review: the Windows hosts file
+  landed in `Brain/user/` as a preloading "user memory".
+
+  **Narrowing the permission rule cannot fix this** — Claude Code's rules are *prefix*
+  matches, so `Bash(<cmd> save:*)` still matches `save --file <anything>`. The enforceable
+  boundary is `BRAIN_AGENT_SURFACE=1`, baked into the approved prefix itself (the generated
+  `brain.cmd` sets it on Windows; it leads the `BRAIN_CMD` env prefix on POSIX).
+  `cli._enforce_agent_surface` refuses `--file`, `--from-pi` and `--from-cherryd` under it
+  and exits 2. An invocation *without* the variable is simply not pre-approved, so it
+  prompts like any other command — which is why operators, timers and the pi extension
+  (which clears the variable explicitly, since `BRAIN_PI_CMD` may point at the wrapper)
+  keep the full CLI. Three things must stay in step or the boundary is decoration: all
+  four installers must bake the variable in, `SKILL.md`'s own `allowed-tools` must stay
+  narrowed (it is a *second* pre-approval door), and any new option that opens a
+  caller-supplied path must join `cli.RESTRICTED_OPTIONS` — `test_agent_surface.py`
+  asserts all three.
+
+  Still open, deliberately: memory *content* is preloaded verbatim into later sessions, so
+  an injected `--content` can plant standing instructions. Fixing that means fencing
+  preloaded memory as untrusted data across the bundle, both hooks, `brain_prep` and the pi
+  preload — a larger change than this one, tracked rather than bolted on here.
+
+- **`Path.resolve()` is not prefix-stable on Windows — normalize both operands before
+  comparing them (2026-08-25).** CPython asks the OS for the final path, which always comes
+  back in the `\?\` extended-length form, then strips that prefix only if it can re-resolve
+  the stripped form and get the same answer. When that verification call fails — the path is
+  being created or removed by another thread right then, or it exceeds MAX_PATH — the prefix
+  survives. So one operand can be `\?\C:\…` while the other is `C:\…`, and a containment
+  test between them rejects a perfectly legal path. Found when 40 concurrent
+  `write_checkpoint` calls for ONE ordinary project raised `ProjectNameError` and dropped the
+  checkpoints — in exactly the concurrent-checkpoint case the uniqueness work exists to make
+  safe. `vault._comparable()` strips the prefix (`\?\UNC\` too) and case-folds, and is used
+  by `project_dir`'s containment check and by `forget_memory`'s "inside the Brain dir" guard.
+  Both guards *fail safe*, so the symptom is an intermittent refusal, not a hole — which is
+  why it survived a green test suite. Any new resolved-path comparison goes through it.
+
 ## Testing
 
 ```bash
 # From mcp-server/ (pytest config lives in pyproject.toml)
 .venv/bin/python -m pytest -q
 # Windows: mcp-server\.venv\Scripts\python.exe -m pytest -q
+
+# The pi extension is TypeScript and pytest cannot see it. From the repo root:
+npm install        # once; node_modules is gitignored, package-lock.json is not
+npm run typecheck  # tsc --noEmit over pi/extensions/**
 ```
+
+`npm run typecheck` is not optional garnish — it earned itself on the first run
+(2026-08-25) by finding `ctx.sendMessage(...)` in the `/brain recall` and `/brain list`
+command handlers. `sendMessage` lives on `ExtensionAPI` (the `pi` argument), not on
+`ExtensionCommandContext`, so both paths threw "is not a function" for every by-hand
+invocation. Nothing else in the repo could have caught it: the extension is loaded by
+pi at runtime, so there is no import-time error and no Python test that reaches it.
 
 The suite runs against the **source tree**, not the installed copy — `pythonpath` in
 `[tool.pytest.ini_options]` puts `mcp-server/` and `hooks/` first. That is load-bearing: the

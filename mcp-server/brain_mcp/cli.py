@@ -37,6 +37,61 @@ from pathlib import Path
 from . import render, vault
 from ._console import force_utf8_stdio
 
+# ----------------------------------------------------------- the agent surface
+
+AGENT_SURFACE_ENV = "BRAIN_AGENT_SURFACE"
+
+# Options that make the CLI read an arbitrary path off the local disk, keyed by
+# argparse dest.
+#
+# The installers pre-approve the Brain command in `permissions.allow` so proactive
+# saves never raise a prompt — an unanswered prompt is indistinguishable from the
+# model deciding not to save, which is the failure the Brain exists to prevent. But
+# pre-approval means *unattended* invocation, and a prompt-injected model could then
+# run `brain save user notes --file ~/.ssh/id_rsa`: the CLI would copy that file into
+# the vault, where an ordinary `brain recall` hands it back, and the SessionStart
+# preload may even load it unasked. That is a local-file exfiltration primitive
+# reachable with no human in the loop.
+#
+# So the pre-approved invocation carries BRAIN_AGENT_SURFACE=1 (baked into the
+# generated brain.cmd on Windows, into the BRAIN_CMD env prefix on POSIX) and these
+# options are refused under it. Everything a model legitimately needs — recall, save
+# from --content or stdin, list, forget, inline checkpoint, stats, doctor — is
+# untouched. Operators, timers and the pi extension invoke the venv's `brain`
+# directly, without the variable, and keep the full surface.
+RESTRICTED_OPTIONS = {
+    "file": "--file/-f",
+    "from_cherryd": "--from-cherryd",
+    "from_pi": "--from-pi",
+}
+
+
+def on_agent_surface() -> bool:
+    """True when this process was launched through the pre-approved invocation."""
+    return os.environ.get(AGENT_SURFACE_ENV, "").strip() not in ("", "0")
+
+
+def _enforce_agent_surface(args: argparse.Namespace) -> None:
+    used = sorted(
+        flag for dest, flag in RESTRICTED_OPTIONS.items() if getattr(args, dest, None)
+    )
+    if not used or not on_agent_surface():
+        return
+    # Exit 2, like a bad --project: this is rejected input, not a crash. Deliberately
+    # no argv[0] echo — under `python -c` it renders as "-c" and the hint reads as
+    # nonsense at exactly the moment someone needs it.
+    print(
+        f"error: {', '.join(used)} is not available on the agent surface.\n"
+        f"       This invocation is pre-approved to run unattended, so it may not\n"
+        f"       read arbitrary local files into the vault. Pass the body inline\n"
+        f"       with --content / --summary, or pipe it via stdin.\n"
+        f"       Operators: run the venv's `brain` executable directly, with\n"
+        f"       BRAIN_VAULT set and {AGENT_SURFACE_ENV} unset — only the\n"
+        f"       installer-generated wrapper sets it.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
 
 def _read_body(args: argparse.Namespace, flag_value: str | None) -> str:
     if flag_value is not None:
@@ -329,10 +384,20 @@ def main(argv: list[str] | None = None) -> None:
     # arrive through a heredoc.
     force_utf8_stdio(include_stdin=True)
     args = build_parser().parse_args(argv)
+    # Enforced here, once, rather than in each handler: a new file-reading option
+    # added to any subcommand is covered the moment its dest joins RESTRICTED_OPTIONS,
+    # and there is no handler left that could forget to ask.
+    _enforce_agent_surface(args)
     try:
         sys.exit(args.func(args))
     except SystemExit:
         raise
+    except vault.ProjectNameError as e:
+        # A bad --project is user (or model) input, not a crash: report the rule
+        # that was broken, with no exception class name and no traceback, so the
+        # caller can fix the argument instead of filing a bug.
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(2)
     except Exception as e:
         print(f"error: {type(e).__name__}: {e}", file=sys.stderr)
         sys.exit(1)

@@ -252,6 +252,27 @@ Don't build this speculatively — only if the user asks for it.
 `Brain/activity.md` grows unbounded (one line per assistant turn). Add a monthly log-rotation
 helper that moves lines older than 90 days into `Brain/activity-archive/YYYY-MM.md`. Low urgency.
 
+### 3F — Treat preloaded memory as untrusted data
+
+**Deferred deliberately on 2026-08-25**, during the code-review remediation that closed the
+CLI's file-import hole (see the agent-surface gotcha in `CLAUDE.md`).
+
+Memory *content* is preloaded verbatim into every later session's system prompt. A
+prompt-injected agent that reaches `brain save --content …` — still allowed, and rightly so,
+since inline saves are the whole point — can therefore plant standing instructions that load
+unasked into future sessions and subagents. The file-import gate stops exfiltration *in*; it
+does nothing about influence *out*.
+
+A real fix means marking preloaded memory as data rather than instructions, consistently
+across `vault.preload_text` / `session_start_bundle`, `hooks/session_start.py`,
+`hooks/subagent_start.py`, `brain_prep.py` and the pi extension's preload — plus a fencing
+convention the model actually honours. That is a wider change than the five review items put
+together, and it lands in the preload path that was reworked on 2026-08-25 (two-tier
+`**Why:**` deferral), so it wants its own pass rather than being bolted onto that one.
+
+Worth scoping when someone next touches the bundle. Not urgent while the user is the only
+writer to the vault.
+
 ---
 
 ## Quick reference for "what do I do next"

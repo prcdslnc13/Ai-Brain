@@ -26,6 +26,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 POSIX_INSTALLERS = ["setup-mac.sh", "setup-linux.sh"]
 ALL_INSTALLERS = ["brain-setup.py", "setup-mac.sh", "setup-linux.sh", "setup-windows.ps1"]
+ALL_UNINSTALLERS = [
+    "brain-uninstall.py", "uninstall-mac.sh", "uninstall-linux.sh", "uninstall-windows.ps1",
+]
+SHARED_MERGE = "brain_settings_merge.py"
 
 
 def read(name: str) -> str:
@@ -37,36 +41,72 @@ def test_installer_exists(installer):
     assert (REPO_ROOT / installer).is_file(), f"{installer} is documented but missing"
 
 
-@pytest.mark.parametrize("installer", ALL_INSTALLERS)
-def test_every_installer_writes_the_permission_rule(installer):
+@pytest.mark.parametrize("script", ALL_INSTALLERS + ALL_UNINSTALLERS)
+def test_every_installer_routes_through_the_shared_merge_module(script):
+    """All eight settings.json writers must share one implementation.
+
+    Before 2026-08-25 the merge existed five times: once in `brain-setup.py` and once
+    as an embedded Python heredoc in each shell/PowerShell script. Both live bugs it
+    hid were "the fix landed at one of N sites" — hooks assigned over an event
+    (deleting the user's own hooks) and malformed JSON replaced with `{}`. Routing
+    every site through `brain_settings_merge.py` is what makes those unfixable in
+    only one place. Ownership detection has to be shared across the install/uninstall
+    boundary too: a narrower predicate in the uninstaller strands orphan hooks, a
+    wider one deletes a third-party hook.
+    """
+    src = read(script)
+    assert SHARED_MERGE in src or "brain_settings_merge" in src, (
+        f"{script} does not use {SHARED_MERGE} — its settings.json handling has "
+        f"forked from the other seven"
+    )
+
+
+@pytest.mark.parametrize("script", ALL_INSTALLERS + ALL_UNINSTALLERS)
+def test_no_installer_reimplements_the_merge(script):
+    """The fragments of the old inline implementations must not come back."""
+    src = read(script)
+    forbidden = {
+        'settings["hooks"][event] = definition':
+            "assigning over an event deletes third-party hooks for it",
+        "settings = {}":
+            "swallowing a parse error into an empty dict is how a malformed "
+            "settings.json got replaced wholesale; the shared module refuses instead",
+        "hooks_block":
+            "template rendering belongs to brain_settings_merge.render_hooks_template",
+    }
+    hits = [f"{needle!r} ({why})" for needle, why in forbidden.items() if needle in src]
+    assert not hits, f"{script} reimplements the shared merge: " + "; ".join(hits)
+
+
+def test_the_shared_module_writes_and_prunes_the_permission_rule():
     """Every installer must pre-approve the brain CLI in settings.json.
 
-    Without `permissions.allow -> Bash(<brain_cmd>:*)` the model's proactive saves
-    hit a permission prompt outside /brain skill turns, which defeats the whole
-    automatic-memory design — and does it invisibly, since an unanswered prompt
-    looks exactly like the model choosing not to save.
+    Without a `permissions.allow` entry the model's proactive saves hit a permission
+    prompt outside /brain skill turns, which defeats the whole automatic-memory
+    design — and does it invisibly, since an unanswered prompt looks exactly like the
+    model choosing not to save. The prune half is what keeps a re-run from
+    accumulating duplicates, and it must recognise every rule shape ever written: an
+    env-prefixed `.../bin/brain` on POSIX, a `brain.cmd` wrapper path on Windows, and
+    the current per-subcommand rules carrying the agent-surface gate.
     """
-    src = read(installer)
-    assert "permissions" in src, (
-        f"{installer} never touches settings['permissions'] — proactive brain saves "
-        f"will hit permission prompts on installs made with it"
+    src = read(SHARED_MERGE)
+    assert 'f"Bash({brain_cmd} {sub}:*)"' in src, "the shared module no longer writes the rules"
+    assert "AGENT_SUBCOMMANDS" in src, "the narrow per-subcommand rule list is gone"
+    assert "def prune_permission_rules" in src, "nothing removes the rules on uninstall"
+    assert re.search(r"is_brain_permission_rule", src)
+    assert "/bin/brain" in src and "brain.cmd" in src and "brain_agent_surface=" in src, (
+        "the prune predicate must match every rule shape we have ever written, or a "
+        "superseded rule becomes a standing approval that survives each re-install"
     )
-    assert "Bash(" in src, f"{installer} does not construct a Bash(...) permission rule"
 
 
 @pytest.mark.parametrize("installer", ALL_INSTALLERS)
-def test_permission_rule_merge_is_idempotent(installer):
-    """Re-running an installer must not append a duplicate allow rule.
-
-    Each installer prunes Brain-owned rules before re-adding. The prune predicate has
-    to match the rule that same installer writes, which is easy to get wrong because
-    the rule format differs per platform: an env-prefixed `.../bin/brain` on POSIX,
-    a `brain.cmd` wrapper path on Windows.
-    """
+def test_every_installer_passes_the_brain_command(installer):
+    """Routing through the module is only useful if the rule's value is supplied."""
     src = read(installer)
-    assert re.search(r"for r in allow", src), (
-        f"{installer} appends a permission rule without pruning prior Brain-owned "
-        f"rules — re-running it would accumulate duplicates"
+    assert "--brain-cmd" in src or "brain_cmd=" in src, (
+        f"{installer} calls the shared merge without a brain command, so no "
+        f"permission rule is written and proactive saves will prompt"
     )
 
 
@@ -82,7 +122,7 @@ def test_posix_installers_stay_in_sync(installer):
         ("brain skill install", "skills/brain"),
         ("embedder warm-up", "EmbedIndex"),
         ("package install", "pip"),
-        ("permission rule", "permissions"),
+        ("shared settings merge", SHARED_MERGE),
     ]
     missing = [label for label, needle in required if needle not in src]
     assert not missing, f"{installer} is missing: {', '.join(missing)}"
