@@ -321,7 +321,49 @@ BRAIN_VAULT=~/Vaults/Ai-Brain \
 
   An **empty** index is never "changed" — there are no vectors to invalidate — but it must
   still be *stamped*, or it looks permanently changed and every foreground sync bails out
-  at 0 and the index never fills. Keep the empty-index branch stamping.
+  at 0 and the index never fills. Keep the empty-index branch stamping — and note the stamp
+  is written by `_connect()`, not `sync()`, because `upsert()`/`delete()` populate an index
+  without ever calling `sync()`: a fresh vault whose first operation was `brain save` used to
+  end up with a one-row *unstamped* index, which is not empty, therefore reads as
+  "recipe changed" forever, so every later foreground sync returned 0 and the index never
+  filled (fixed 2026-08-24). The stamp requires an explicit `COUNT` of 0 — a read that
+  *errors* must never be mistaken for an empty index, or one transient failure blesses two
+  incompatible vector spaces as one.
+
+  A recipe bump also has to **spawn** the rebuild, and `backlog()` cannot see one: it
+  compares mtimes, and a recipe change touches no files. `spawn_background_reindex()`
+  therefore gates on `text_recipe_changed() or backlog_count() >= min_backlog`, checking the
+  recipe first because it is one sqlite read where `backlog_count()` stats the whole vault.
+  Without that clause nothing ever transitions the index on a CLI-first install — the
+  foreground sync refuses to, and there is no MCP warmup — so it serves superseded vectors
+  until a human notices `INDEX_RECIPE_STALE` and runs `brain reindex` by hand.
+
+- **Index rows are keyed on a vault-*relative*, forward-slashed path — keep the API boundary
+  absolute (2026-08-24).** Absolute keys tie the index to one filesystem location, so moving
+  the vault (`D:` → `C:`, a renamed home dir, a restore onto a differently-shaped machine)
+  made every stored path miss against `_indexable()`; `sync()` then deleted all ~900 rows as
+  "stale" and re-embedded the corpus from scratch — ~300s to reconstruct vectors that were
+  still perfectly valid. The rule is **relative inside the DB, absolute at every API surface**:
+  `EmbedIndex.query()` still returns absolute paths, because `vault.search_memories` resolves
+  and stats them and a relative string would silently resolve against the process cwd.
+  `_index_key()` / `_key_path()` / `_normalize_key()` are the only places that know the
+  format; `doctor`'s near-duplicate check reads the column directly and has its own
+  absolute-ize step. Upgrading is a **rename, not a re-embed** — `_migrate_path_format()`
+  runs from `_connect()`, rewrites the keys in one transaction (908 rows, ~1s), stamps
+  `path_format` in `meta`, and clears `_MATRIX_CACHE`, whose `(project, count, max mtime)`
+  key a pure rename would otherwise slip straight past.
+
+  **This is not what keeps the index machine-local, and a previous session's claim that it
+  was is wrong.** `.index` is a hidden directory that is not `.obsidian`, so Obsidian never
+  enumerates it and Obsidian Sync never propagates it. Verified 2026-08-24 against this
+  vault's own record: four machines across two OSes (`spanier-geekom-ai01` 196 memories,
+  `joes-macbook-pro-3` 119, `strixlappy` 7, `joes-macbook-air` 3) over four months, zero
+  conflict files, no thrash. A shared sqlite would have made a full ~900-file re-embed the
+  cost of *every* Mac↔Windows switch. So don't drop a platform to "fix" this, and adding a
+  Mac back is not blocked. What does remain true: machine-locality is a property of the sync
+  tool, not of the code. Dropbox, OneDrive, iCloud, Syncthing and git all copy dotfiles;
+  relative keys stop the path thrash there but a live sqlite file under two writers still
+  risks real corruption. Keep the vault on Obsidian Sync.
 
 - **Lexical-only hits get a reserved slot every 3rd position — don't "simplify" that back to
   appending them (fixed 2026-08-24).** `search_memories` used to append *all* ripgrep hits

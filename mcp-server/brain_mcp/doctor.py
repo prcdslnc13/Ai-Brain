@@ -782,10 +782,12 @@ def _check_near_duplicates(brain: Path) -> list[Finding]:
         try:
             for raw_path, blob in conn.execute("SELECT path, vector FROM embeddings"):
                 p = Path(raw_path)
+                if not p.is_absolute():
+                    p = brain / p  # rows are keyed vault-relative since 2026-08-24
                 try:
                     rel = p.relative_to(brain)
                 except ValueError:
-                    continue  # foreign-machine absolute path; index self-heals on sync
+                    continue  # legacy key from another vault location; sync() clears it
                 if not p.exists():
                     continue  # deleted since last index sync
                 if "sessions" in rel.parts or p.name in NON_MEMORY_NAMES or p.name.startswith("_"):

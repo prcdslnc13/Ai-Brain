@@ -137,6 +137,54 @@ def _index_path() -> Path:
     return idx_dir / "embeddings.sqlite"
 
 
+# Rows are keyed on a *vault-relative*, forward-slashed path. Absolute keys tie the
+# index to one filesystem location, so moving the vault — D: to C:, a renamed home
+# directory, a restore onto a differently-shaped machine — makes every stored path
+# miss against _indexable(), and sync() then deletes the whole corpus as "stale" and
+# re-embeds it from scratch: ~300s of work to reconstruct vectors that were still
+# perfectly valid. Forward slashes so a key is byte-identical whichever OS wrote it.
+#
+# Note this is *not* what keeps the index machine-local. `.index` is a hidden
+# directory that is not `.obsidian`, so Obsidian never enumerates it and Obsidian
+# Sync never propagates it — verified 2026-08-24 against a vault shared by four
+# machines across two OSes for four months with no thrash and no conflict files.
+# Relative keys are about surviving relocation, and they are only a *partial* guard
+# for a vault behind a sync tool that does copy dotfiles (Dropbox, OneDrive,
+# Syncthing, git): they stop the path thrash, but a live sqlite file replicated
+# under two writers still risks corruption. Don't put the vault behind one.
+PATH_FORMAT = "relative"
+
+
+def _index_key(path: Path, root: Path) -> str:
+    """DB key for `path`.
+
+    Falls back to the absolute string for a path outside the vault, which sync()
+    then clears as stale — the same treatment a deleted file gets, and the only
+    honest answer for a row this vault cannot resolve.
+    """
+    try:
+        return Path(path).relative_to(root).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _key_path(key: str, root: Path) -> Path:
+    """Absolute path for a DB key.
+
+    Tolerates legacy absolute keys, so an index that has not been migrated yet —
+    and every read-only consumer, which never migrates one — still resolves.
+    """
+    p = Path(key)
+    return p if p.is_absolute() else root / p
+
+
+def _normalize_key(key: str, root: Path) -> str:
+    """Re-key a possibly-legacy row the way _indexable() would key it, so a
+    read-only consumer can compare against a not-yet-migrated index without
+    reporting every file as missing."""
+    return _index_key(_key_path(key, root), root)
+
+
 # sqlite's default busy timeout is 5s, which a full reindex can outlast: a recall's
 # foreground sync and a background reindex both write, and on 2026-08-24 that collision
 # killed the reindex outright with "database is locked". Waiting is always better than
@@ -161,6 +209,7 @@ def _connect() -> sqlite3.Connection:
         (EMBED_MODEL, str(EMBED_DIM)),
     )
     _stamp_recipe_if_empty(conn)
+    _migrate_path_format(conn)
     return conn
 
 
@@ -313,6 +362,60 @@ def _stamp_recipe_if_empty(conn) -> None:
         return
 
 
+def _migrate_path_format(conn) -> None:
+    """One-time rewrite of absolute row keys to vault-relative ones.
+
+    A pure rename — the vectors themselves stay valid — so the upgrade costs one
+    transaction instead of the ~300s a full re-embed would. Runs from _connect(),
+    so every writing path migrates; read-only consumers cope via _key_path().
+
+    Rows that cannot be relativized are dropped rather than kept: they name a vault
+    location this machine does not have, so nothing can read them and sync() would
+    delete them as stale on its next pass regardless.
+    """
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key='path_format'").fetchone()
+    except sqlite3.DatabaseError:
+        return
+    if row and row[0] == PATH_FORMAT:
+        return
+
+    renames: list[tuple[str, str]] = []
+    drops: list[tuple[str]] = []
+    try:
+        root = vault.vault_root()
+        for (raw,) in conn.execute("SELECT path FROM embeddings").fetchall():
+            p = Path(raw)
+            if not p.is_absolute():
+                continue
+            try:
+                renames.append((p.relative_to(root).as_posix(), raw))
+            except ValueError:
+                drops.append((raw,))
+        if renames:
+            # OR REPLACE: a legacy absolute row and an already-relative row for the
+            # same file collide on the primary key, and the newer one should win.
+            conn.executemany(
+                "UPDATE OR REPLACE embeddings SET path = ? WHERE path = ?", renames
+            )
+        if drops:
+            conn.executemany("DELETE FROM embeddings WHERE path = ?", drops)
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES('path_format', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (PATH_FORMAT,),
+        )
+        conn.commit()
+    except (sqlite3.DatabaseError, OSError):
+        return
+
+    if renames or drops:
+        # _MATRIX_CACHE keys on (project, row count, max mtime) — a rename moves
+        # neither, so a matrix cached before the migration would go on serving
+        # pre-migration paths for the life of the process.
+        _MATRIX_CACHE.update(key=None, paths=None, mat=None)
+
+
 def _rebuild_for_recipe(conn) -> None:
     conn.execute("DELETE FROM embeddings")
     _stamp_recipe(conn)
@@ -400,7 +503,7 @@ def _indexable(root: Path) -> dict[str, float]:
             continue
         if cutoff is not None and mtime < cutoff and vault.is_session_path(p):
             continue
-        out[str(p)] = mtime
+        out[_index_key(p, root)] = mtime
     return out
 
 
@@ -609,18 +712,20 @@ class EmbedIndex:
                     conn.commit()
 
                 pending: list[tuple[str, float]] = []
-                for path, mtime in current.items():
-                    prior = existing.get(path)
+                for key, mtime in current.items():
+                    prior = existing.get(key)
                     if prior is None or mtime > prior + 1e-6:
-                        if foreground and vault.is_session_path(Path(path)):
+                        if foreground and vault.is_session_path(_key_path(key, root)):
                             continue
-                        pending.append((path, mtime))
+                        pending.append((key, mtime))
 
                 # Hand-written memories before checkpoints, newest first within each
                 # group. Only bites on unbounded passes (a foreground one has already
                 # dropped every checkpoint above), where it still matters: an
                 # interrupted reindex should have finished the memories first.
-                pending.sort(key=lambda pm: (vault.is_session_path(Path(pm[0])), -pm[1]))
+                pending.sort(
+                    key=lambda pm: (vault.is_session_path(_key_path(pm[0], root)), -pm[1])
+                )
 
                 done = 0
                 for i in range(0, len(pending), cls.SYNC_CHUNK):
@@ -628,9 +733,9 @@ class EmbedIndex:
                     if deadline is not None and done and time.monotonic() >= deadline:
                         break
                     batch: list[tuple[str, float, str]] = []
-                    for path, mtime in pending[i:i + cls.SYNC_CHUNK]:
+                    for key, mtime in pending[i:i + cls.SYNC_CHUNK]:
                         try:
-                            batch.append((path, mtime, embed_text(Path(path))))
+                            batch.append((key, mtime, embed_text(_key_path(key, root))))
                         except OSError:
                             continue
                     if not batch:
@@ -671,7 +776,10 @@ class EmbedIndex:
             )
             try:
                 for path, mtime in conn.execute("SELECT path, mtime FROM embeddings"):
-                    existing[path] = mtime
+                    # Normalize as we read: this connection is read-only and never
+                    # migrates, so without it a pre-migration index would report
+                    # every file missing and kick a pointless full reindex.
+                    existing[_normalize_key(path, root)] = mtime
             finally:
                 conn.close()
         except sqlite3.DatabaseError:
@@ -692,12 +800,13 @@ class EmbedIndex:
             vec = _EMBEDDER.embed_one(text)
         except (OSError, EmbedUnavailable):
             return
+        root = vault.vault_root()
         conn = _connect()
         try:
             conn.execute(
                 "INSERT INTO embeddings(path, mtime, vector) VALUES (?, ?, ?) "
                 "ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, vector=excluded.vector",
-                (str(path), mtime, _vec_to_blob(vec)),
+                (_index_key(Path(path), root), mtime, _vec_to_blob(vec)),
             )
             conn.commit()
         finally:
@@ -705,9 +814,13 @@ class EmbedIndex:
 
     @classmethod
     def delete(cls, path: Path) -> None:
+        root = vault.vault_root()
         conn = _connect()
         try:
-            conn.execute("DELETE FROM embeddings WHERE path = ?", (str(path),))
+            conn.execute(
+                "DELETE FROM embeddings WHERE path = ?",
+                (_index_key(Path(path), root),),
+            )
             conn.commit()
         finally:
             conn.close()
@@ -724,12 +837,17 @@ class EmbedIndex:
             if _MATRIX_CACHE["key"] == key and _MATRIX_CACHE["mat"] is not None:
                 return _MATRIX_CACHE["paths"], _MATRIX_CACHE["mat"]
 
+            # Relative inside the index, absolute at the API boundary: query()'s
+            # callers resolve and stat these, so a vault-relative string would
+            # silently resolve against the process cwd.
+            root = vault.vault_root()
             paths: list[str] = []
             vectors: list = []
-            for path, blob in conn.execute("SELECT path, vector FROM embeddings"):
-                if project_filter and not vault.path_in_project(Path(path), project_filter):
+            for key, blob in conn.execute("SELECT path, vector FROM embeddings"):
+                p = _key_path(key, root)
+                if project_filter and not vault.path_in_project(p, project_filter):
                     continue
-                paths.append(path)
+                paths.append(str(p))
                 vectors.append(_blob_to_vec(blob))
         finally:
             conn.close()
