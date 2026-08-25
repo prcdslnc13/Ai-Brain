@@ -755,7 +755,15 @@ def _check_memory_sizes(brain: Path) -> list[Finding]:
 STUB_ONLY_STALE_DAYS = 30
 NEAR_DUP_THRESHOLD_DEFAULT = 0.92
 NEAR_DUP_MAX_REPORTED = 5
-NON_MEMORY_NAMES = {"_index.md", "activity.md", "README.md"}
+def _non_memory_names() -> frozenset:
+    """Vault bookkeeping filenames, single-sourced from vault.EXCLUDE_FILES.
+
+    This used to be a third independent list. It was the only one that knew about
+    README.md, so `brain list` returned the vault's README as a memory while this
+    check correctly ignored it.
+    """
+    from . import vault
+    return vault.EXCLUDE_FILES
 
 
 def _check_shadowed_overviews(brain: Path) -> list[Finding]:
@@ -874,7 +882,7 @@ def _check_near_duplicates(brain: Path) -> list[Finding]:
                     continue  # legacy key from another vault location; sync() clears it
                 if not p.exists():
                     continue  # deleted since last index sync
-                if "sessions" in rel.parts or p.name in NON_MEMORY_NAMES or p.name.startswith("_"):
+                if "sessions" in rel.parts or not vault.is_memory_path(p, brain):
                     continue
                 if p.name == "overview.md" and vault.is_overview_stub(p):
                     continue  # stubs are boilerplate — they all match each other

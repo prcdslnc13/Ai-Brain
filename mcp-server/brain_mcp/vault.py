@@ -275,10 +275,7 @@ def list_memories(mtype: str | None = None, project: str | None = None) -> list[
             proj_root = proj_root / project
         if proj_root.exists():
             candidates += list(proj_root.rglob("*.md"))
-    candidates = [
-        p for p in candidates
-        if "_setup" not in p.parts and not p.name.startswith("_")
-    ]
+    candidates = [p for p in candidates if is_memory_path(p, root)]
     if project:
         candidates = [p for p in candidates if path_in_project(p, project)]
     return [Memory.from_file(p) for p in sorted(set(candidates))]
@@ -667,10 +664,36 @@ def write_checkpoint(project: str, summary: str) -> Path:
 
 EXCLUDE_DIRS = frozenset({"archive", "_setup", ".index"})
 # Bookkeeping files that live at the Brain/ root and are not memories: the Stop-hook
-# audit log and the vault's table of contents. They were being embedded *and* returned
-# as recall hits — `activity.md` surfaced as the #3 result for "windows setup" once
-# lexical hits stopped sorting last (2026-08-24).
-EXCLUDE_FILES = frozenset({"activity.md", "_index.md"})
+# audit log, the vault's table of contents, and the vault's own README. They were
+# being embedded *and* returned as recall hits — `activity.md` surfaced as the #3
+# result for "windows setup" once lexical hits stopped sorting last (2026-08-24).
+EXCLUDE_FILES = frozenset({"activity.md", "_index.md", "README.md"})
+
+
+def is_memory_path(path: Path, root: Path) -> bool:
+    """True when `path` is an actual memory rather than vault bookkeeping.
+
+    THE single predicate for "is this a memory". It exists because there were three
+    disagreeing answers: `iter_indexable_md` applied EXCLUDE_DIRS + EXCLUDE_FILES,
+    `list_memories` applied its own `_setup`/leading-underscore filter, and
+    `doctor.NON_MEMORY_NAMES` kept a third list that alone knew about README.md. The
+    visible symptom was `brain list` returning `activity.md` — a 224 KB audit log —
+    and `README.md` as memories of type `unknown`, while both were correctly absent
+    from recall and from the index.
+
+    Anything that enumerates the vault must route through here, or the lists drift
+    apart again and the three callers disagree about what the vault contains.
+    """
+    try:
+        parts = Path(path).relative_to(root).parts
+    except ValueError:
+        return False
+    if not parts:
+        return False
+    if any(part in EXCLUDE_DIRS for part in parts):
+        return False
+    name = parts[-1]
+    return name not in EXCLUDE_FILES and not name.startswith("_")
 
 
 def iter_indexable_md(root: Path):
@@ -678,11 +701,8 @@ def iter_indexable_md(root: Path):
     machine-local index, archive rollups, and setup scaffolding. Shared by
     stats(), the embed index sync, and anything else that enumerates the vault."""
     for p in root.rglob("*.md"):
-        if any(part in EXCLUDE_DIRS for part in p.relative_to(root).parts):
-            continue
-        if p.name in EXCLUDE_FILES:
-            continue
-        yield p
+        if is_memory_path(p, root):
+            yield p
 
 
 def is_session_path(path: Path) -> bool:

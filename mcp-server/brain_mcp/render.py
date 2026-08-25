@@ -170,11 +170,63 @@ def render_recall(payload: dict) -> str:
     return "\n".join(lines)
 
 
+def max_list_items() -> int:
+    return _env_int("BRAIN_LIST_MAX_ITEMS", 300, 10, 5000)
+
+
+def list_description_chars() -> int:
+    return _env_int("BRAIN_LIST_DESC_CHARS", 100, 40, 1000)
+
+
+def max_list_total_chars() -> int:
+    return _env_int("BRAIN_LIST_MAX_TOTAL_CHARS", 24_000, 1000, 500_000)
+
+
+def _round_robin_by_type(memories: list) -> list:
+    """Order memories so truncation takes evenly from every type.
+
+    `list_memories` returns path order, which on this vault means `feedback/`,
+    `projects/`, `references/`, `user/`. Truncating that order in place dropped
+    *every* user and reference memory while the 224-entry project bucket was still
+    being emitted — losing a whole category is much worse than losing a slice of
+    each, especially as user and feedback are the two the model's behaviour depends
+    on. Within a type the original order is preserved.
+    """
+    groups: dict[str, list] = {}
+    for m in memories:
+        groups.setdefault(m.type, []).append(m)
+    ordered: list = []
+    index = 0
+    while len(ordered) < len(memories):
+        added = False
+        for bucket in groups.values():
+            if index < len(bucket):
+                ordered.append(bucket[index])
+                added = True
+        if not added:
+            break
+        index += 1
+    return ordered
+
+
 def list_payload(
     mtype: str | None = None,
     project: str | None = None,
     include_sessions: bool = False,
 ) -> dict:
+    """Enumerate memories, bounded the way recall is.
+
+    `list` was the one path through this module with no cap at all, which quietly
+    reintroduced the failure the module exists to prevent. Measured 2026-08-24
+    against a 917-file vault: a default `brain list` rendered 57 KB (~14k tokens) and
+    `--include-sessions` rendered 140 KB (~35k tokens) — and that second number grows
+    by one checkpoint per session, forever. The 2026-07-11 blowup that motivated
+    `render.py` was the same shape, just through `recall`.
+
+    Truncating an enumeration is genuinely lossy in a way truncating a preview is
+    not, so the cap is generous and the omission is always reported with the filters
+    that would narrow it.
+    """
     memories = vault.list_memories(mtype=mtype, project=project)
     sessions_excluded = 0
     if not include_sessions:
@@ -185,27 +237,57 @@ def list_payload(
             else:
                 kept.append(m)
         memories = kept
+
     root_parent = vault.vault_root().parent
+    item_cap = max_list_items()
+    total_budget = max_list_total_chars()
+    desc_cap = list_description_chars()
+
+    entries: list[dict] = []
+    consumed = 0
+    for m in _round_robin_by_type(memories):
+        if len(entries) >= item_cap:
+            break
+        desc, _ = _clip(m.description, desc_cap)
+        rel = str(m.path.relative_to(root_parent))
+        # Char budget is the backstop for a corpus of few but enormous descriptions;
+        # `and entries` keeps a pathological first item from yielding an empty list.
+        if consumed + len(rel) + len(desc) > total_budget and entries:
+            break
+        consumed += len(rel) + len(desc)
+        entries.append({
+            "path": rel,
+            "type": m.type,
+            "machine": m.machine,
+            "description": desc,
+        })
+
     return {
-        "count": len(memories),
+        "count": len(entries),
+        "total_matches": len(memories),
+        "omitted": len(memories) - len(entries),
         "sessions_excluded": sessions_excluded,
-        "memories": [
-            {
-                "path": str(m.path.relative_to(root_parent)),
-                "type": m.type,
-                "machine": m.machine,
-                "description": m.description,
-            }
-            for m in memories
-        ],
+        "memories": entries,
     }
 
 
 def render_list(payload: dict) -> str:
     """Render a list payload as one markdown line per memory — no bodies."""
-    lines = [f"{payload['count']} memories"]
+    total = payload.get("total_matches", payload["count"])
+    header = (
+        f"{payload['count']} memories"
+        if payload["count"] == total
+        else f"{payload['count']} of {total} memories"
+    )
+    notes: list[str] = []
     if payload["sessions_excluded"]:
-        lines[0] += f" ({payload['sessions_excluded']} session checkpoint(s) excluded)"
+        notes.append(f"{payload['sessions_excluded']} session checkpoint(s) excluded")
+    if payload.get("omitted"):
+        notes.append(
+            f"{payload['omitted']} omitted at the payload cap — narrow with "
+            "--type/--project, or raise BRAIN_LIST_MAX_ITEMS"
+        )
+    lines = [header + (f" ({'; '.join(notes)})" if notes else "")]
     by_type: dict[str, list[dict]] = {}
     for m in payload["memories"]:
         by_type.setdefault(m["type"], []).append(m)
