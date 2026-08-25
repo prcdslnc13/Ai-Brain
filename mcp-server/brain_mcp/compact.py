@@ -185,8 +185,15 @@ def _compact_project(project_dir: Path, archive_root: Path, dry_run: bool) -> Co
     aging_raw = [p for p in raw if (now - p.stat().st_mtime) >= DAILY_AGE_MIN.total_seconds()]
     by_day = _bucket_by_day(aging_raw)
     for day, files in by_day.items():
-        if len(files) < 2:
-            continue
+        # No minimum bucket size. A day with one checkpoint is exactly as aged as a
+        # day with five, and the point of a rollup is not deduplication -- it is
+        # moving the file out of the non-recursively-globbed top level so it stops
+        # being a preload candidate and stops growing that directory. A `len < 2`
+        # guard meant a singleton day stayed raw forever, however old; ~37 files in
+        # the maintainer's vault were in that state (2026-08-25). The weekly stage
+        # never had the guard, so this also makes the two stages agree, and it lets
+        # a lone later checkpoint for an already-rolled-up day merge into the
+        # existing rollup instead of being stranded beside it.
         target = sessions / "daily" / f"{day}.md"
         added = _concat(target, files, dry_run, project, "daily")
         if added:

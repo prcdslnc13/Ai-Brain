@@ -207,22 +207,81 @@ def test_appending_to_an_existing_rollup_keeps_one_header(vault_dir: Path) -> No
     assert "## 2026-01-05-0900.md" in text, "the original sources survive the append"
 
 
-def test_a_lone_checkpoint_for_a_day_is_left_raw(vault_dir: Path) -> None:
-    """Pinning existing behaviour, not endorsing it.
+def test_a_lone_checkpoint_for_a_day_still_rolls_up(vault_dir: Path) -> None:
+    """A day with one checkpoint compacts like any other.
 
-    `_compact_project` skips any day bucket with fewer than two files, so a day
-    that only ever had one checkpoint keeps that file in `sessions/*.md` -- and
-    therefore preload-visible -- indefinitely, however old it gets. Anything that
-    changes the `len(files) < 2` guard should have to change this test on purpose.
+    `_compact_project` used to skip any day bucket with fewer than two files, so a
+    singleton day stayed in `sessions/*.md` -- and therefore preload-visible --
+    forever, however old it got. Rolling up is not deduplication; it is getting the
+    file out of the non-recursively-globbed top level.
     """
     proj = vault_dir / "projects" / "demo"
     lone = _aged_checkpoint(proj / "sessions", "2026-01-05-0900", "demo", age_days=400)
 
     counts = _compact(vault_dir, proj)
 
+    assert counts["raw_to_daily"] == 1
+    assert not lone.exists(), "the source must be consumed, not duplicated"
+    rollups = _rollups(proj)
+    assert len(rollups) == 1
+    assert _frontmatter_of(rollups[0])["type"] == "session"
+    assert "## 2026-01-05-0900.md" in rollups[0].read_text(encoding="utf-8")
+
+
+def test_nothing_aged_is_left_at_the_top_level(vault_dir: Path) -> None:
+    """The property the guard removal buys: no old raw checkpoint survives a run.
+
+    Mixed singleton and multi-checkpoint days, all past DAILY_AGE_MIN -- afterwards
+    `sessions/*.md` must be empty, because everything it held was eligible.
+    """
+    proj = vault_dir / "projects" / "demo"
+    sessions = proj / "sessions"
+    _aged_checkpoint(sessions, "2026-01-05-0900", "demo", age_days=40)
+    _aged_checkpoint(sessions, "2026-01-05-1700", "demo", age_days=40)
+    _aged_checkpoint(sessions, "2026-02-11-1000", "demo", age_days=30)
+    _aged_checkpoint(sessions, "2026-03-02-1000", "demo", age_days=20)
+
+    _compact(vault_dir, proj)
+
+    assert list(sessions.glob("*.md")) == []
+    assert len(_rollups(proj)) == 3, "one rollup per distinct day"
+
+
+def test_recent_checkpoints_are_never_touched(vault_dir: Path) -> None:
+    """The other half: DAILY_AGE_MIN still protects the preload.
+
+    Removing the bucket-size guard must not widen what counts as aged -- the newest
+    checkpoint is what SessionStart loads.
+    """
+    proj = vault_dir / "projects" / "demo"
+    sessions = proj / "sessions"
+    fresh = _aged_checkpoint(sessions, "2026-08-24-0900", "demo", age_days=1)
+
+    counts = _compact(vault_dir, proj)
+
     assert counts["raw_to_daily"] == 0
-    assert lone.exists()
+    assert fresh.exists()
     assert not (proj / "sessions" / "daily").exists()
+
+
+def test_a_late_checkpoint_merges_into_an_existing_rollup(vault_dir: Path) -> None:
+    """A lone straggler for an already-rolled-up day must not be stranded.
+
+    Under the old guard this single file could never join its own day's rollup,
+    because a bucket of one was skipped outright.
+    """
+    proj = _project_with_aging_checkpoints(vault_dir)
+    _compact(vault_dir, proj)
+    straggler = _aged_checkpoint(proj / "sessions", "2026-01-05-2300", "demo", age_days=40)
+
+    counts = _compact(vault_dir, proj)
+
+    assert counts["raw_to_daily"] == 1
+    assert not straggler.exists()
+    assert len(_rollups(proj)) == 1
+    text = _rollups(proj)[0].read_text(encoding="utf-8")
+    assert "## 2026-01-05-2300.md" in text
+    assert text.count("type: session") == 4, "still exactly one rollup header"
 
 
 # --- the invariant, not the instance -------------------------------------------------
