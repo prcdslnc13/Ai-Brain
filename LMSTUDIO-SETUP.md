@@ -27,7 +27,7 @@ tool-capable models can call the `brain_*` tools.
    respond in prose without invoking any tool. For non-tool models, use the `brain-prep`
    CLI to dump the preload bundle as markdown and paste it into the system prompt.
 3. **The Brain MCP server already installed on this machine.** That means you have run
-   either `setup-mac.sh` or `setup-windows.ps1` (see `WINDOWS-SETUP.md`) at least once, so
+   `brain-setup.py` (see `WINDOWS-SETUP.md` on Windows) at least once, so
    `mcp-server/.venv` exists and `brain_mcp` imports cleanly.
 4. **The Obsidian vault synced down** to this machine. The MCP server reads from the
    vault, so an empty or missing vault means empty `brain_recall` results.
@@ -43,7 +43,7 @@ Use the full absolute paths for your machine:
 | Args    | `-m brain_mcp`                                                     | `-m brain_mcp`                                                               |
 | Env     | `BRAIN_VAULT=/Users/<you>/Vaults/Ai-Brain`                         | `BRAIN_VAULT=C:\Users\<you>\Vaults\Ai-Brain`                               |
 
-Both `setup-mac.sh` and `setup-windows.ps1` print these exact values at the end of a
+`brain-setup.py` prints these exact values at the end of a
 successful run — copy from there rather than retyping.
 
 ## Add the server to LMStudio
@@ -178,7 +178,7 @@ Obsidian Sync hasn't finished pulling the vault down — let it finish, then ret
 
 If you see `ModuleNotFoundError: No module named 'brain_mcp'` in the LMStudio log even though
 the venv exists, someone re-ran `pip install -e .` on `mcp-server/` somewhere. Re-run
-`setup-mac.sh` or `setup-windows.ps1`; both scripts force-reinstall non-editable.
+`brain-setup.py`; it force-reinstalls non-editable.
 
 ### Permissions on macOS
 

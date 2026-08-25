@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
 # setup-linux.sh — install the Brain wiring into a Claude Code config dir on Linux.
 #
+# DEPRECATED (2026-08-25) — use brain-setup.py.
+#
+#     python3 <repo>/brain-setup.py            # interactive
+#     python3 <repo>/brain-setup.py --non-interactive --vault P --claude-dir D
+#
+# brain-setup.py is cross-platform and is the installer this repo's docs,
+# CLAUDE.md, and the generated wrappers all point at. It does everything this
+# script does, and additionally gates on Python >= 3.11 across a wider
+# range of interpreters (3.20 down to 3.11, preferring version-suffixed binaries)
+# than this script's find_python, which only knows python3.13/3.12/3.11.
+#
+# setup-linux.sh still works and still installs a correct Brain. It will not
+# receive new behaviour — PR #25's pytest extra and post-install self-test
+# already landed only in brain-setup.py. See ROADMAP 'Retire the
+# platform-specific installers'.
+#
 # Tested on Debian Trixie (Raspberry Pi OS) and Ubuntu 22.04. Requires Python 3.11+.
 #
 # On Ubuntu 22.04 the default `python3` is 3.10, which is too old. Install a newer
@@ -57,6 +73,18 @@ for arg in "$@"; do
   esac
 done
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# A header comment nobody reads is exactly the red herring deprecating this is meant
+# to remove, so say it on stderr where the operator is actually looking. Warn only --
+# this script still works, and failing an install over a deprecation would be worse
+# than the duplication it is meant to retire.
+echo "" >&2
+echo "WARNING: setup-linux.sh is DEPRECATED and no longer receives new behaviour." >&2
+echo "         Use the cross-platform installer instead:" >&2
+echo "           python3 \"$REPO_DIR/brain-setup.py\"" >&2
+echo "         Continuing anyway in 3s (Ctrl-C to abort)..." >&2
+echo "" >&2
+sleep 3
 HOOKS_DIR="$REPO_DIR/hooks"
 MCP_SERVER_DIR="$REPO_DIR/mcp-server"
 TEMPLATES_DIR="$REPO_DIR/templates"

@@ -81,9 +81,16 @@ python3 ~/src/Ai-Brain/brain-setup.py --non-interactive \
     --claude-dir ~/.claude-personal --claude-dir ~/.claude-work
 ```
 
-### Fallback: platform shell scripts
+### Deprecated: platform shell scripts
 
-The original shell installers are still here if you prefer them. Each one takes
+**Use `brain-setup.py` above.** The three platform shell installers are deprecated as of
+2026-08-25 and print a warning when run. They still work, but they do not gate on Python
+>= 3.11 the way `brain-setup.py` does — `setup-mac.sh` runs a bare `python3 -m venv`, and a
+stock macOS `/usr/bin/python3` is 3.9, which `pyproject.toml` refuses — and they do not
+install the pytest extra or self-test after installing. They are documented here only so an
+existing muscle-memory invocation still resolves.
+
+Each one takes
 `<claude-config-dir> <vault-path>` — the config dir can be any name you like
 (e.g. `~/.claude`, `~/.claude-personal`, `~/.claude-work`, `~/.claude-projectX`):
 

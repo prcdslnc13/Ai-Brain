@@ -306,6 +306,45 @@ the cost of a planted instruction and makes one visible when reported, but a suf
 persuasive body inside the fence is still text the model reads. Narrowing *who can write* to
 the vault is the complementary control, and is not built.
 
+
+### 3G — Retire the platform-specific installers
+
+**Phase 1 done 2026-08-25.** `setup-mac.sh`, `setup-linux.sh`, `setup-windows.ps1` and their
+three uninstallers are deprecated: header banner, a runtime warning on stderr with a 3-second
+pause, and every user-facing doc repointed at `brain-setup.py` / `brain-uninstall.py`. They
+still work and still produce a correct install.
+
+**Why.** This repo's signature failure mode is a fix landing at one of N parallel sites, and
+four installers is the worst instance of it — the 2026-08-24 bug cluster (PRs #14–#16) traces
+directly to it. Consolidating on `brain-setup.py` is not a preference; the shell three are
+measurably worse:
+
+| | Python >= 3.11 gate | pytest extra + self-test |
+|---|---|---|
+| `brain-setup.py` | 3.20 → 3.11 descending, prefers version-suffixed binaries, handles `py -3.x` | yes (PR #25) |
+| `setup-mac.sh` | **none** — bare `python3 -m venv` | no |
+| `setup-windows.ps1` | **none** — any `py -3`/`python`/`python3`; error text says "3.10+" | no |
+| `setup-linux.sh` | 3.13 → 3.11 only | no |
+
+A stock macOS `/usr/bin/python3` is 3.9, which `pyproject.toml` refuses, so `setup-mac.sh`
+works only when a newer interpreter happens to sort earlier on PATH. PR #25 already made the
+divergence permanent and deliberate by landing the self-test in `brain-setup.py` alone.
+
+**The bootstrap objection does not hold.** `brain-setup.py` is `from __future__ import
+annotations`, no `match` statements, stdlib-only, so an old system interpreter can run it and
+its `find_python3` then locates a proper 3.11+ for the venv. Verified 2026-08-25 on macOS
+26.5.1 with `/usr/bin/python3` = 3.9.6: it runs fine. The shell scripts buy nothing on a
+machine with no Python at all, since they need one to build the venv either way.
+
+**Phase 2 — delete them.** Unblocked by that 3.9.6 check; not done yet, deliberately, so the
+deprecation gets a cycle of real use first. When it happens: delete all six scripts, collapse
+`test_installer_parity.py`'s `ALL_INSTALLERS` / `POSIX_INSTALLERS` parametrize to the two
+Python entry points, and drop the assertions that exist only to police those files (the PS 5.1
+native-call guard, the UTF-8 template read/write check, the POSIX-installer sync check). That
+test file is the main reason to do phase 2 rather than leave the banners: it currently spends
+most of its assertions keeping dead code honest.
+
+
 ---
 
 ## Quick reference for "what do I do next"

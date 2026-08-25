@@ -1,6 +1,24 @@
 #!/usr/bin/env pwsh
 # setup-windows.ps1 - install the Brain wiring into a Claude Code config dir on Windows.
 #
+# DEPRECATED (2026-08-25) — use brain-setup.py.
+#
+#     python3 <repo>/brain-setup.py            # interactive
+#     python3 <repo>/brain-setup.py --non-interactive --vault P --claude-dir D
+#
+# brain-setup.py is cross-platform and is the installer this repo's docs,
+# CLAUDE.md, and the generated wrappers all point at. It does everything this
+# script does, and additionally gates on Python >= 3.11. THIS script does not:
+# Try-Python accepts any `py -3`/`python`/`python3` it finds, and its error text
+# still says '3.10+', which pyproject.toml refuses. It also runs under Windows
+# PowerShell 5.1, whose ANSI-default file reads have corrupted the generated
+# CLAUDE.md before (see the encoding gotcha in CLAUDE.md).
+#
+# setup-windows.ps1 still works and still installs a correct Brain. It will not
+# receive new behaviour — PR #25's pytest extra and post-install self-test
+# already landed only in brain-setup.py. See ROADMAP 'Retire the
+# platform-specific installers'.
+#
 # Usage:
 #     powershell -ExecutionPolicy Bypass -File C:\src\Ai-Brain\setup-windows.ps1 <claude-config-dir> <vault-path>
 #
@@ -44,6 +62,16 @@ function Expand-UserPath([string]$p) {
 $ClaudeDir    = Expand-UserPath $ClaudeDir
 $VaultRoot    = Expand-UserPath $VaultPath
 $RepoDir      = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# A header comment nobody reads is exactly the red herring deprecating this is meant
+# to remove, so say it where the operator is looking. Write-Warning, not a native
+# write to stderr: $ErrorActionPreference = 'Stop' turns any native stderr into a
+# terminating NativeCommandError under PS 5.1, and failing over a deprecation notice
+# would be worse than the duplication it is meant to retire.
+Write-Warning "setup-windows.ps1 is DEPRECATED and no longer receives new behaviour."
+Write-Warning "Use the cross-platform installer instead: python3 '$RepoDir\brain-setup.py'"
+Write-Warning "Continuing anyway in 3s (Ctrl-C to abort)..."
+Start-Sleep -Seconds 3
 $HooksDir     = Join-Path $RepoDir 'hooks'
 $McpServerDir = Join-Path $RepoDir 'mcp-server'
 $TemplatesDir = Join-Path $RepoDir 'templates'

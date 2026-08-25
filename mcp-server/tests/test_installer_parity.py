@@ -31,6 +31,17 @@ ALL_UNINSTALLERS = [
 ]
 SHARED_MERGE = "brain_settings_merge.py"
 
+# Deprecated 2026-08-25 (ROADMAP 3G). These still work and still have to satisfy every
+# parity assertion above -- a deprecated installer that quietly breaks is worse than one
+# that was deleted -- but they must also *say* they are deprecated, in the header and at
+# runtime. The docs drifted out of sync with the code for months before this; a text
+# assertion is the only thing that keeps a banner honest.
+DEPRECATED_SCRIPTS = [
+    "setup-mac.sh", "setup-linux.sh", "setup-windows.ps1",
+    "uninstall-mac.sh", "uninstall-linux.sh", "uninstall-windows.ps1",
+]
+SUPPORTED_ENTRY_POINTS = ["brain-setup.py", "brain-uninstall.py"]
+
 
 def read(name: str) -> str:
     return (REPO_ROOT / name).read_text(encoding="utf-8")
@@ -280,3 +291,68 @@ def test_the_self_test_does_not_inherit_the_users_real_vault():
     assert 'env.pop("BRAIN_VAULT", None)' in run_tests, (
         "run_tests must drop an inherited BRAIN_VAULT before running the suite"
     )
+
+
+# ---------------------------------------------------------------- deprecation (3G)
+
+
+@pytest.mark.parametrize("script", DEPRECATED_SCRIPTS)
+def test_deprecated_scripts_say_so_in_the_header(script):
+    """The banner names the replacement, so reading the file is enough to redirect."""
+    text = read(script)
+    head = text[:2500]
+    assert "DEPRECATED" in head, f"{script} carries no deprecation banner"
+    replacement = "brain-uninstall.py" if script.startswith("uninstall") else "brain-setup.py"
+    assert replacement in head, f"{script}'s banner does not name {replacement}"
+
+
+@pytest.mark.parametrize("script", DEPRECATED_SCRIPTS)
+def test_deprecated_scripts_warn_at_runtime(script):
+    """A header comment nobody reads is the red herring, not the fix.
+
+    The notice has to reach the operator's terminal. It must also be a *warning* --
+    an installer that aborted over its own deprecation would cost someone their Brain
+    to make a bookkeeping point, which is strictly worse than the duplication 3G is
+    retiring.
+    """
+    text = read(script)
+    if script.endswith(".ps1"):
+        # Write-Warning, never a native stderr write: $ErrorActionPreference='Stop'
+        # turns native stderr into a terminating NativeCommandError under PS 5.1.
+        assert 'Write-Warning "' in text and "is DEPRECATED" in text, (
+            f"{script} never warns at runtime"
+        )
+        assert "exit 1" not in text.split("Write-Warning")[1][:200], (
+            f"{script} aborts on its own deprecation notice"
+        )
+    else:
+        assert 'echo "WARNING:' in text and "is DEPRECATED" in text, (
+            f"{script} never warns at runtime"
+        )
+        warn_block = text.split('echo "WARNING:')[1][:400]
+        assert "exit 1" not in warn_block, (
+            f"{script} aborts on its own deprecation notice"
+        )
+
+
+@pytest.mark.parametrize("entry", SUPPORTED_ENTRY_POINTS)
+def test_the_supported_entry_points_are_not_marked_deprecated(entry):
+    """Guards the obvious copy-paste: banner pasted into the thing it points at."""
+    assert "DEPRECATED" not in read(entry)[:2500], f"{entry} is the replacement, not deprecated"
+
+
+def test_user_docs_point_at_the_supported_installer():
+    """Every install guide names `brain-setup.py`.
+
+    The four docs referenced the shell scripts as the primary route long after
+    `brain-setup.py` became the one people ran -- which is how a stock-3.9 macOS
+    install path stayed documented as the recommended one.
+    """
+    for doc in ("README.md", "WINDOWS-SETUP.md", "LMSTUDIO-SETUP.md", "PI-SETUP.md"):
+        assert "brain-setup.py" in read(doc), f"{doc} never names the supported installer"
+
+
+def test_the_roadmap_entry_the_banners_cite_exists():
+    """Each banner says 'See ROADMAP ...' -- a dangling pointer is worse than none."""
+    roadmap = read("ROADMAP.md")
+    assert "Retire the platform-specific installers" in roadmap
