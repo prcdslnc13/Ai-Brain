@@ -55,7 +55,8 @@ The moving parts fit together as follows:
     likely died before checkpointing — reads `project_cwd` from the hook payload, disable with
     `BRAIN_STALE_CHECK=0`), `PROMISE_GAP` (recent turns promised saves without fulfilling
     them), `BUNDLE_SATURATED` and `OVERSIZED_MEMORIES` (below), plus `INDEX_STALE`
-    (vector-index backlog — see the recall-sync gotcha). Surfacing these at the top of the
+    (vector-index backlog) and `INDEX_RECIPE_STALE` (index built by a superseded
+    embedding recipe) — see the recall-sync gotchas. Surfacing these at the top of the
     session forces reconstruction instead of silent context loss.
 
     Doctor also runs three **corpus-hygiene checks** (added 2026-08-06 after a manual dedup
@@ -269,12 +270,58 @@ BRAIN_VAULT=~/Vaults/Ai-Brain \
   exit in seconds and a daemon thread dies with them. `BRAIN_AUTO_REINDEX=0` disables it;
   doctor's `INDEX_STALE` warns at >=50 pending so the latency can't hide again.
 
+  **A foreground sync returns immediately while the reindex lock is held, and every
+  connection carries a 30s busy timeout (`SQLITE_BUSY_TIMEOUT_S`) — both are load-bearing
+  (2026-08-24).** A recall during a running reindex used to kill it with "database is
+  locked": sqlite's default busy timeout is 5s, and the reindex is the process that loses
+  that race because it holds the longer transaction. The backlog it was draining then
+  silently never drained — and since SessionStart kicks a reindex and sessions usually open
+  with a recall, that was an ordinary session start, not a corner case.
+
   A time-boxed (foreground) sync also **skips session checkpoints entirely** — they are
   68.7% of the vault's files (616 of 897) and `render.recall_payload` filters them out of
   default recall anyway, so a recall spending its slice on one buys nothing. They get their
   vectors from the unbounded passes instead. `_indexable()` is the single source of truth
   for what deserves a vector; `sync()` and `backlog()` must both go through it or
   `INDEX_STALE` will warn about work `sync()` refuses to do.
+
+- **What gets embedded is a slice, not the raw file — and the recipe is versioned
+  (2026-08-24).** `embed_text()` feeds the model `name` + `description` + body lead,
+  capped at `BRAIN_EMBED_CHARS` (default 1000; 0 restores the raw file). The raw file
+  led with YAML (`type:`, `machine:`, `project:`) that is noise in the vector space and
+  was spending the model's first tokens on it, and `write_memory` derives `description`
+  from the body's first line so it was embedded twice. Since cost scales with token
+  count only up to the 512-token cap (~1500 chars) and is flat above it, everything past
+  the cap was paid for and then discarded by the tokenizer anyway.
+
+  The budget was picked by measurement — a full rebuild of the 903-file vault scored
+  against tail-query retrieval (151 queries drawn from text past every cap):
+
+  | budget | rebuild | vs raw | tail r@1 | MRR |
+  |---|---|---|---|---|
+  | full raw file | 433s | — | 40.4% | 0.553 |
+  | 1500 | 415s | −4% | 41.1% | 0.564 |
+  | 1200 | 364s | −16% | 40.4% | 0.552 |
+  | **1000** | **315s** | **−27%** | **40.4%** | **0.550** |
+  | 800 | 258s | −40% | 35.8% | 0.516 |
+
+  Title-query retrieval was ~98% r@1 / 100% r@3 at *every* budget including 400, so the
+  tail is the only axis that discriminates. The cliff is between 1000 and 800: 1000 is the
+  fastest budget still indistinguishable from embedding the whole file, so it is the
+  default. Note 1500 buys almost nothing — ~1500 chars is already ~500 tokens, i.e. the
+  model's cap, so the tokenizer was truncating there anyway.
+
+  **`EMBED_TEXT_VERSION` must be bumped whenever `embed_text()` changes what it feeds the
+  model**, and the budget is part of the recipe identity. Vectors from different recipes
+  aren't comparable, and the mtime staleness check cannot notice — the files didn't
+  change, the recipe did — so the index would silently mix two vector spaces forever. On
+  mismatch an *unbounded* sync wipes and rebuilds; a **foreground sync deliberately
+  refuses to**, because wiping mid-recall would leave the rest of the session querying a
+  near-empty index. Doctor's `INDEX_RECIPE_STALE` warns until a reindex runs.
+
+  An **empty** index is never "changed" — there are no vectors to invalidate — but it must
+  still be *stamped*, or it looks permanently changed and every foreground sync bails out
+  at 0 and the index never fills. Keep the empty-index branch stamping.
 
 - **Lexical-only hits get a reserved slot every 3rd position — don't "simplify" that back to
   appending them (fixed 2026-08-24).** `search_memories` used to append *all* ripgrep hits

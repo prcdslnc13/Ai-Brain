@@ -241,6 +241,29 @@ def _check_index_stale(brain: Path) -> list[Finding]:
     )]
 
 
+def _check_index_recipe(brain: Path) -> list[Finding]:
+    """Index built by a superseded embed_text() recipe.
+
+    Invisible to INDEX_STALE, which compares mtimes: the files did not change, the
+    recipe did. Without this the index would sit on old-recipe vectors indefinitely
+    if the background reindex never ran.
+    """
+    if os.environ.get("BRAIN_EMBED", "1") == "0":
+        return []
+    try:
+        from . import embed
+        if not embed.text_recipe_changed():
+            return []
+    except Exception:
+        return []
+    return [Finding(
+        "warn", "INDEX_RECIPE_STALE",
+        "Vector index was built with a superseded embedding recipe.",
+        "Run `brain reindex` to rebuild. Recall keeps working on the old vectors "
+        "until then; foreground syncs deliberately skip the rebuild.",
+    )]
+
+
 def _check_editable_install() -> list[Finding]:
     try:
         import brain_mcp
@@ -829,6 +852,7 @@ def check(
     findings.extend(_check_near_duplicates(brain))
     findings.extend(_check_vector_index(brain))
     findings.extend(_check_index_stale(brain))
+    findings.extend(_check_index_recipe(brain))
     findings.extend(_check_editable_install())
     findings.extend(_check_fastembed())
     findings.extend(_check_project_overview(brain, project))
