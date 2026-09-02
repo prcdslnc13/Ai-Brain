@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import os
 import platform
@@ -9,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -32,10 +34,34 @@ def vault_root() -> Path:
     return root
 
 
+SLUG_FALLBACK = "untitled"
+# Hex digits of sha1(title) appended when a title has no ASCII letters or digits at
+# all. Eight is 32 bits: plenty to keep distinct titles apart within one directory,
+# short enough to stay readable in `brain list`.
+SLUG_HASH_CHARS = 8
+
+
 def slugify(text: str) -> str:
-    text = text.strip().lower()
-    text = re.sub(r"[^a-z0-9]+", "-", text)
-    return text.strip("-") or "untitled"
+    """Filename stem for a memory title.
+
+    Transliterates first (NFKD, then drop the combining marks), so "Café notes" is
+    `cafe-notes` rather than `caf-notes`. A title with no ASCII letters or digits
+    left after that — a Cyrillic, CJK, Arabic or emoji-only title — used to collapse
+    to the bare `untitled`, so every such save landed on the *same* file and
+    silently replaced the previous one (F10, 2026-09-01). Those now get
+    `untitled-<8 hex of sha1(title)>`: distinct titles, distinct files, and the same
+    title always maps to the same file. The hash is taken over the NFC-normalized,
+    stripped title so the two Unicode spellings of one word agree.
+    """
+    stripped = text.strip()
+    ascii_text = unicodedata.normalize("NFKD", stripped).encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-z0-9]+", "-", ascii_text.lower()).strip("-")
+    if slug:
+        return slug
+    if not stripped:
+        return SLUG_FALLBACK
+    digest = hashlib.sha1(unicodedata.normalize("NFC", stripped).encode("utf-8")).hexdigest()
+    return f"{SLUG_FALLBACK}-{digest[:SLUG_HASH_CHARS]}"
 
 
 _machine_name_cache: str | None = None
@@ -388,7 +414,160 @@ class Memory:
         }
 
 
-def write_memory(mtype: str, name: str, content: str, project: str | None = None) -> Path:
+@dataclass
+class SaveResult:
+    """What `save_memory` did.
+
+    `overwrote` is True when an existing file with different content was replaced;
+    `previous_version` is then the archived copy of what it replaced (None when the
+    previous file was an overview stub, which carries nothing worth keeping).
+    `unchanged` is True when the file already held exactly this content and nothing
+    was written.
+    """
+    path: Path
+    overwrote: bool = False
+    previous_version: Path | None = None
+    unchanged: bool = False
+
+
+# Where `save_memory` parks the content it is about to replace:
+# `Brain/archive/versions/<memory path without .md>/<stamp>-<machine>.md`. `archive`
+# is in EXCLUDE_DIRS, so versions never reach the index, `brain list`, recall or
+# either preload — but Obsidian Sync carries them, so the record survives on every
+# machine. Only the newest VERSION_KEEP per memory are kept.
+VERSIONS_DIR = ("archive", "versions")
+VERSION_KEEP = 5
+
+_CLOSING_FENCE_RE = re.compile(r"^---[ \t]*$", re.MULTILINE)
+
+
+def _split_caller_frontmatter(content: str) -> tuple[dict, str] | None:
+    """Return (fields, body) when `content` opens with a real YAML frontmatter block.
+
+    "Real" means: starts with `---`, has a closing `---` line, and the text between
+    parses as a mapping. Anything else is body — including a body that opens with a
+    markdown horizontal rule (`---\\nsome rule`), which the old `startswith("---")`
+    test accepted as caller-supplied frontmatter and wrote verbatim: the note landed
+    with no `type`, parsed as `unknown`, and dropped out of every typed recall and
+    out of stats (F11, 2026-09-01).
+    """
+    text = content.lstrip()
+    if not text.startswith("---"):
+        return None
+    close = _CLOSING_FENCE_RE.search(text, 3)
+    if close is None:
+        return None
+    try:
+        fm = yaml.safe_load(text[3:close.start()])
+    except yaml.YAMLError:
+        return None
+    if not isinstance(fm, dict):
+        return None
+    return fm, text[close.end():]
+
+
+def _render_memory(mtype: str, name: str, content: str, project: str | None) -> str:
+    """The exact bytes a save writes: frontmatter (always ours) + body."""
+    split = _split_caller_frontmatter(content)
+    if split is None:
+        fields: dict = {}
+        body = content
+    else:
+        fields, body = split
+        declared = fields.get("type")
+        if declared is not None and str(declared) != mtype:
+            raise ValueError(
+                f"content frontmatter declares type {declared!r} but the save requested "
+                f"{mtype!r}; drop the frontmatter or make the two agree"
+            )
+    body = body.strip()
+    merged: dict = {
+        "name": fields.get("name") or name,
+        "description": fields.get("description") or body.split("\n", 1)[0][:150],
+        "type": mtype,
+        "machine": fields.get("machine") or machine_name(),
+    }
+    if project and mtype in ("project", "feedback"):
+        merged["project"] = fields.get("project") or project
+    for key, value in fields.items():
+        merged.setdefault(key, value)
+    return _frontmatter(merged) + body + "\n"
+
+
+def _versions_dir(path: Path, root: Path) -> Path:
+    rel = path.relative_to(root).with_suffix("")
+    return root.joinpath(*VERSIONS_DIR, *rel.parts)
+
+
+def _reserve_version_path(vdir: Path, stamp: str, machine: str) -> Path:
+    """Claim `<stamp>-<machine>[_NN].md` under `vdir` with O_EXCL, NN strictly above
+    any suffix already used for that stamp.
+
+    Not `_reserve_checkpoint_path`, which restarts at the lowest free suffix: here
+    pruning frees the *lowest* names, so a same-second save after a prune would
+    reclaim `…-host.md`, sort as the oldest version, and be the next one pruned —
+    the newest version deleted, which the cap test caught on its first run.
+    Monotonic suffixes keep sort order and age order the same thing.
+    """
+    base = f"{stamp}-{machine}"
+    used = re.compile(re.escape(base) + r"(?:_(\d+))?\.md$")
+    start = 1
+    for existing in vdir.glob(f"{base}*.md"):
+        m = used.match(existing.name)
+        if m:
+            start = max(start, (int(m.group(1)) if m.group(1) else 1) + 1)
+    for attempt in range(start, start + CHECKPOINT_MAX_ATTEMPTS):
+        name = f"{base}.md" if attempt == 1 else f"{base}_{attempt:02d}.md"
+        candidate = vdir / name
+        try:
+            fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            continue
+        os.close(fd)
+        return candidate
+    raise RuntimeError(f"could not find a free version filename under {vdir} (base {base})")
+
+
+def _archive_previous_version(path: Path, previous: str, root: Path) -> Path:
+    """Copy the content being replaced into the versions directory; prune to VERSION_KEEP.
+
+    Names are `<stamp>-<machine>[_NN].md`, string-sortable and monotonic within a
+    second, so "newest" is the last name in sort order and pruning never needs an
+    mtime — which two saves in one second could share anyway.
+    """
+    vdir = _versions_dir(path, root)
+    vdir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime(CHECKPOINT_STAMP_FORMAT)
+    version = _reserve_version_path(vdir, stamp, machine_name())
+    try:
+        _atomic_write(version, previous)
+    except BaseException:
+        try:
+            if version.stat().st_size == 0:
+                version.unlink()
+        except OSError:
+            pass
+        raise
+    existing = sorted(p for p in vdir.glob("*.md") if p.is_file())
+    for stale in existing[:-VERSION_KEEP] if len(existing) > VERSION_KEEP else []:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+    return version
+
+
+def save_memory(mtype: str, name: str, content: str, project: str | None = None) -> SaveResult:
+    """Write a memory, keeping a copy of anything it replaces.
+
+    Overwrite-by-title is a feature (the overview-stub upgrade and "update that
+    file rather than creating a duplicate" both rely on it), so a collision is not
+    refused. But "Git discipline" and "git   discipline!" are one path, and a model
+    saving a new rule under a title that slugifies like an old one used to erase a
+    user correction with no trace — the one record the Brain exists to keep (F10,
+    2026-09-01). Now the previous content goes to `archive/versions/` first, the
+    result says so, and a byte-identical re-save touches nothing.
+    """
     if mtype not in VALID_TYPES:
         raise ValueError(f"type must be one of {sorted(VALID_TYPES)}, got {mtype!r}")
     root = vault_root()
@@ -404,23 +583,32 @@ def write_memory(mtype: str, name: str, content: str, project: str | None = None
         target_dir = project_dir(project, "feedback", root=root) if project else (root / "feedback")
     else:
         target_dir = root / ("user" if mtype == "user" else "references")
+    text = _render_memory(mtype, name, content, project)
     target_dir.mkdir(parents=True, exist_ok=True)
-    slug = slugify(name)
-    path = target_dir / f"{slug}.md"
+    path = target_dir / f"{slugify(name)}.md"
 
-    has_frontmatter = content.lstrip().startswith("---")
-    if has_frontmatter:
-        body = content
-    else:
-        description = content.strip().split("\n", 1)[0][:150]
-        fields = {"name": name, "description": description, "type": mtype,
-                  "machine": machine_name()}
-        if project and mtype in ("project", "feedback"):
-            fields["project"] = project
-        body = _frontmatter(fields) + content.strip() + "\n"
-    _atomic_write(path, body)
+    previous: str | None = None
+    if path.exists():
+        try:
+            previous = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            previous = None
+    if previous == text:
+        return SaveResult(path=path, unchanged=True)
+    overwrote = previous is not None
+    version: Path | None = None
+    # A stub is hook-generated scaffolding, not a record of anything the user said;
+    # upgrading it is the *intended* overwrite and archiving it would only be noise.
+    if overwrote and not is_overview_stub(path):
+        version = _archive_previous_version(path, previous, root)
+    _atomic_write(path, text)
     _try_embed_upsert(path)
-    return path
+    return SaveResult(path=path, overwrote=overwrote, previous_version=version)
+
+
+def write_memory(mtype: str, name: str, content: str, project: str | None = None) -> Path:
+    """Path-returning wrapper over `save_memory` for callers that only need the file."""
+    return save_memory(mtype, name, content, project).path
 
 
 def _try_embed_upsert(path: Path) -> None:
@@ -1287,6 +1475,21 @@ def forget_memory(rel_or_abs_path: str) -> Path:
         raise PermissionError(f"refusing to delete outside the Brain dir: {p}")
     if resolved.is_dir():
         raise IsADirectoryError(f"refusing to delete a directory: {p}")
+    # Inside Brain/ is necessary, not sufficient. `forget` sits on the pre-approved
+    # agent surface, and "anything under Brain/" included `_index.md`, `activity.md`
+    # and `.index/embeddings.sqlite` — the table of contents, the audit log and the
+    # vector index. The one predicate that says what a memory is decides here too,
+    # so the deletable set can never drift from the listable set (F26, 2026-09-01).
+    # `_comparable` case-folds, and the predicate matches names exactly (`README.md`
+    # is excluded, `readme.md` is not), so take the tail of the *unfolded* resolved
+    # path — the same number of components — rather than the folded one.
+    depth = len(resolved.relative_to(_comparable(root)).parts)
+    rel = Path(*p.resolve().parts[-depth:])
+    if rel.suffix.lower() != ".md" or not is_memory_path(root / rel, root):
+        raise PermissionError(
+            f"refusing to delete {p}: not a memory or session checkpoint "
+            f"(only .md files under Brain/ that `brain list` would show can be forgotten)"
+        )
     p.unlink()
     _try_embed_delete(p)
     return p

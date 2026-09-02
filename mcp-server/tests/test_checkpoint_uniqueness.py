@@ -188,15 +188,15 @@ def test_latest_session_selection_still_picks_the_newest(vault_dir: Path) -> Non
 
 
 def test_compaction_handles_the_new_names(vault_dir: Path) -> None:
-    """Rollups dedupe by source filename and bucket by mtime -- neither may care
-    what the stamp looks like."""
+    """Rollups dedupe by source filename and bucket by the date in the name --
+    neither may care what the rest of the stamp looks like."""
     sessions = vault_dir / "projects" / "Widget" / "sessions"
     paths = [vault.write_checkpoint("Widget", f"body {i}") for i in range(4)]
-    aged = (datetime.now() - timedelta(days=10)).timestamp()
-    for p in paths:
-        os.utime(p, (aged, aged))
+    # The ageing clock is the filename's date, so move the calendar, not the mtime.
+    later = (datetime.now() + timedelta(days=10)).date()
 
-    counts = compact._compact_project(sessions.parent, vault_dir / "archive", dry_run=False)
+    counts = compact._compact_project(sessions.parent, vault_dir / "archive", dry_run=False,
+                                      today=later)
     assert counts["raw_to_daily"] == 4
     assert not list(sessions.glob("*.md")), "raw checkpoints should have been rolled up"
 
@@ -209,7 +209,8 @@ def test_compaction_handles_the_new_names(vault_dir: Path) -> None:
         assert f"body {i}" in text
 
     # Idempotent: a second run must not duplicate the sources.
-    compact._compact_project(sessions.parent, vault_dir / "archive", dry_run=False)
+    compact._compact_project(sessions.parent, vault_dir / "archive", dry_run=False,
+                             today=later)
     assert daily[0].read_text(encoding="utf-8") == text
 
 
