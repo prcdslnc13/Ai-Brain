@@ -237,9 +237,19 @@ def test_the_skill_does_not_pre_approve_the_whole_cli() -> None:
     assert "Bash(__BRAIN_CMD__ recall:*)" in line
 
 
-def test_the_pi_extension_keeps_the_full_surface() -> None:
-    """pi drives `checkpoint --from-pi` as the operator. If BRAIN_PI_CMD points at the
-    generated brain.cmd wrapper, the gate would fail every automatic checkpoint with an
-    exit 2 that nothing surfaces."""
+def test_the_pi_extension_keeps_the_full_surface_for_its_own_spawns_only() -> None:
+    """pi drives `checkpoint --from-pi` as the operator, so its own spawns clear the
+    gate — but in *their* environment, never in `process.env`. pi's `exec` has no
+    per-call env, so the extension used to assign `process.env.BRAIN_AGENT_SURFACE =
+    "0"`, and the model's shell tool inherits process.env: every command the model
+    ran had the gate cleared, on the one surface the gate exists to bound
+    (2026-09-01). The spawn therefore goes through node:child_process with an
+    explicit env and no shell."""
     src = (REPO_ROOT / "pi" / "extensions" / "brain.ts").read_text(encoding="utf-8")
-    assert 'process.env.BRAIN_AGENT_SURFACE = "0"' in src
+    assert 'BRAIN_AGENT_SURFACE: "0"' in src, "the extension's own spawns must clear the gate"
+    assert not re.search(r"process\.env\.BRAIN_AGENT_SURFACE\s*=", src), (
+        "assigning BRAIN_AGENT_SURFACE process-wide clears the gate for the model's shell tool"
+    )
+    assert "pi.exec(" not in src, "pi.exec cannot scope env per call; spawn via node:child_process"
+    assert "shell: false" in src
+    assert 'from "node:child_process"' in src
