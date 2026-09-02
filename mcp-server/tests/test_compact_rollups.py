@@ -1,19 +1,26 @@
-"""A rollup written by brain-compact is a vault note, and every enumeration must agree.
+"""brain-compact: rollups are vault notes, buckets come from filenames, merges are safe.
 
-`compact._concat` used to write `sessions/daily/YYYY-MM-DD.md` as a bare concatenation
-of its source checkpoints, with no frontmatter of its own. Nothing noticed until the
-first real run: on 2026-08-25 it produced 61 rollups and `doctor._check_frontmatter`
-reported all 61 as MALFORMED_FRONTMATTER, with a remediation hint ("re-save each with
-`brain save`") that cannot apply to a machine-written rollup. A standing 61-file WARN
-is worse than no check at all -- it trains you to ignore the one signal that catches
-genuine save corruption.
+Three generations of bug live in this file's history:
 
-Both halves were wrong, so both are asserted here:
-  - compact must stamp a parseable, correctly-typed header on every rollup, and repair
-    the ones it wrote before it did;
-  - doctor must decide "is this a memory" through the shared predicates rather than a
-    private copy of the exclusion list -- the same drift that
-    `test_memory_path_predicate` exists to prevent.
+1. `compact._concat` wrote `sessions/daily/YYYY-MM-DD.md` with no frontmatter of its
+   own. The first real run (2026-08-25) produced 61 rollups and doctor reported all
+   61 as MALFORMED_FRONTMATTER with a hint ("re-save with `brain save`") that cannot
+   apply to a machine-written file. A standing 61-file WARN trains you to ignore the
+   one signal that catches genuine save corruption.
+
+2. Buckets and ageing were computed from **mtime** (F19). mtime is when compaction
+   last wrote the file, so every daily one run produced landed in one weekly named
+   for the run's week, each stage's clock restarted on every run, and two machines
+   filed the same daily under different weeks. The period now comes from the name.
+
+3. Merging keyed on `## <anything>` headings, so every heading inside an absorbed
+   body polluted the key set; archiving `shutil.move`d over an existing archived
+   weekly; and a crash between writing a rollup and unlinking its sources left
+   sources the rerun saw as "already merged" and never deleted (F20).
+
+Dates in these tests are relative to today, because the clock under test is the
+calendar date in the filename: a literal January stamp would age past *every*
+threshold the moment the year rolled on.
 """
 
 from __future__ import annotations
@@ -21,6 +28,7 @@ from __future__ import annotations
 import ast
 import os
 import time
+from datetime import date, timedelta
 from pathlib import Path
 
 import yaml
@@ -28,10 +36,25 @@ import yaml
 from brain_mcp import compact, doctor, vault
 
 DAY = 86400.0
+TODAY = date.today()
 
 
-def _aged_checkpoint(sessions: Path, stamp: str, project: str, age_days: float) -> Path:
-    """A raw checkpoint whose mtime is `age_days` old, shaped like the real renderer's."""
+def _day(days_ago: int) -> str:
+    return (TODAY - timedelta(days=days_ago)).isoformat()
+
+
+def _stamp(days_ago: int, hhmm: str = "0900") -> str:
+    return f"{_day(days_ago)}-{hhmm}"
+
+
+def _week(days_ago: int) -> str:
+    return compact._iso_week_key(TODAY - timedelta(days=days_ago))
+
+
+def _aged_checkpoint(sessions: Path, stamp: str, project: str,
+                     age_days: float | None = None) -> Path:
+    """A raw checkpoint shaped like the real renderer's. `age_days` backdates the
+    mtime; by default the mtime is left fresh, since the name is the clock."""
     sessions.mkdir(parents=True, exist_ok=True)
     p = sessions / f"{stamp}.md"
     p.write_text(
@@ -44,26 +67,36 @@ def _aged_checkpoint(sessions: Path, stamp: str, project: str, age_days: float) 
         }) + f"## What the user asked for\n\nwork on {project}\n",
         encoding="utf-8",
     )
-    when = time.time() - age_days * DAY
-    os.utime(p, (when, when))
+    if age_days is not None:
+        when = time.time() - age_days * DAY
+        os.utime(p, (when, when))
     return p
 
 
 def _project_with_aging_checkpoints(brain: Path, project: str = "demo") -> Path:
-    """Two same-day checkpoints old enough to roll up (compact needs >= 2 per day)."""
+    """Two same-day checkpoints, ten days old: past the daily threshold, short of weekly."""
     proj = brain / "projects" / project
     sessions = proj / "sessions"
-    _aged_checkpoint(sessions, "2026-01-05-0900", project, age_days=40)
-    _aged_checkpoint(sessions, "2026-01-05-1700", project, age_days=40)
+    _aged_checkpoint(sessions, _stamp(10, "0900"), project)
+    _aged_checkpoint(sessions, _stamp(10, "1700"), project)
     return proj
 
 
-def _compact(brain: Path, proj: Path, dry_run: bool = False):
-    return compact._compact_project(proj, brain / "archive", dry_run)
+def _compact(brain: Path, proj: Path, dry_run: bool = False, today: date | None = None):
+    return compact._compact_project(proj, brain / "archive", dry_run, today=today)
 
 
 def _rollups(proj: Path) -> list[Path]:
     return sorted((proj / "sessions" / "daily").glob("*.md"))
+
+
+def _weeklies(proj: Path) -> list[Path]:
+    return sorted((proj / "sessions" / "weekly").glob("*.md"))
+
+
+def _archived(brain: Path, project: str = "demo") -> list[Path]:
+    d = brain / "archive" / "projects" / project / "sessions" / "weekly"
+    return sorted(d.glob("*.md")) if d.exists() else []
 
 
 def _frontmatter_of(path: Path) -> dict:
@@ -73,6 +106,17 @@ def _frontmatter_of(path: Path) -> dict:
     assert end != -1, f"{path.name} has an unterminated frontmatter block"
     return yaml.safe_load(text[3:end])
 
+
+def _rollup_with(target: Path, project: str, kind: str, sections: dict[str, str]) -> Path:
+    """A marker-era rollup holding the given {source name: body} sections."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    body = "\n".join(compact._render_section(n, b) for n, b in sections.items())
+    target.write_text(compact._rollup_frontmatter(target, project, kind) + body,
+                      encoding="utf-8")
+    return target
+
+
+# --- frontmatter ---------------------------------------------------------------------
 
 def test_rollup_carries_parseable_frontmatter(vault_dir: Path) -> None:
     proj = _project_with_aging_checkpoints(vault_dir)
@@ -96,8 +140,8 @@ def test_rollup_body_still_contains_every_source(vault_dir: Path) -> None:
     _compact(vault_dir, proj)
 
     body = _rollups(proj)[0].read_text(encoding="utf-8")
-    assert "## 2026-01-05-0900.md" in body
-    assert "## 2026-01-05-1700.md" in body
+    assert f"## {_stamp(10, '0900')}.md" in body
+    assert f"## {_stamp(10, '1700')}.md" in body
     assert body.count("work on demo") == 2
 
 
@@ -144,9 +188,9 @@ def test_doctor_still_catches_a_genuinely_broken_memory(vault_dir: Path) -> None
 def test_legacy_headerless_rollup_is_backfilled(vault_dir: Path) -> None:
     """A vault compacted before headers existed must converge on the next run."""
     proj = vault_dir / "projects" / "demo"
-    legacy = proj / "sessions" / "daily" / "2026-01-05.md"
+    legacy = proj / "sessions" / "daily" / f"{_day(10)}.md"
     legacy.parent.mkdir(parents=True, exist_ok=True)
-    legacy.write_text("## 2026-01-05-0900.md\n\nold rollup body\n", encoding="utf-8")
+    legacy.write_text(f"## {_stamp(10)}.md\n\nold rollup body\n", encoding="utf-8")
 
     counts = _compact(vault_dir, proj)
 
@@ -158,7 +202,7 @@ def test_legacy_headerless_rollup_is_backfilled(vault_dir: Path) -> None:
 
 def test_backfill_is_a_dry_run_no_op(vault_dir: Path) -> None:
     proj = vault_dir / "projects" / "demo"
-    legacy = proj / "sessions" / "daily" / "2026-01-05.md"
+    legacy = proj / "sessions" / "daily" / f"{_day(10)}.md"
     legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.write_text("## a.md\n\nbody\n", encoding="utf-8")
 
@@ -191,8 +235,8 @@ def test_appending_to_an_existing_rollup_keeps_one_header(vault_dir: Path) -> No
     """
     proj = _project_with_aging_checkpoints(vault_dir)
     _compact(vault_dir, proj)
-    _aged_checkpoint(proj / "sessions", "2026-01-05-2100", "demo", age_days=40)
-    _aged_checkpoint(proj / "sessions", "2026-01-05-2300", "demo", age_days=40)
+    _aged_checkpoint(proj / "sessions", _stamp(10, "2100"), "demo")
+    _aged_checkpoint(proj / "sessions", _stamp(10, "2300"), "demo")
 
     _compact(vault_dir, proj)
 
@@ -203,8 +247,8 @@ def test_appending_to_an_existing_rollup_keeps_one_header(vault_dir: Path) -> No
         "one rollup header plus four absorbed checkpoint headers"
     )
     assert _frontmatter_of(rollups[0])["type"] == "session"
-    assert "## 2026-01-05-2300.md" in text
-    assert "## 2026-01-05-0900.md" in text, "the original sources survive the append"
+    assert f"## {_stamp(10, '2300')}.md" in text
+    assert f"## {_stamp(10, '0900')}.md" in text, "the original sources survive the append"
 
 
 def test_a_lone_checkpoint_for_a_day_still_rolls_up(vault_dir: Path) -> None:
@@ -216,7 +260,7 @@ def test_a_lone_checkpoint_for_a_day_still_rolls_up(vault_dir: Path) -> None:
     file out of the non-recursively-globbed top level.
     """
     proj = vault_dir / "projects" / "demo"
-    lone = _aged_checkpoint(proj / "sessions", "2026-01-05-0900", "demo", age_days=400)
+    lone = _aged_checkpoint(proj / "sessions", _stamp(10), "demo")
 
     counts = _compact(vault_dir, proj)
 
@@ -225,7 +269,7 @@ def test_a_lone_checkpoint_for_a_day_still_rolls_up(vault_dir: Path) -> None:
     rollups = _rollups(proj)
     assert len(rollups) == 1
     assert _frontmatter_of(rollups[0])["type"] == "session"
-    assert "## 2026-01-05-0900.md" in rollups[0].read_text(encoding="utf-8")
+    assert f"## {_stamp(10)}.md" in rollups[0].read_text(encoding="utf-8")
 
 
 def test_nothing_aged_is_left_at_the_top_level(vault_dir: Path) -> None:
@@ -236,10 +280,10 @@ def test_nothing_aged_is_left_at_the_top_level(vault_dir: Path) -> None:
     """
     proj = vault_dir / "projects" / "demo"
     sessions = proj / "sessions"
-    _aged_checkpoint(sessions, "2026-01-05-0900", "demo", age_days=40)
-    _aged_checkpoint(sessions, "2026-01-05-1700", "demo", age_days=40)
-    _aged_checkpoint(sessions, "2026-02-11-1000", "demo", age_days=30)
-    _aged_checkpoint(sessions, "2026-03-02-1000", "demo", age_days=20)
+    _aged_checkpoint(sessions, _stamp(10, "0900"), "demo")
+    _aged_checkpoint(sessions, _stamp(10, "1700"), "demo")
+    _aged_checkpoint(sessions, _stamp(20, "1000"), "demo")
+    _aged_checkpoint(sessions, _stamp(25, "1000"), "demo")
 
     _compact(vault_dir, proj)
 
@@ -255,7 +299,7 @@ def test_recent_checkpoints_are_never_touched(vault_dir: Path) -> None:
     """
     proj = vault_dir / "projects" / "demo"
     sessions = proj / "sessions"
-    fresh = _aged_checkpoint(sessions, "2026-08-24-0900", "demo", age_days=1)
+    fresh = _aged_checkpoint(sessions, _stamp(1), "demo")
 
     counts = _compact(vault_dir, proj)
 
@@ -272,7 +316,7 @@ def test_a_late_checkpoint_merges_into_an_existing_rollup(vault_dir: Path) -> No
     """
     proj = _project_with_aging_checkpoints(vault_dir)
     _compact(vault_dir, proj)
-    straggler = _aged_checkpoint(proj / "sessions", "2026-01-05-2300", "demo", age_days=40)
+    straggler = _aged_checkpoint(proj / "sessions", _stamp(10, "2300"), "demo")
 
     counts = _compact(vault_dir, proj)
 
@@ -280,11 +324,273 @@ def test_a_late_checkpoint_merges_into_an_existing_rollup(vault_dir: Path) -> No
     assert not straggler.exists()
     assert len(_rollups(proj)) == 1
     text = _rollups(proj)[0].read_text(encoding="utf-8")
-    assert "## 2026-01-05-2300.md" in text
+    assert f"## {_stamp(10, '2300')}.md" in text
     assert text.count("type: session") == 4, "still exactly one rollup header"
 
 
+# --- F19: the period is in the name, never the mtime ---------------------------------
+
+def test_raw_checkpoint_day_comes_from_its_name(vault_dir: Path) -> None:
+    """A checkpoint stamped ten days ago rolls up under that day even when its
+    mtime is *now* -- which it is on every machine the file synced to later."""
+    proj = vault_dir / "projects" / "demo"
+    raw = _aged_checkpoint(proj / "sessions", _stamp(10), "demo")  # fresh mtime
+    assert time.time() - raw.stat().st_mtime < DAY
+
+    counts = _compact(vault_dir, proj)
+
+    assert counts["raw_to_daily"] == 1
+    assert [p.name for p in _rollups(proj)] == [f"{_day(10)}.md"]
+
+
+def test_daily_is_filed_under_the_week_in_its_name(vault_dir: Path) -> None:
+    """The F19 headline: July's dailies must not land in a September weekly.
+
+    A daily named for a day 60 days ago, with a fresh mtime, must be filed under
+    that day's ISO week -- not under this week's, which is what an mtime bucket
+    produced for every daily a single run wrote.
+    """
+    proj = vault_dir / "projects" / "demo"
+    daily = _rollup_with(proj / "sessions" / "daily" / f"{_day(60)}.md", "demo", "daily",
+                         {f"{_stamp(60)}.md": "sixty days ago"})
+    assert time.time() - daily.stat().st_mtime < DAY
+
+    counts = _compact(vault_dir, proj)
+
+    assert counts["daily_to_weekly"] == 1
+    assert not daily.exists()
+    assert [p.name for p in _weeklies(proj)] == [f"{_week(60)}.md"]
+    assert _week(60) != _week(0), "the fixture must not straddle the current week"
+
+
+def test_ageing_clock_is_the_name_not_the_mtime(vault_dir: Path) -> None:
+    """The inverse: a file *named* for yesterday is recent, however old its mtime.
+
+    Under the mtime clock each stage's timer restarted whenever compaction wrote
+    the file; a name-based clock cannot be reset by writing.
+    """
+    proj = vault_dir / "projects" / "demo"
+    raw = _aged_checkpoint(proj / "sessions", _stamp(1), "demo", age_days=40)
+    daily = _rollup_with(proj / "sessions" / "daily" / f"{_day(2)}.md", "demo", "daily",
+                         {f"{_stamp(2)}.md": "two days ago"})
+    old = time.time() - 400 * DAY
+    os.utime(daily, (old, old))
+
+    counts = _compact(vault_dir, proj)
+
+    assert counts["raw_to_daily"] == 0 and counts["daily_to_weekly"] == 0
+    assert raw.exists() and daily.exists()
+
+
+def test_weekly_is_archived_by_the_week_in_its_name(vault_dir: Path) -> None:
+    proj = vault_dir / "projects" / "demo"
+    week = _week(400)
+    weekly = _rollup_with(proj / "sessions" / "weekly" / f"{week}.md", "demo", "weekly",
+                          {f"{_stamp(400)}.md": "over a year ago"})
+    assert time.time() - weekly.stat().st_mtime < DAY
+
+    counts = _compact(vault_dir, proj)
+
+    assert counts["archived"] == 1
+    assert not weekly.exists()
+    assert [p.name for p in _archived(vault_dir)] == [f"{week}.md"]
+    assert "over a year ago" in _archived(vault_dir)[0].read_text(encoding="utf-8")
+
+
+def test_two_machines_file_the_same_daily_under_one_week(vault_dir: Path) -> None:
+    """Compacting on different days (different machines, different mtimes) must
+    agree on the weekly, or the same day's history is split across two files
+    that Obsidian Sync then merges into a conflict."""
+    sections = {f"{_stamp(45)}.md": "shared history"}
+    a = vault_dir / "projects" / "machine-a"
+    b = vault_dir / "projects" / "machine-b"
+    _rollup_with(a / "sessions" / "daily" / f"{_day(45)}.md", "machine-a", "daily", sections)
+    _rollup_with(b / "sessions" / "daily" / f"{_day(45)}.md", "machine-b", "daily", sections)
+
+    _compact(vault_dir, a, today=TODAY)
+    _compact(vault_dir, b, today=TODAY + timedelta(days=9))
+
+    assert [p.name for p in _weeklies(a)] == [p.name for p in _weeklies(b)] == [f"{_week(45)}.md"]
+
+
+def test_a_file_with_no_date_in_its_name_falls_back_to_mtime(vault_dir: Path) -> None:
+    """The one place mtime is still consulted: a name that carries no date at all.
+    Leaving it at the top level forever would be worse."""
+    proj = vault_dir / "projects" / "demo"
+    sessions = proj / "sessions"
+    sessions.mkdir(parents=True)
+    odd = sessions / "hand-named-notes.md"
+    odd.write_text("some notes\n", encoding="utf-8")
+    old = time.time() - 10 * DAY
+    os.utime(odd, (old, old))
+
+    counts = _compact(vault_dir, proj)
+
+    assert counts["raw_to_daily"] == 1 and not odd.exists()
+    assert [p.name for p in _rollups(proj)] == [f"{_day(10)}.md"]
+
+
+# --- F20: merge keys, crash leftovers, and archive collisions ------------------------
+
+def test_new_rollups_mark_their_sources(vault_dir: Path) -> None:
+    proj = _project_with_aging_checkpoints(vault_dir)
+    _compact(vault_dir, proj)
+
+    text = _rollups(proj)[0].read_text(encoding="utf-8")
+    for hhmm in ("0900", "1700"):
+        assert f"{compact.SOURCE_MARKER_PREFIX}{_stamp(10, hhmm)}.md -->" in text
+
+
+def test_headings_inside_absorbed_bodies_are_not_merge_keys(vault_dir: Path) -> None:
+    """`## What the user asked for` is a checkpoint heading, not a source. The old
+    `^## (.+)$` key put every such heading into the merge set."""
+    proj = _project_with_aging_checkpoints(vault_dir)
+    _compact(vault_dir, proj)
+
+    keys = compact._existing_sources(_rollups(proj)[0])
+    assert keys == {f"{_stamp(10, '0900')}.md", f"{_stamp(10, '1700')}.md"}
+
+
+def test_legacy_heading_rollups_are_still_recognised(vault_dir: Path) -> None:
+    """A rollup written before markers existed keys on its `## <name>.md` headings,
+    and a marker-era append to the same file parses alongside them."""
+    proj = vault_dir / "projects" / "demo"
+    legacy = proj / "sessions" / "daily" / f"{_day(10)}.md"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(
+        "## a.md\n\nbody a\n\n## Decisions\n\nnot a source\n\n"
+        f"{compact._render_section('b.md', 'body b\n\n## Files touched\n\n- x.py')}",
+        encoding="utf-8",
+    )
+    assert compact._existing_sources(legacy) == {"a.md", "b.md"}
+    assert dict(compact._sections(legacy.read_text(encoding="utf-8")))["b.md"].endswith("- x.py")
+
+
+def test_crash_leftover_sources_are_reclaimed(vault_dir: Path) -> None:
+    """A run that died between writing the rollup and unlinking its sources.
+
+    The rerun found every section already present, so `added == 0`, and the
+    delete step -- gated on `added` -- never ran: the sources stayed as raw
+    preload candidates forever, and re-ran the same no-op on every compaction.
+    """
+    proj = vault_dir / "projects" / "demo"
+    raw = _aged_checkpoint(proj / "sessions", _stamp(10), "demo")
+    daily = _rollup_with(proj / "sessions" / "daily" / f"{_day(10)}.md", "demo", "daily",
+                         {raw.name: raw.read_text(encoding="utf-8")})
+    before = daily.read_text(encoding="utf-8")
+
+    counts = _compact(vault_dir, proj)
+
+    assert counts["raw_to_daily"] == 0
+    assert counts["reclaimed"] == 1
+    assert not raw.exists(), "an already-merged source is reclaimed, not stranded"
+    assert daily.read_text(encoding="utf-8") == before, "and nothing is duplicated"
+
+
+def test_reclaim_never_deletes_what_was_not_written(vault_dir: Path) -> None:
+    """The guard on the guard: a source is reclaimed only when every section it
+    holds is in the target. A raw checkpoint whose name is absent is added first."""
+    proj = vault_dir / "projects" / "demo"
+    raw = _aged_checkpoint(proj / "sessions", _stamp(10), "demo")
+    daily = _rollup_with(proj / "sessions" / "daily" / f"{_day(10)}.md", "demo", "daily",
+                         {"unrelated.md": "something else"})
+
+    counts = _compact(vault_dir, proj, dry_run=True)
+    assert counts["raw_to_daily"] == 1 and counts["reclaimed"] == 0
+    assert raw.exists(), "dry-run deletes nothing"
+
+    counts = _compact(vault_dir, proj)
+    assert counts["raw_to_daily"] == 1 and not raw.exists()
+    assert "work on demo" in daily.read_text(encoding="utf-8")
+
+
+def test_archiving_merges_into_an_existing_archived_weekly(vault_dir: Path) -> None:
+    """A late-syncing checkpoint from an offline machine regenerates a weekly for a
+    week that is already archived. `shutil.move` replaced the archived year of
+    history with the one straggler."""
+    proj = vault_dir / "projects" / "demo"
+    week = _week(400)
+    archived = _rollup_with(
+        vault_dir / "archive" / "projects" / "demo" / "sessions" / "weekly" / f"{week}.md",
+        "demo", "weekly", {"old-a.md": "history a", "old-b.md": "history b"})
+    late = _rollup_with(proj / "sessions" / "weekly" / f"{week}.md", "demo", "weekly",
+                        {"old-b.md": "history b", "late-c.md": "straggler c"})
+
+    counts = _compact(vault_dir, proj)
+
+    assert counts["archived"] == 1
+    assert not late.exists()
+    text = archived.read_text(encoding="utf-8")
+    assert "history a" in text, "the archived history survives"
+    assert text.count("history b") == 1, "shared sections are not duplicated"
+    assert "straggler c" in text
+    assert compact._existing_sources(archived) == {"old-a.md", "old-b.md", "late-c.md"}
+
+
+def test_regenerated_daily_adds_only_its_new_sections_to_the_weekly(vault_dir: Path) -> None:
+    """Section-level keys are what make reclaiming safe.
+
+    A daily rolled into its weekly and deleted; a late raw checkpoint recreates a
+    daily of the *same name* with the old section plus a new one. Keyed on the
+    daily's filename it would read as "already merged" -- and reclaiming it would
+    delete the only copy of the new section.
+    """
+    proj = vault_dir / "projects" / "demo"
+    week = _week(45)
+    weekly = _rollup_with(proj / "sessions" / "weekly" / f"{week}.md", "demo", "weekly",
+                          {f"{_stamp(45, '0900')}.md": "morning"})
+    daily = _rollup_with(proj / "sessions" / "daily" / f"{_day(45)}.md", "demo", "daily",
+                         {f"{_stamp(45, '0900')}.md": "morning",
+                          f"{_stamp(45, '2300')}.md": "late night"})
+
+    counts = _compact(vault_dir, proj)
+
+    assert counts["daily_to_weekly"] == 1
+    assert not daily.exists()
+    text = weekly.read_text(encoding="utf-8")
+    assert text.count("morning") == 1 and "late night" in text
+
+
+def test_dry_run_reports_without_writing_or_deleting(vault_dir: Path) -> None:
+    proj = _project_with_aging_checkpoints(vault_dir)
+    raws = sorted((proj / "sessions").glob("*.md"))
+
+    counts = _compact(vault_dir, proj, dry_run=True)
+
+    assert counts["raw_to_daily"] == 2
+    assert all(p.exists() for p in raws)
+    assert not (proj / "sessions" / "daily").exists()
+
+
 # --- the invariant, not the instance -------------------------------------------------
+
+def test_compact_never_buckets_or_ages_by_mtime() -> None:
+    """The class of bug behind F19: every period and age decision must come from a
+    filename. `st_mtime` may appear only in the single documented fallback."""
+    tree = ast.parse(Path(compact.__file__).read_text(encoding="utf-8"))
+    users = set()
+    for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Attribute) and node.attr == "st_mtime":
+                users.add(fn.name)
+    assert users == {"_mtime_date"}, (
+        f"{sorted(users)} read st_mtime; only the no-date-in-name fallback may"
+    )
+
+
+def test_compact_never_moves_over_an_existing_file() -> None:
+    """The class of bug behind F20's archive half: nothing in compact may replace a
+    destination wholesale. Merges go through `_merge`, which reads first."""
+    tree = ast.parse(Path(compact.__file__).read_text(encoding="utf-8"))
+    movers = {"move", "replace", "rename", "copy", "copyfile", "copy2"}
+    offenders = [
+        f"{fn.name}:{node.func.attr}"
+        for fn in ast.walk(tree) if isinstance(fn, ast.FunctionDef)
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", None) in movers
+    ]
+    assert not offenders, f"{offenders} can replace a destination wholesale"
+
 
 def _functions_with_markdown_enumeration(source: Path) -> list[ast.FunctionDef]:
     """Every function in `source` that walks a directory for *.md files."""
