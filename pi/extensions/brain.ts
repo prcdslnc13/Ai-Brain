@@ -175,8 +175,9 @@ export default function brainExtension(pi: ExtensionAPI) {
 	// This extension is the operator, not the model: its checkpoints go through
 	// `brain checkpoint --from-pi <session.jsonl>`, which the agent-surface gate
 	// refuses. resolveBrainCmd() normally lands on the venv binary (which never sets
-	// the flag), but BRAIN_PI_CMD can legitimately point at Claude Code's generated
-	// brain.cmd wrapper, which does — and then every automatic checkpoint would fail
+	// the flag), but BRAIN_PI_CMD can legitimately point at something that does —
+	// Claude Code's generated brain-agent.py launcher, or a wrapper of the user's own
+	// that sets it — and then every automatic checkpoint would fail
 	// with an exit 2 that nothing surfaces. Clearing it here is safe because the
 	// arguments are ours, not the model's: the tools below expose recall/save/list/
 	// forget/checkpoint bodies, never a caller-supplied path to read.

@@ -53,9 +53,9 @@ AGENT_SURFACE_ENV = "BRAIN_AGENT_SURFACE"
 # preload may even load it unasked. That is a local-file exfiltration primitive
 # reachable with no human in the loop.
 #
-# So the pre-approved invocation carries BRAIN_AGENT_SURFACE=1 (baked into the
-# generated brain.cmd on Windows, into the BRAIN_CMD env prefix on POSIX) and these
-# options are refused under it. Everything a model legitimately needs — recall, save
+# So the pre-approved invocation carries BRAIN_AGENT_SURFACE=1 (set from inside the
+# generated `brain-agent.py` launcher the installer pre-approves, on every platform)
+# and these options are refused under it. Everything a model legitimately needs — recall, save
 # from --content or stdin, list, forget, inline checkpoint, stats, doctor — is
 # untouched. Operators, timers and the pi extension invoke the venv's `brain`
 # directly, without the variable, and keep the full surface.
@@ -87,7 +87,7 @@ def _enforce_agent_surface(args: argparse.Namespace) -> None:
         f"       with --content / --summary, or pipe it via stdin.\n"
         f"       Operators: run the venv's `brain` executable directly, with\n"
         f"       BRAIN_VAULT set and {AGENT_SURFACE_ENV} unset — only the\n"
-        f"       installer-generated wrapper sets it.",
+        f"       installer-generated brain-agent.py launcher sets it.",
         file=sys.stderr,
     )
     raise SystemExit(2)

@@ -70,31 +70,41 @@ auto-discovery.
 2. Sanity-checks that `brain_mcp` imports from `$env:TEMP`, to catch editable-install
    regressions before they reach a live session.
 3. Ensures `<vault>\Brain\{user,feedback,references,projects}` exists.
-4. Generates `<config>\brain.cmd` — the CLI wrapper the model invokes via the Bash tool
-   (`<config>/brain.cmd recall ...`). Bakes in `BRAIN_VAULT` and forwards all arguments to
-   the venv's `brain.exe`.
+4. Generates `<config>\brain-agent.py` — the launcher the model invokes via the Bash tool
+   (`"<venv>/Scripts/python.exe" "<config>/brain-agent.py" recall ...`). It bakes in
+   `BRAIN_VAULT` and `BRAIN_AGENT_SURFACE=1`, then hands argv to the `brain` CLI. It is a
+   Python file rather than a `.cmd` on purpose: cmd.exe re-expands `%*` after Git Bash has
+   quoted the arguments, so the old `brain.cmd` wrapper let a query like `x"&echo pwned`
+   run a second command through the pre-approved path (CVE-2024-24576 class).
 5. Writes `<config>\CLAUDE.md` and `<config>\skills\brain\SKILL.md` from the templates,
-   with `__BRAIN_VAULT__` / `__BRAIN_CMD__` substituted.
+   with `__BRAIN_VAULT__` / `__BRAIN_CMD__` substituted. A hand-written file at either
+   path (no `managed-by` marker) is backed up as `<name>.brain-backup-<stamp>` first.
 6. Generates `<config>\brain-launch.cmd` — a small wrapper that sets `BRAIN_VAULT` via
    `setlocal`, then execs the requested hook with the venv python. This sidesteps the fact
-   that Unix-style `VAR=val cmd` env prefixes don't work in Windows shells, *and* avoids
-   having to embed escaped quotes in `settings.json`.
+   that Unix-style `VAR=val cmd` env prefixes don't work in Windows shells. It is written
+   in the console's OEM codepage (what cmd.exe reads batch files in), so a vault, repo or
+   config path that the codepage cannot express makes setup report a failure instead of
+   silently wiring hooks to a nonexistent `BRAIN_VAULT`. Hooks are the only caller — their
+   arguments are fixed hook names from `settings.json`, never text a model chose.
 7. Merges `templates/settings.hooks.win.json` into `<config>\settings.json`, replacing
    `__BRAIN_LAUNCH__` with the full path to the generated `brain-launch.cmd`. Each hook
-   command ends up as just `<config>\brain-launch.cmd <hook-name>`. Also merges a
-   `permissions.allow` rule (`Bash(<config>/brain.cmd:*)`) so model-initiated `brain`
-   CLI calls never hit permission prompts; stale rules pointing at old wrapper paths
-   are pruned on re-run.
-8. MCP registration: with `-WithMcp`, registers the brain MCP server at user scope via
+   command ends up as `"<config>/brain-launch.cmd" <hook-name>` (quoted, so a space in the
+   username survives). Also merges one `permissions.allow` rule per agent subcommand
+   (`Bash("<venv python>" "<config>/brain-agent.py" recall:*)`, `… save:*`, …) so
+   model-initiated `brain` CLI calls never hit permission prompts; stale rules pointing at
+   old wrapper paths — including the retired `brain.cmd` — are pruned on re-run.
+8. MCP registration: with `--with-mcp`, registers the brain MCP server at user scope via
    `claude mcp add brain --scope user -e BRAIN_VAULT=<vault> -- <venv-python> -m brain_mcp`.
    Without it (the default), removes any existing user-scope `brain` registration.
-9. Removes any stale `<config>\.mcp.json` left over from earlier setup attempts.
+9. Cleanup: removes a stale `<config>\.mcp.json` left over from earlier setup attempts
+   (only if it is a Brain-only registration) and the retired `<config>\brain.cmd` wrapper
+   from an older install (only if it says a Brain installer generated it).
 
 ## Verify the install
 
 ```powershell
 # 1. The brain CLI works end to end (paths per your install):
-& "$env:USERPROFILE\.claude-personal\brain.cmd" stats
+& "$env:USERPROFILE\src\Ai-Brain\mcp-server\.venv\Scripts\python.exe" "$env:USERPROFILE\.claude-personal\brain-agent.py" stats
 # Expected: one line of JSON with total_items / by_type counts.
 # (If you installed with -WithMcp, also check: claude mcp list → "brain: ✓ Connected")
 
@@ -132,10 +142,10 @@ files automatically — wrap each command with `cmd.exe /c`:
 
 ```jsonc
 // Before
-"command": "C:/Users/<you>/.claude/brain-launch.cmd session_start"
+"command": "\"C:/Users/<you>/.claude/brain-launch.cmd\" session_start"
 
 // After
-"command": "cmd.exe /c \"C:/Users/<you>/.claude/brain-launch.cmd session_start\""
+"command": "cmd.exe /c \"\"C:/Users/<you>/.claude/brain-launch.cmd\" session_start\""
 ```
 
 Edit `templates/settings.hooks.win.json` to bake this in, then re-run setup so the
