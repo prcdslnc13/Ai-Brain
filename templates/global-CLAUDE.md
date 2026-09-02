@@ -22,7 +22,14 @@ Do **not** write to memory by editing vault files directly, and do **not** use t
 
 The SessionStart hook automatically preloads the Brain bundle (index, user profile, all feedback,
 project overview, latest session checkpoint) into your context at the top of every session. You do
-not need to load it yourself unless that preload is missing.
+not need to load it yourself unless that preload is missing. It arrives **in parts** ("Brain
+preload, part I of N"), one per hook entry, in no guaranteed order; each part is fenced and safe
+alone. The last part may end with a **"Saved but not loaded"** list — memories that exist but did
+not fit; `brain recall <name>` any that bears on the task.
+
+**If a Brain preload part arrives as a `<persisted-output>` notice** ("Output too large … saved
+to: <path>"), read that file in full before your first response — it holds the user profile and
+feedback rules the harness did not deliver inline.
 
 ## Session bootstrap: upgrading an overview stub
 
