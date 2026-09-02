@@ -400,8 +400,13 @@ def _check_fastembed() -> list[Finding]:
 
 
 _ACTIVITY_COLUMNS_RE = re.compile(
-    r"\[sig=([YN]) sav=([YN]) nud=([YN])(?: pro=([YN]))?(?: too=([YN]))?(?: sys=([YN]))?\]"
+    r"\[sig=([YN]) sav=([YN]) nud=([YN])(?: pro=([YN]))?(?: too=([YN]))?(?: sys=([YN]))?"
+    r"(?: re=([YN]))?\]"
 )
+# `<stamp> <account> <project> [sig=…` — account never contains a space
+# (BRAIN_ACCOUNT, default "claude"); project may, so it is everything up to the
+# column block.
+_ACTIVITY_KEY_RE = re.compile(r"^\S+ \S+ (\S+) (.*?) \[sig=")
 SAVE_GAP_WINDOW = 30  # tail of activity.md to examine
 SAVE_GAP_THRESHOLD = 3  # signal-without-save count that triggers a WARN
 PROMISE_GAP_THRESHOLD = 1  # any unfulfilled promise is a bug worth flagging
@@ -418,6 +423,49 @@ def _tail_activity(brain: Path, n: int) -> list[str]:
         return []
 
 
+def _audited_rows(lines: list[str]) -> list[dict]:
+    """Parse activity rows into dicts and fold gate re-entries into the turn
+    they belong to.
+
+    `hooks/stop.py` writes a row *before* it blocks on an unfulfilled promise,
+    and a second row (tagged `re=Y`) when Claude Code re-enters it after the
+    model has saved or recanted. The second row's assistant text still spans
+    the whole turn, original promise included, so it reads `pro=Y` either way
+    — and the first row is `pro=Y sav=N` by construction. Counted naively,
+    every gate block therefore produced a PROMISE_GAP warning at the next
+    SessionStart for a promise the gate had already made the model resolve
+    (2026-09-01). So a re-entry row is never a row of its own: it supersedes
+    the nearest preceding row from the same account+project, contributing its
+    `sav` (the save may have happened *because* the gate fired) and marking
+    the turn `gated`, which the promise check skips — the gate ran and the
+    model answered it, whichever way. Legacy rows without a `re=` column are
+    ordinary rows.
+    """
+    rows: list[dict] = []
+    for line in lines:
+        m = _ACTIVITY_COLUMNS_RE.search(line)
+        if not m:
+            continue
+        key_m = _ACTIVITY_KEY_RE.match(line)
+        row = {
+            "key": (key_m.group(1), key_m.group(2)) if key_m else None,
+            "sig": m.group(1), "sav": m.group(2), "nud": m.group(3),
+            "pro": m.group(4), "too": m.group(5), "sys": m.group(6),
+            "reentry": m.group(7) == "Y",
+            "gated": False,
+        }
+        if row["reentry"]:
+            for prior in reversed(rows):
+                if prior["key"] == row["key"] and not prior["reentry"]:
+                    prior["gated"] = True
+                    if row["sav"] == "Y":
+                        prior["sav"] = "Y"
+                    break
+            continue
+        rows.append(row)
+    return rows
+
+
 def _check_save_gap(brain: Path) -> list[Finding]:
     """Warn when recent activity shows save-signals without brain_save calls.
 
@@ -431,19 +479,15 @@ def _check_save_gap(brain: Path) -> list[Finding]:
     audited = 0
     signal_no_save_nudged = 0
     signal_no_save_unnudged = 0
-    for line in lines:
-        m = _ACTIVITY_COLUMNS_RE.search(line)
-        if not m:
-            continue
-        if m.group(5) == "N":
+    for row in _audited_rows(lines):
+        if row["too"] == "N":
             continue  # brain tools weren't callable — a missed save was unsatisfiable
-        if m.group(6) == "Y":
+        if row["sys"] == "Y":
             continue  # system-generated turn (notification/skill expansion) —
             # its "user text" wasn't typed by the user, so sig is meaningless
         audited += 1
-        sig, sav, nud = m.group(1), m.group(2), m.group(3)
-        if sig == "Y" and sav == "N":
-            if nud == "Y":
+        if row["sig"] == "Y" and row["sav"] == "N":
+            if row["nud"] == "Y":
                 signal_no_save_nudged += 1
             else:
                 signal_no_save_unnudged += 1
@@ -475,8 +519,8 @@ def _check_promise_gap(brain: Path) -> list[Finding]:
     This is the observability backstop behind the Stop-hook gate in
     `hooks/stop.py`. With the gate enabled (default), these should be near-zero
     — if they're not, either the gate is disabled (BRAIN_STOP_GATE=0), the
-    promise regex missed a phrasing, or the model was already re-entering a
-    blocked stop (stop_hook_active=true) and we deliberately bypassed the gate.
+    promise regex missed a phrasing, or the session died between the gate
+    blocking and the model answering it.
 
     Only examines lines written after the `pro=` column landed. Older lines
     have no `pro=` suffix and are silently skipped. Rows tagged `too=N` (the
@@ -488,6 +532,10 @@ def _check_promise_gap(brain: Path) -> list[Finding]:
     here, unlike in _check_save_gap: `pro` measures the *assistant's* text,
     which is genuinely model-authored whatever triggered the turn, so an
     unfulfilled promise on a notification turn is a real miss.
+
+    Turns the gate blocked and the model then answered (a `re=Y` row follows —
+    see `_audited_rows`) are skipped: the gate did its job, and whether the
+    model saved or recanted, there is no unfulfilled promise left.
     """
     lines = _tail_activity(brain, SAVE_GAP_WINDOW)
     if not lines:
@@ -495,19 +543,16 @@ def _check_promise_gap(brain: Path) -> list[Finding]:
 
     audited = 0
     unfulfilled = 0
-    for line in lines:
-        m = _ACTIVITY_COLUMNS_RE.search(line)
-        if not m:
-            continue
-        pro = m.group(4)
-        if pro is None:
+    for row in _audited_rows(lines):
+        if row["pro"] is None:
             continue  # old-format line, no promise column
-        if m.group(5) == "N":
+        if row["too"] == "N":
             continue  # brain tools weren't callable this session — the promise
             # was physically unsatisfiable (infra failure, not a model bug)
         audited += 1
-        sav = m.group(2)
-        if pro == "Y" and sav == "N":
+        if row["gated"]:
+            continue  # the gate blocked and the model answered it: not a gap
+        if row["pro"] == "Y" and row["sav"] == "N":
             unfulfilled += 1
 
     if audited == 0:

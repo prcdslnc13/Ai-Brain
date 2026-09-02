@@ -28,9 +28,10 @@
  *   BRAIN_PI_EXTENSION=0        disable the extension entirely
  */
 
+import { execFile, type ExecFileException } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
 	BeforeAgentStartEventResult,
@@ -75,8 +76,12 @@ function resolveVault(): string | null {
 
 /**
  * BRAIN_CMD is a *shell string* in the Claude Code templates ("BRAIN_VAULT=… /path/brain"),
- * and pi.exec spawns without a shell. So we accept it only when it is a bare
- * path, and offer BRAIN_PI_CMD for the unambiguous case.
+ * and we spawn without a shell. So we accept it only when it is a bare path,
+ * and offer BRAIN_PI_CMD for the unambiguous case. Either must name a real
+ * executable — the venv `brain`/`brain.exe` — not Claude Code's generated
+ * `brain.cmd` wrapper: Node ≥ 20.12 refuses to spawn a .cmd/.bat file with
+ * shell:false (EINVAL, CVE-2024-27980), and the wrapper sets
+ * BRAIN_AGENT_SURFACE=1 besides, which would reject our --from-pi checkpoints.
  */
 function resolveBrainCmd(): string {
 	const piCmd = process.env.BRAIN_PI_CMD?.trim();
@@ -94,11 +99,77 @@ function resolveBrainCmd(): string {
 	return IS_WINDOWS ? "brain.exe" : "brain"; // last resort: whatever is on PATH
 }
 
-/** brain-prep lives next to brain in the same venv, or on PATH beside it. */
+/**
+ * brain-prep lives next to brain in the same venv, or on PATH beside it. The
+ * sibling lookup is only meaningful for an absolute brainCmd: for a bare name
+ * (`brain`, found on PATH) dirname() is ".", and the existsSync would resolve
+ * `./brain-prep` against whatever cwd pi happened to start in.
+ */
 function resolvePrepCmd(brainCmd: string): string {
-	const sibling = join(dirname(brainCmd), IS_WINDOWS ? "brain-prep.exe" : "brain-prep");
-	if (existsSync(sibling)) return sibling;
+	if (isAbsolute(brainCmd)) {
+		const sibling = join(dirname(brainCmd), IS_WINDOWS ? "brain-prep.exe" : "brain-prep");
+		if (existsSync(sibling)) return sibling;
+	}
 	return IS_WINDOWS ? "brain-prep.exe" : "brain-prep";
+}
+
+interface SpawnResult {
+	/** Exit code, or null when the process was killed or never started. */
+	code: number | null;
+	killed: boolean;
+	stdout: string;
+	stderr: string;
+	/** Set when the process could not be started at all (ENOENT, EINVAL, …). */
+	spawnError?: string;
+}
+
+/**
+ * Spawn an operator-owned command with its own environment. This is
+ * `node:child_process`, not `pi.exec`, for one reason: pi.exec has no per-call
+ * env, so anything the extension needed in the CLI's environment had to be
+ * assigned to `process.env` — and the model's shell tool inherits process.env.
+ * Setting BRAIN_AGENT_SURFACE=0 there cleared the agent-surface gate for every
+ * command the *model* ran, not just ours (2026-09-01). An explicit `env` here
+ * scopes it to the spawn.
+ */
+function spawnCapture(
+	cmd: string,
+	args: string[],
+	opts: { cwd: string; env: NodeJS.ProcessEnv; timeout: number; signal?: AbortSignal },
+): Promise<SpawnResult> {
+	return new Promise((resolveResult) => {
+		execFile(
+			cmd,
+			args,
+			{
+				cwd: opts.cwd,
+				env: opts.env,
+				timeout: opts.timeout,
+				signal: opts.signal,
+				shell: false,
+				windowsHide: true,
+				encoding: "utf8",
+				maxBuffer: 64 * 1024 * 1024,
+			},
+			(err, stdout, stderr) => {
+				const out = String(stdout ?? "");
+				const errText = String(stderr ?? "");
+				if (!err) {
+					resolveResult({ code: 0, killed: false, stdout: out, stderr: errText });
+					return;
+				}
+				const e = err as ExecFileException;
+				const code = typeof e.code === "number" ? e.code : null;
+				resolveResult({
+					code,
+					killed: Boolean(e.killed) || (code === null && e.signal != null),
+					stdout: out,
+					stderr: errText,
+					spawnError: typeof e.code === "string" ? `${e.code}: ${e.message}` : undefined,
+				});
+			},
+		);
+	});
 }
 
 /**
@@ -167,21 +238,21 @@ export default function brainExtension(pi: ExtensionAPI) {
 		return;
 	}
 
-	// pi.exec spawns with the parent environment and no env override, so this is
-	// how BRAIN_VAULT reaches the CLI. Hooks have the same problem and solve it
-	// by wrapping the command; here we own the process, so we set it directly.
+	// The model's shell tool inherits process.env, and the `brain` CLI it runs by
+	// hand needs the vault too — exporting BRAIN_VAULT process-wide is the intent.
 	process.env.BRAIN_VAULT = vault;
 
 	// This extension is the operator, not the model: its checkpoints go through
 	// `brain checkpoint --from-pi <session.jsonl>`, which the agent-surface gate
-	// refuses. resolveBrainCmd() normally lands on the venv binary (which never sets
-	// the flag), but BRAIN_PI_CMD can legitimately point at something that does —
-	// Claude Code's generated brain-agent.py launcher, or a wrapper of the user's own
-	// that sets it — and then every automatic checkpoint would fail
-	// with an exit 2 that nothing surfaces. Clearing it here is safe because the
-	// arguments are ours, not the model's: the tools below expose recall/save/list/
-	// forget/checkpoint bodies, never a caller-supplied path to read.
-	process.env.BRAIN_AGENT_SURFACE = "0";
+	// refuses under BRAIN_AGENT_SURFACE=1. The venv binary never sets the flag,
+	// but a user's environment might, so our own spawns clear it — in *their*
+	// environment only. It must NOT be assigned to process.env: that would clear
+	// the gate for every command the model runs through the shell tool, which
+	// is exactly the pre-approved, unattended surface the gate exists to bound.
+	// Clearing it for our spawns is safe because the arguments are ours, not the
+	// model's: the tools below expose recall/save/list/forget/checkpoint bodies,
+	// never a caller-supplied path to read.
+	const spawnEnv: NodeJS.ProcessEnv = { ...process.env, BRAIN_VAULT: vault, BRAIN_AGENT_SURFACE: "0" };
 
 	interface RunResult {
 		ok: boolean;
@@ -198,7 +269,16 @@ export default function brainExtension(pi: ExtensionAPI) {
 		signal?: AbortSignal,
 	): Promise<RunResult> {
 		try {
-			const res = await pi.exec(cmd, args, { signal, timeout: timeoutMs, cwd: ctx.cwd });
+			const res = await spawnCapture(cmd, args, {
+				cwd: ctx.cwd,
+				env: spawnEnv,
+				timeout: timeoutMs,
+				signal,
+			});
+			if (res.spawnError) {
+				warnOnce(ctx, `throw:${cmd}`, `could not run ${cmd}: ${res.spawnError}`);
+				return { ok: false, stdout: "", stderr: res.spawnError };
+			}
 			if (res.code !== 0 || res.killed) {
 				// A kill with no output is almost always the timeout, and the
 				// usual cause is the first recall on a machine building the

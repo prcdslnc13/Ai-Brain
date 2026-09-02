@@ -25,6 +25,7 @@ summarizes it when the preload surfaces it.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from collections import Counter
 from datetime import datetime
@@ -33,7 +34,30 @@ from urllib.parse import quote
 
 from . import vault as _vault
 
-_COMMAND_TAG_PREFIXES = ("<local-command-", "<command-")
+# Prefixes that mark a Claude Code transcript "user" entry as system-generated
+# rather than typed by the user: background-task notifications, skill/command
+# expansions, local-command output, and system reminders. THE list -- both
+# consumers read it from here. `hooks/stop.py` tags such turns `sys=Y` in the
+# activity audit (a skill body matches save-signal phrases like "I want", so
+# `sig` measured on it says nothing about the user), and `parse_claude_transcript`
+# keeps them out of a checkpoint's "What the user asked for". Until 2026-09-01
+# each consumer kept its own list and they disagreed: the checkpoint renderer
+# knew only the two command wrappers, so 9 of 249 checkpoints in the vault
+# carried subagent output where the user's request should have been.
+SYSTEM_TURN_PREFIXES = (
+    "<task-notification>",
+    "[SYSTEM NOTIFICATION",
+    "<command-",          # <command-name>, <command-message>, <command-args>
+    "<local-command-",    # <local-command-stdout>, <local-command-caveat>
+    "Base directory for this skill:",
+    "<system-reminder>",
+)
+
+# A system reminder can be *prepended* to a genuine prompt in the same user entry
+# (Claude Code attaches them as a leading content block). Those are stripped
+# before the prefix test so the prompt behind them is neither dropped from a
+# checkpoint nor mis-tagged as a system turn.
+_SYSTEM_REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)
 
 # How many newest sessions to look at when picking a default one to checkpoint.
 _DEFAULT_SCAN_LIMIT = 25
@@ -41,12 +65,23 @@ _DEFAULT_SCAN_LIMIT = 25
 
 # ---------- Claude Code transcript JSONL ----------
 
-def _is_command_wrapper(text: str) -> bool:
-    """Claude Code wraps slash-command input/output in synthetic XML-ish tags
-    that arrive as 'user' role entries. A turn made only of these is not a real
-    user turn."""
-    stripped = text.strip()
-    return bool(stripped) and stripped.startswith(_COMMAND_TAG_PREFIXES)
+def user_authored_text(text: str) -> str:
+    """The part of a transcript user entry the user actually typed, or ''.
+
+    Strips attached system-reminder blocks, then returns '' when what remains
+    starts with any SYSTEM_TURN_PREFIXES marker.
+    """
+    if not text:
+        return ""
+    stripped = _SYSTEM_REMINDER_RE.sub("", text).strip()
+    if not stripped or stripped.startswith(SYSTEM_TURN_PREFIXES):
+        return ""
+    return stripped
+
+
+def is_system_turn(text: str) -> bool:
+    """True when a non-empty user entry carries no user-authored text."""
+    return bool(text and text.strip()) and not user_authored_text(text)
 
 
 def _extract_text(content) -> str:
@@ -89,8 +124,10 @@ def parse_claude_transcript(path: Path) -> dict:
 
             if role == "user":
                 text = _extract_text(msg.get("content") if isinstance(msg, dict) else msg)
-                if text and not text.startswith("[tool_result") and not _is_command_wrapper(text):
-                    user_msgs.append(text.strip())
+                if text and not text.startswith("[tool_result"):
+                    authored = user_authored_text(text)
+                    if authored:
+                        user_msgs.append(authored)
             elif role == "assistant":
                 content = msg.get("content") if isinstance(msg, dict) else msg
                 if isinstance(content, list):
