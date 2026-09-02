@@ -839,7 +839,9 @@ def search_memories(query: str, mtype: str | None = None, project: str | None = 
     for p in ordered_paths:
         try:
             candidates.append(Memory.from_file(p))
-        except OSError:
+        except (OSError, ValueError):
+            # ValueError covers UnicodeDecodeError: a cp1252 note that ripgrep
+            # matched lexically must cost one hit, not the whole recall (2026-09-01).
             continue
     if mtype:
         candidates = [m for m in candidates if m.type == mtype]
