@@ -919,8 +919,14 @@ def safe_mtime(p: Path) -> float:
 #
 # PRELOAD_PARTS is the single source of truth for how many entries the two hook
 # templates register per event; test_preload_parts.py asserts the templates match.
-PRELOAD_PARTS = 4
+PRELOAD_PARTS = 7
 HOOK_OUTPUT_CAP_DEFAULT = 9000  # chars; headroom under 10,000 for the JSON envelope
+# Part 1 is packed as if the health banner occupied exactly this many chars, in EVERY
+# process — only part 1's process runs the doctor and knows the real banner, and the
+# other PRELOAD_PARTS-1 processes must arrive at the same part boundaries or an item
+# falls between two parts and is silently never delivered (found 2026-09-01 in the
+# first dry run against the real vault). The real banner is clipped to the reserve.
+BANNER_RESERVE_CHARS = 1500
 
 # Pinned items (overview, latest checkpoint) never hit the elastic budget, so one
 # 80 KB checkpoint used to consume the whole bundle and starve every user and
@@ -943,6 +949,11 @@ def _positive_int_from_env(name: str, default: int) -> int:
     if not math.isfinite(value) or value < 1:
         return default
     return int(min(value, 10_000_000))
+
+
+def banner_reserve_chars() -> int:
+    """Chars part 1 always sets aside for the health banner; BRAIN_BANNER_RESERVE overrides."""
+    return _positive_int_from_env("BRAIN_BANNER_RESERVE", BANNER_RESERVE_CHARS)
 
 
 def hook_output_cap() -> int:
@@ -1244,10 +1255,13 @@ def collect_preload_candidates(project: str | None = None) -> dict:
                     "feedback",
                 )
 
-    user_dir = root / "user"
-    if user_dir.exists():
-        add_elastic("user", sorted(user_dir.glob("*.md")), "user")
-
+    # Global feedback BEFORE user (reordered 2026-09-01). Feedback memories are the
+    # behavioural rules the Brain exists to deliver; user memories are context. With
+    # the preload bounded by Claude Code's per-hook output cap (PRELOAD_PARTS x
+    # HOOK_OUTPUT_CAP), whatever fills last is what gets catalogued instead of
+    # loaded — and user/ (19 files, ~23 KB, mostly incident notes) was pushing every
+    # global feedback rule off the end, the same self-defeating shape the 12 KB
+    # subagent budget had on 2026-07-30 (11 user entries, zero feedback).
     feedback_dir = root / "feedback"
     if feedback_dir.exists():
         add_elastic(
@@ -1255,6 +1269,10 @@ def collect_preload_candidates(project: str | None = None) -> dict:
             sorted(feedback_dir.rglob("*.md"), key=safe_mtime, reverse=True),
             "feedback",
         )
+
+    user_dir = root / "user"
+    if user_dir.exists():
+        add_elastic("user", sorted(user_dir.glob("*.md")), "user")
 
     return {"root": root, "project": project, "pinned": pinned, "elastic": elastic}
 

@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"__BRAIN_LAUNCH__\" session_start --part 1 --parts 4",
+            "command": "\"__BRAIN_LAUNCH__\" session_start --part 1 --parts 7",
             "timeout": 15
           }
         ]
@@ -14,7 +14,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"__BRAIN_LAUNCH__\" session_start --part 2 --parts 4",
+            "command": "\"__BRAIN_LAUNCH__\" session_start --part 2 --parts 7",
             "timeout": 15
           }
         ]
@@ -23,7 +23,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"__BRAIN_LAUNCH__\" session_start --part 3 --parts 4",
+            "command": "\"__BRAIN_LAUNCH__\" session_start --part 3 --parts 7",
             "timeout": 15
           }
         ]
@@ -32,7 +32,34 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"__BRAIN_LAUNCH__\" session_start --part 4 --parts 4",
+            "command": "\"__BRAIN_LAUNCH__\" session_start --part 4 --parts 7",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__BRAIN_LAUNCH__\" session_start --part 5 --parts 7",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__BRAIN_LAUNCH__\" session_start --part 6 --parts 7",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__BRAIN_LAUNCH__\" session_start --part 7 --parts 7",
             "timeout": 15
           }
         ]
@@ -43,7 +70,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"__BRAIN_LAUNCH__\" subagent_start --part 1 --parts 4",
+            "command": "\"__BRAIN_LAUNCH__\" subagent_start --part 1 --parts 7",
             "timeout": 15
           }
         ]
@@ -52,7 +79,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"__BRAIN_LAUNCH__\" subagent_start --part 2 --parts 4",
+            "command": "\"__BRAIN_LAUNCH__\" subagent_start --part 2 --parts 7",
             "timeout": 15
           }
         ]
@@ -61,7 +88,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"__BRAIN_LAUNCH__\" subagent_start --part 3 --parts 4",
+            "command": "\"__BRAIN_LAUNCH__\" subagent_start --part 3 --parts 7",
             "timeout": 15
           }
         ]
@@ -70,7 +97,34 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"__BRAIN_LAUNCH__\" subagent_start --part 4 --parts 4",
+            "command": "\"__BRAIN_LAUNCH__\" subagent_start --part 4 --parts 7",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__BRAIN_LAUNCH__\" subagent_start --part 5 --parts 7",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__BRAIN_LAUNCH__\" subagent_start --part 6 --parts 7",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__BRAIN_LAUNCH__\" subagent_start --part 7 --parts 7",
             "timeout": 15
           }
         ]

@@ -47,12 +47,17 @@ HOW = "**How to apply:** fetch, then switch -c.\n"
 
 @pytest.fixture
 def fat_vault(vault_dir: Path) -> Path:
-    """~60 KB of user/feedback/overview: enough to need every part and overflow it."""
+    """~65 KB of user/feedback/overview: enough to need every part and overflow it.
+
+    Sized against PRELOAD_PARTS x HOOK_OUTPUT_CAP (7 x 9000 = 63 KB of documents) while
+    staying under the 72 KB vault budget, so the overflow tested here is the hook cap's,
+    not the budget's. Raise the counts if PRELOAD_PARTS grows.
+    """
     (vault_dir / "_index.md").write_text("---\npurpose: index\n---\n\n# Index\n", encoding="utf-8")
-    for i in range(8):
+    for i in range(20):
         memory(vault_dir / "user" / f"user-{i:02d}.md", f"user fact {i}", "user",
                f"User fact {i}. " + ("Detail about the user. " * 40), description=f"user fact {i}")
-    for i in range(30):
+    for i in range(45):
         memory(vault_dir / "feedback" / f"rule-{i:02d}.md", f"rule {i}", "feedback",
                f"Rule {i} - always do X before Y. " + ("Detail. " * 60) + "\n\n" + WHY + HOW,
                description=f"rule {i}")
@@ -114,11 +119,42 @@ def test_part_one_carries_the_pinned_sections_and_project_feedback(fat_vault: Pa
     first = parts[0]
     assert "## index" in first
     assert "## project:Proj:overview" in first
-    assert "## project:Proj:latest-session" in first
-    assert "## project:Proj:feedback" in first
-    # Priority order across the whole delivery: project feedback -> user -> global feedback.
+    # Part 1 is packed against the banner reserve, so the checkpoint and project
+    # feedback may spill to part 2 on a fat vault; what must hold is the ORDER —
+    # every pinned section before any elastic one, project feedback first among
+    # the elastic ones — because parts are read in whatever order they arrive.
+    joined_early = "".join(parts)
+    pinned_last = max(joined_early.index(h) for h in
+                      ("## index", "## project:Proj:overview", "## project:Proj:latest-session"))
+    assert pinned_last < joined_early.index("## project:Proj:feedback")
+    # Priority order across the whole delivery: project feedback -> global feedback -> user
+    # (feedback before user since 2026-09-01: the rules must never be what falls off the end).
     joined = "\n".join(parts)
-    assert joined.index("## project:Proj:feedback") < joined.index("## user") < joined.index("## feedback")
+    assert joined.index("## project:Proj:feedback") < joined.index("## feedback") < joined.index("## user")
+
+
+def test_part_boundaries_do_not_depend_on_the_banner(fat_vault: Path):
+    """Only part 1's process runs the doctor and knows the banner; the other
+    PRELOAD_PARTS-1 processes render with none. If the banner changed the packing,
+    the item on the part-1/part-2 boundary would be delivered by nobody (found in
+    the first dry run against the real vault, 2026-09-01). So part 1 is packed
+    against a fixed reserve and the real banner is clipped into it."""
+    bundle = vault.session_start_bundle("Proj")
+    cap = vault.hook_output_cap()
+    reserve = vault.banner_reserve_chars()
+    variants = {
+        "none": "",
+        "short": "## Brain Health\n\n- **[WARN]** `X` — " + ("y" * 500),
+        "long": "## Brain Health\n\n" + "\n".join(f"- **[WARN]** `F{i}` — finding {i}" for i in range(200)),
+    }
+    rendered = {k: brain_prep.render_parts(bundle, banner=v) for k, v in variants.items()}
+    shapes = {k: [_paths_in(p) for p in parts] for k, parts in rendered.items()}
+    assert shapes["none"] == shapes["short"] == shapes["long"], "packing depended on the banner"
+    assert all(len(p) <= cap for parts in rendered.values() for p in parts)
+    assert len(variants["long"]) > reserve
+    assert "run `brain doctor`" in rendered["long"][0], "an oversized banner is clipped, not spilled"
+    assert variants["short"] in rendered["short"][0], "a banner within the reserve is shown whole"
+    assert "#" * 50 not in rendered["none"][0], "the packing placeholder never reaches the output"
 
 
 def test_items_are_never_split_across_parts(fat_vault: Path):
@@ -226,8 +262,8 @@ def test_each_hook_part_is_under_the_cap_and_matches_the_renderer(
         assert len(ctx) <= cap
         assert f"part {i} of {n}" in ctx
     if module == "session_start":
-        # The full bundle (pinned sections included) overflows four parts; the
-        # slim one happens to just fit, so only the session path must catalogue.
+        # The full bundle (pinned sections included) overflows the parts; the
+        # slim one may just fit, so only the session path must catalogue.
         assert brain_prep.CATALOGUE_HEADING in emitted[-1]
         assert "## project:Proj:latest-session" in emitted[0]
     else:
@@ -321,7 +357,7 @@ def test_doctor_reports_overflow_by_name(fat_vault: Path):
     assert "PRELOAD_OVERFLOW" in codes
     assert "PRELOAD_PART_OVERSIZED" not in codes
     overflow = next(f for f in findings if f.code == "PRELOAD_OVERFLOW")
-    assert "feedback/rule-" in overflow.message
+    assert "user/user-" in overflow.message, "user fills last, so user is what overflows"
     assert "brain recall" in overflow.hint
 
 

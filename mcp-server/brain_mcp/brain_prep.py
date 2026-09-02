@@ -170,7 +170,7 @@ def render_parts(bundle: dict, parts: int | None = None, cap_chars: int | None =
 
     Part 1 carries the banner (outside the fence), the pinned sections and whatever
     elastic items follow; later parts continue in bundle order (project feedback →
-    user → global feedback). Whatever does not fit in `parts` documents — and whatever
+    global feedback → user). Whatever does not fit in `parts` documents — and whatever
     the byte budget already skipped — is catalogued by name on the LAST part, so it
     is one recall away instead of invisible. Returns fewer than `parts` documents
     when the bundle fits in fewer; never an empty list unless the bundle is empty.
@@ -187,8 +187,20 @@ def render_parts(bundle: dict, parts: int | None = None, cap_chars: int | None =
     if not units and not budget_catalogue and not banner:
         return []
 
-    def doc(index: int, body: list, catalogue: str, first: bool, total: int = parts) -> str:
-        return _part_document(bundle, index, total, body, banner, catalogue, first)
+    # Packing must be identical in every hook process, but only part 1's process
+    # knows the real banner (it is the one that runs the doctor). So part 1 is packed
+    # against a fixed-size placeholder and the real banner — clipped to that size —
+    # is substituted only when the final documents are rendered. Without this, a
+    # 600-char banner shrank part 1 in one process while five others packed it full,
+    # and the items on the boundary were delivered by nobody.
+    reserve = vault.banner_reserve_chars()
+    placeholder = "#" * reserve
+    real_banner = _clip_banner(banner, reserve)
+
+    def doc(index: int, body: list, catalogue: str, first: bool, total: int = parts,
+            final: bool = False) -> str:
+        shown_banner = real_banner if final else placeholder
+        return _part_document(bundle, index, total, body, shown_banner, catalogue, first)
 
     filled: list[list[tuple[str, str, str]]] = []
     remaining = list(units)
@@ -261,8 +273,23 @@ def render_parts(bundle: dict, parts: int | None = None, cap_chars: int | None =
     catalogue = catalogue_text()
     docs = []
     for i, body in enumerate(filled, start=1):
-        docs.append(doc(i, body, catalogue if i == total else "", i == 1, total=total))
+        docs.append(doc(i, body, catalogue if i == total else "", i == 1, total=total,
+                        final=True))
     return docs
+
+
+def _clip_banner(banner: str, reserve: int) -> str:
+    """The real banner, cut to the reserve it was packed against.
+
+    A banner longer than the reserve would push part 1 over the cap and spill the
+    whole part, banner included; a clipped banner still names the first findings
+    and says where the rest are.
+    """
+    banner = (banner or "").rstrip("\n")
+    if len(banner) <= reserve:
+        return banner
+    tail = "\n- … (more findings; run `brain doctor`)"
+    return banner[: max(0, reserve - len(tail))].rstrip() + tail
 
 
 def main() -> None:

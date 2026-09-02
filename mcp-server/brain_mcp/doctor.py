@@ -733,10 +733,9 @@ def _check_stale_checkpoint(brain: Path, project: str | None) -> list[Finding]:
 MEMORY_BODY_SOFT_LIMIT = 1500
 
 
-# Chars reserved on part 1 for the health banner when doctor sizes the parts. The
-# hook passes the *real* banner into `render_parts`, so its part 1 is exact; doctor
-# runs before the banner exists and sizes against this allowance instead.
-BANNER_RESERVE_CHARS = 1200
+# Part 1 is packed against `vault.banner_reserve_chars()` in every process — the
+# hook's included — so doctor sizing with a placeholder of that length renders the
+# exact parts the hooks will emit (the real banner is clipped into the reserve).
 
 
 def _check_bundle_budget(project: str | None,
@@ -855,7 +854,7 @@ def _check_bundle_budget(project: str | None,
 
     findings.extend(size_one(
         "SessionStart", "BUNDLE_SATURATED", "BUNDLE_BUDGET_OK",
-        "BRAIN_BUNDLE_BUDGET_KB", "session", None, False, BANNER_RESERVE_CHARS))
+        "BRAIN_BUNDLE_BUDGET_KB", "session", None, False, vault.banner_reserve_chars()))
     if os.environ.get("BRAIN_SUBAGENT_PRELOAD", "1") != "0":
         # Mirror the SubagentStart hook exactly: slim bundle (project feedback but no
         # overview/checkpoint), subagent budget, no banner.
