@@ -245,7 +245,8 @@ def _connect() -> sqlite3.Connection:
         "CREATE TABLE IF NOT EXISTS embeddings ("
         "  path TEXT PRIMARY KEY,"
         "  mtime REAL NOT NULL,"
-        "  vector BLOB NOT NULL"
+        "  vector BLOB NOT NULL,"
+        "  recipe TEXT"
         ")"
     )
     conn.execute(
@@ -257,6 +258,7 @@ def _connect() -> sqlite3.Connection:
     )
     _stamp_recipe_if_empty(conn)
     _migrate_path_format(conn)
+    _migrate_recipe_column(conn)
     conn.commit()
     return conn
 
@@ -502,6 +504,37 @@ def _migrate_path_format(conn) -> None:
         )
         conn.commit()
     except (sqlite3.DatabaseError, OSError):
+        return
+
+
+def _migrate_recipe_column(conn) -> None:
+    """One-time: add the per-row `recipe` column and backfill it from `meta`.
+
+    Before this column existed the recipe was a single stamp in `meta`, written
+    only after a rebuild's last chunk. Since every row counted as pending while
+    the stamp was stale, an interrupted rebuild restarted from zero — the rows
+    it *had* re-embedded were indistinguishable from the ones it had not. With
+    the recipe on the row, the pending set is "rows whose recipe differs", so a
+    pass resumes where the last one died.
+
+    In place: an ALTER TABLE plus one UPDATE, no vector touched, so the epoch is
+    not bumped — a cached matrix stays valid. Rows the backfill leaves NULL (an
+    index that predates the meta stamp) simply differ from every recipe and get
+    re-embedded on the next unbounded pass, which `text_recipe_changed()` — also
+    True for a missing stamp — will have spawned.
+    """
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(embeddings)")}
+        if "recipe" in cols:
+            return
+        conn.execute("ALTER TABLE embeddings ADD COLUMN recipe TEXT")
+        stored = stored_text_recipe(conn)
+        if stored:
+            conn.execute(
+                "UPDATE embeddings SET recipe = ? WHERE recipe IS NULL", (stored,)
+            )
+        conn.commit()
+    except sqlite3.DatabaseError:
         return
 
 
@@ -1053,9 +1086,12 @@ class EmbedIndex:
                               file=sys.stderr)
                         rebuilding = True
 
-                existing: dict[str, float] = {}
-                for path, mtime in conn.execute("SELECT path, mtime FROM embeddings"):
-                    existing[path] = mtime
+                recipe = _text_recipe_id()
+                existing: dict[str, tuple[float, str | None]] = {}
+                for path, mtime, row_recipe in conn.execute(
+                    "SELECT path, mtime, recipe FROM embeddings"
+                ):
+                    existing[path] = (mtime, row_recipe)
 
                 # Aged-out checkpoints drop out of `current` and are therefore
                 # deleted below, alongside genuinely removed files — which is what
@@ -1070,10 +1106,16 @@ class EmbedIndex:
 
                 pending: list[tuple[str, float]] = []
                 for key, mtime in current.items():
-                    # A rebuild ignores what is already stored — every row's vector
-                    # is from the superseded recipe, however fresh its mtime is.
-                    prior = None if rebuilding else existing.get(key)
-                    if prior is None or mtime > prior + 1e-6:
+                    prior = existing.get(key)
+                    stale_row = prior is None or mtime > prior[0] + 1e-6
+                    # A rebuild replaces the rows still carrying the superseded
+                    # recipe, however fresh their mtime — and *only* those. Rows a
+                    # previous, interrupted pass already re-embedded carry the
+                    # current recipe and are skipped, which is what makes a
+                    # rebuild resumable instead of restarting from zero.
+                    if rebuilding and prior is not None and prior[1] != recipe:
+                        stale_row = True
+                    if stale_row:
                         if foreground and vault.is_session_path(_key_path(key, root)):
                             continue
                         pending.append((key, mtime))
@@ -1113,9 +1155,11 @@ class EmbedIndex:
                         continue
                     vectors = _EMBEDDER.embed_many([t for (_, _, t) in batch])
                     conn.executemany(
-                        "INSERT INTO embeddings(path, mtime, vector) VALUES (?, ?, ?) "
-                        "ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, vector=excluded.vector",
-                        [(pa, mt, _vec_to_blob(v)) for (pa, mt, _), v in zip(batch, vectors)],
+                        "INSERT INTO embeddings(path, mtime, vector, recipe) VALUES (?, ?, ?, ?) "
+                        "ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, "
+                        "vector=excluded.vector, recipe=excluded.recipe",
+                        [(pa, mt, _vec_to_blob(v), recipe)
+                         for (pa, mt, _), v in zip(batch, vectors)],
                     )
                     _bump_vector_epoch(conn)
                     # Commit per chunk, not once at the end: a time-boxed pass must
@@ -1206,9 +1250,10 @@ class EmbedIndex:
         conn = _connect()
         try:
             conn.execute(
-                "INSERT INTO embeddings(path, mtime, vector) VALUES (?, ?, ?) "
-                "ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, vector=excluded.vector",
-                (_index_key(Path(path), root), mtime, _vec_to_blob(vec)),
+                "INSERT INTO embeddings(path, mtime, vector, recipe) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, "
+                "vector=excluded.vector, recipe=excluded.recipe",
+                (_index_key(Path(path), root), mtime, _vec_to_blob(vec), _text_recipe_id()),
             )
             _bump_vector_epoch(conn)
             conn.commit()

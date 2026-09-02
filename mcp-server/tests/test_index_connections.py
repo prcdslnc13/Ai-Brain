@@ -41,7 +41,7 @@ def test_connect_returns_with_no_transaction_open(vault_dir: Path) -> None:
     try:
         assert conn.in_transaction is False, "fresh-index _connect() left a transaction open"
         conn.execute(
-            "INSERT INTO embeddings VALUES ('user/x.md', 1.0, ?)", (b"\x00" * 16,)
+            "INSERT INTO embeddings(path, mtime, vector) VALUES ('user/x.md', 1.0, ?)", (b"\x00" * 16,)
         )
         conn.commit()
     finally:
@@ -70,7 +70,7 @@ def test_a_writer_can_commit_while_a_query_connection_is_open(vault_dir: Path) -
     """
     seed = embed._connect()
     try:
-        seed.execute("INSERT INTO embeddings VALUES ('user/a.md', 1.0, ?)", (b"\x00" * 16,))
+        seed.execute("INSERT INTO embeddings(path, mtime, vector) VALUES ('user/a.md', 1.0, ?)", (b"\x00" * 16,))
         seed.commit()
     finally:
         seed.close()
@@ -84,7 +84,7 @@ def test_a_writer_can_commit_while_a_query_connection_is_open(vault_dir: Path) -
         writer = sqlite3.connect(embed._index_path(), timeout=0.2)
         try:
             start = time.monotonic()
-            writer.execute("INSERT INTO embeddings VALUES ('user/b.md', 2.0, ?)", (b"\x00" * 16,))
+            writer.execute("INSERT INTO embeddings(path, mtime, vector) VALUES ('user/b.md', 2.0, ?)", (b"\x00" * 16,))
             writer.commit()
             assert time.monotonic() - start < 1.0
         finally:
