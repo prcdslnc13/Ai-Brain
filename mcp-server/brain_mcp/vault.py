@@ -475,8 +475,34 @@ def list_memories(mtype: str | None = None, project: str | None = None) -> list[
     return [Memory.from_file(p) for p in sorted(set(candidates))]
 
 
+def _ripgrep_argv(rg: str, query: str, root: Path) -> list[str]:
+    """The exact rg command line for a *literal* query over the vault.
+
+    The query is untrusted text: it arrives from the CLI (argparse forwards
+    anything after `--`) and from the MCP tool (i.e. from a model). Three flags
+    keep it data rather than syntax, and every one of them is load-bearing:
+
+      -F   fixed-string. The docstring on _ripgrep_search has always promised a
+           literal match, but the query was handed to rg as a regex, so `foo(`
+           made rg exit 2 and the lexical half of the recall silently returned
+           nothing.
+      -e   names the pattern explicitly, so a query that begins with a dash is
+           never parsed as an option. Positionally, `--pre=<cmd>` is a flag that
+           runs <cmd> against every file in the vault.
+      --   ends option parsing before the root, for the same reason.
+
+    Split out from _ripgrep_search so a test can assert the argv shape without
+    needing rg on PATH (the CI box has none).
+    """
+    return [rg, "-c", "-i", "-F", "--type", "md", "-e", query, "--", str(root)]
+
+
 def _ripgrep_search(query: str, root: Path) -> dict[Path, int]:
     """Literal (case-insensitive) matches -> occurrence count.
+
+    Literal in both branches: the rg argv is fixed-string (see _ripgrep_argv) and
+    the no-rg fallback is a plain substring count, so a query renders the same
+    hits whichever one runs.
 
     Counts, not just paths: they are the only relevance signal a lexical-only hit
     has, and ordering those hits by recency alone put "most recently touched file
@@ -487,7 +513,7 @@ def _ripgrep_search(query: str, root: Path) -> dict[Path, int]:
     if rg:
         try:
             out = subprocess.run(
-                [rg, "-c", "-i", "--type", "md", query, str(root)],
+                _ripgrep_argv(rg, query, root),
                 capture_output=True, text=True, check=False,
             )
             for line in out.stdout.splitlines():

@@ -234,12 +234,11 @@ def _is_lock_error(exc: BaseException) -> bool:
     """True when sqlite refused because someone else holds the write lock.
 
     A locked database is a *healthy* database with a writer in it — during a reindex
-    that is the expected state, not a fault.
+    that is the expected state, not a fault. One predicate, owned by embed, so the
+    module that raises IndexBusy and the module that classifies findings agree.
     """
-    if not isinstance(exc, sqlite3.OperationalError):
-        return False
-    msg = str(exc).lower()
-    return "locked" in msg or "busy" in msg
+    from . import embed
+    return embed._is_lock_error(exc)
 
 
 def _check_vector_index(brain: Path) -> list[Finding]:
@@ -257,8 +256,9 @@ def _check_vector_index(brain: Path) -> list[Finding]:
             "Nothing to do — re-run `brain doctor` once it finishes.",
         )]
     try:
+        from . import embed
         conn = sqlite3.connect(
-            f"file:{idx}?mode=ro", uri=True, timeout=index_busy_timeout()
+            embed.index_uri(idx), uri=True, timeout=index_busy_timeout()
         )
         try:
             row = conn.execute("PRAGMA integrity_check").fetchone()
@@ -312,8 +312,12 @@ def _check_index_stale(brain: Path) -> list[Finding]:
         return [Finding("info", "INDEX_REINDEXING", "a reindex is draining the backlog")]
     try:
         from . import embed
-        pending = embed.EmbedIndex.backlog()
+        # Doctor's timeout, not the reader default: three checks connect from
+        # inside a hook Claude Code kills at 15s, so the waits are additive.
+        pending = embed.EmbedIndex.backlog(timeout=index_busy_timeout())
     except Exception:
+        # IndexBusy included: the backlog is unknown, and _check_vector_index
+        # already reports INDEX_BUSY for the same lock. Deferred, not wrong.
         return []
     if pending == 0:
         return [Finding("ok", "INDEX_FRESH", "vector index up to date")]
@@ -346,7 +350,7 @@ def _check_index_recipe(brain: Path) -> list[Finding]:
         return []
     try:
         from . import embed
-        if not embed.text_recipe_changed():
+        if not embed.text_recipe_changed(timeout=index_busy_timeout()):
             return []
     except Exception:
         return []
@@ -927,8 +931,10 @@ def _check_near_duplicates(brain: Path) -> list[Finding]:
 
         paths: list[Path] = []
         vectors: list = []
+        from brain_mcp import embed
+
         conn = sqlite3.connect(
-            f"file:{idx}?mode=ro", uri=True, timeout=index_busy_timeout()
+            embed.index_uri(idx), uri=True, timeout=index_busy_timeout()
         )
         try:
             for raw_path, blob in conn.execute("SELECT path, vector FROM embeddings"):
