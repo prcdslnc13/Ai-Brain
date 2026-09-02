@@ -195,12 +195,29 @@ def test_every_hook_template_command_maps_to_a_real_hook():
     hooks_dir = REPO_ROOT / "hooks"
     for template in ("templates/settings.hooks.json", "templates/settings.hooks.win.json"):
         for event, entries in json.loads(read(template))["hooks"].items():
-            command = entries[0]["hooks"][0]["command"]
-            name = command.split()[-1].replace("__BRAIN_HOOKS__/", "")
-            name = name[:-3] if name.endswith(".py") else name
-            assert (hooks_dir / f"{name}.py").is_file(), (
-                f"{template} wires {event} to '{name}', but hooks/{name}.py does not exist"
-            )
+            for group in entries:
+                for hook in group["hooks"]:
+                    name = hook_script_name(hook["command"])
+                    assert (hooks_dir / f"{name}.py").is_file(), (
+                        f"{template} wires {event} to '{name}', but hooks/{name}.py "
+                        f"does not exist"
+                    )
+
+
+def hook_script_name(command: str) -> str:
+    """The hook module a template command invokes, ignoring trailing arguments.
+
+    POSIX: the token ending in `.py`. Windows: the token after `__BRAIN_LAUNCH__`
+    (the launcher takes the hook name as its first argument). The preload entries
+    carry `--part I --parts N` after the name, so "last token" is no longer it.
+    """
+    tokens = command.split()
+    for i, tok in enumerate(tokens):
+        if tok.endswith(".py"):
+            return tok.replace("__BRAIN_HOOKS__/", "")[:-3]
+        if tok == "__BRAIN_LAUNCH__" and i + 1 < len(tokens):
+            return tokens[i + 1]
+    raise AssertionError(f"no hook name in template command: {command!r}")
 
 
 # ----------------------------------------------------- the installer runs its own tests

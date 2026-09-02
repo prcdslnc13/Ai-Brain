@@ -12,6 +12,12 @@ token cost matters).
 No doctor run and no overview-stub logic here — those are once-per-session
 jobs that belong to session_start.py.
 
+Delivered in `vault.PRELOAD_PARTS` parts, one per registered hook entry, for the
+same reason session_start.py is: one hook command's output is capped at 10,000
+chars by Claude Code and a 35 KB bundle spilled to a file the subagent never
+read. `--part I --parts N` selects a part; with no `--part` the whole bundle is
+emitted as one document.
+
 Knobs: BRAIN_SUBAGENT_PRELOAD=0 disables the injection entirely;
 BRAIN_SUBAGENT_BUDGET_KB (default vault.SUBAGENT_BUDGET_DEFAULT_KB, 56) caps the
 bundle via the budget_kb parameter of vault.session_start_bundle.
@@ -29,13 +35,25 @@ hook and doctor can never disagree about it.
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 
 from _common import emit, project_basename, read_payload
 
 
-def main() -> None:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--part", type=int, default=None)
+    parser.add_argument("--parts", type=int, default=None)
+    args, _unknown = parser.parse_known_args(argv)
+    if args.part is not None and args.part < 1:
+        args.part = 1
+    return args
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
     payload = read_payload()
 
     if os.environ.get("BRAIN_SUBAGENT_PRELOAD", "1") == "0":
@@ -43,11 +61,15 @@ def main() -> None:
 
     try:
         from brain_mcp import vault
-        from brain_mcp.brain_prep import render
+        from brain_mcp.brain_prep import render, render_parts
         bundle = vault.session_start_bundle(
             project_basename(payload), budget_kb=vault.subagent_budget_kb(), slim=True
         )
-        context = render(bundle)
+        if args.part is None:
+            context = render(bundle)
+        else:
+            parts = render_parts(bundle, parts=args.parts)
+            context = parts[args.part - 1] if args.part <= len(parts) else ""
     except Exception as e:
         # A subagent without Brain context is degraded, not broken — never
         # block or noise up the subagent over a preload failure.
