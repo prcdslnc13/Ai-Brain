@@ -49,7 +49,8 @@ sm = _load_module()
 BRAIN_PYTHON = "/repo/mcp-server/.venv/bin/python"
 BRAIN_HOOKS = "/repo/hooks"
 BRAIN_VAULT = "/vault/Ai-Brain"
-BRAIN_CMD = f'BRAIN_VAULT="{BRAIN_VAULT}" "/repo/mcp-server/.venv/bin/brain"'
+# The current approved-command shape: two quoted paths, no env prefix, no .cmd.
+BRAIN_CMD = f'"{BRAIN_PYTHON}" "/home/x/.claude/brain-agent.py"'
 
 HOOK_EVENTS = sorted(json.loads(POSIX_TEMPLATE.read_text(encoding="utf-8"))["hooks"])
 
@@ -204,16 +205,32 @@ def test_no_blanket_permission_rule_is_written(tmp_path):
     assert "reindex" not in " ".join(allow)
 
 
-def test_the_approved_prefix_carries_the_agent_surface_gate() -> None:
-    """Prefix rules cannot see option flags, so `Bash(<cmd> save:*)` still matches
-    `save --file <anything>`. The enforceable half is the env var baked into the
-    approved prefix itself -- if it ever drops out, the narrowing is decoration."""
-    from brain_mcp import cli
+# Every approved-command prefix ever written, oldest first. The predicate must keep
+# recognising all of them: prune runs before re-add, so a shape it misses is a stale
+# standing approval that survives every re-install -- and the two middle ones are
+# the command-injection wrapper and the never-matching env prefix, respectively.
+EVERY_PREFIX_EVER = [
+    'BRAIN_VAULT="/old/vault" "/old/.venv/bin/brain"',
+    "C:/Users/x/.claude/brain.cmd",
+    'BRAIN_AGENT_SURFACE=1 BRAIN_VAULT="/v" "/repo/.venv/bin/brain"',
+    '"C:/repo/.venv/Scripts/python.exe" "C:/Users/x/.claude/brain-agent.py"',
+    '"/repo/.venv/bin/python" "/home/x/.claude/brain-agent.py"',
+]
 
-    posix_prefix = 'BRAIN_AGENT_SURFACE=1 BRAIN_VAULT="/v" "/repo/.venv/bin/brain"'
-    assert posix_prefix.startswith(f"{cli.AGENT_SURFACE_ENV}=1 ")
+
+@pytest.mark.parametrize("prefix", EVERY_PREFIX_EVER)
+def test_every_rule_shape_ever_written_is_recognised(prefix) -> None:
     for sub in sm.AGENT_SUBCOMMANDS:
-        assert sm.is_brain_permission_rule(f"Bash({posix_prefix} {sub}:*)")
+        assert sm.is_brain_permission_rule(f"Bash({prefix} {sub}:*)"), prefix
+    assert sm.is_brain_permission_rule(f"Bash({prefix}:*)"), f"blanket form of {prefix}"
+
+
+@pytest.mark.parametrize("rule", [
+    "Bash(git status:*)", "Bash(ls:*)", "Read(//tmp/**)",
+    "Bash(python brain_things.py:*)", "Bash(cat ~/.claude/brain-notes.md:*)",
+])
+def test_foreign_rules_are_not_claimed(rule) -> None:
+    assert not sm.is_brain_permission_rule(rule)
 
 
 @pytest.mark.parametrize(
@@ -221,12 +238,18 @@ def test_the_approved_prefix_carries_the_agent_surface_gate() -> None:
     [
         'Bash(BRAIN_VAULT="/old/vault" "/old/.venv/bin/brain":*)',
         "Bash(C:/Users/x/.claude/brain.cmd:*)",
+        "Bash(C:/Users/x/.claude/brain.cmd recall:*)",
+        'Bash(BRAIN_AGENT_SURFACE=1 BRAIN_VAULT="/v" "/old/.venv/bin/brain" save:*)',
+        'Bash("/old/.venv/bin/python" "/old/.claude/brain-agent.py" save:*)',
     ],
-    ids=["posix-blanket", "windows-blanket"],
+    ids=["posix-blanket", "windows-blanket", "windows-cmd-per-sub", "posix-env-prefix",
+         "launcher-at-old-path"],
 )
 def test_superseded_permission_rules_are_pruned(tmp_path, legacy):
     """Prune runs before re-add, so a shape the predicate misses is a stale standing
-    approval -- often for a path that no longer exists -- that survives every re-install."""
+    approval -- often for a path that no longer exists -- that survives every re-install.
+    The `.cmd` rules are the ones that matter most: an existing install upgrades by
+    re-running setup, and the injection hole stays open until they are gone."""
     base = third_party_settings()
     base["permissions"]["allow"].append(legacy)
     settings_path = write_json(tmp_path / "settings.json", base)
@@ -244,7 +267,7 @@ def test_windows_template_merges_and_is_idempotent(tmp_path):
         sm.merge(
             settings_path,
             WIN_TEMPLATE,
-            brain_cmd="C:/Users/x/.claude/brain.cmd",
+            brain_cmd='"C:/repo/.venv/Scripts/python.exe" "C:/Users/x/.claude/brain-agent.py"',
             brain_launch=launch,
         )
     settings = json.loads(settings_path.read_text(encoding="utf-8"))
@@ -252,8 +275,53 @@ def test_windows_template_merges_and_is_idempotent(tmp_path):
         commands = all_commands(settings, event)
         assert len([c for c in commands if "brain-launch" in c]) == 1
         assert [c for c in commands if "their-" in c]
-    # Forward slashes: Git Bash eats single backslashes out of hook commands.
-    assert "\\" not in json.dumps(settings["hooks"])
+        # Forward slashes: Git Bash eats single backslashes out of hook commands.
+        # (Checked on the commands themselves -- the JSON encoding of the quotes
+        # around the launcher path is a backslash too, and a legitimate one.)
+        for command in commands:
+            assert "\\" not in command, command
+
+
+def test_placeholders_are_substituted_on_the_parsed_structure():
+    """A backslash path spliced into JSON *text* is an escape sequence: `D:\\new\\tab`
+    became a newline and a tab, and a `\\U` made the template unparseable. The
+    substitution has to happen on parsed strings, where a path is just a value."""
+    block = sm.render_hooks_template(
+        POSIX_TEMPLATE.read_text(encoding="utf-8"),
+        brain_python=r"D:\new\tab\python.exe",
+        brain_hooks=r"D:\Users\x\hooks",
+        brain_vault=r'D:\v"q\Ai-Brain',
+    )
+    command = block["Stop"][0]["hooks"][0]["command"]
+    assert r"D:\new\tab\python.exe" in command
+    assert r"D:\Users\x\hooks" in command
+    assert r'D:\v"q\Ai-Brain' in command
+    assert "\n" not in command and "\t" not in command
+    # The Windows launcher path is still forward-slashed (Git Bash eats backslashes).
+    win = sm.render_hooks_template(
+        WIN_TEMPLATE.read_text(encoding="utf-8"), brain_launch=r"C:\Users\Jo Bloggs\.claude\brain-launch.cmd"
+    )
+    assert win["Stop"][0]["hooks"][0]["command"] == '"C:/Users/Jo Bloggs/.claude/brain-launch.cmd" stop'
+
+
+def test_an_unparseable_template_is_a_settings_error(tmp_path):
+    with pytest.raises(sm.SettingsError, match="template"):
+        sm.render_hooks_template("{ not json")
+    with pytest.raises(sm.SettingsError, match="hooks"):
+        sm.render_hooks_template('["no hooks object"]')
+
+
+def test_settings_are_written_as_utf8_not_ascii_escapes(tmp_path):
+    """`ensure_ascii=True` turned an accented username into `\\u00e9` sequences that
+    are valid JSON but unreadable in the file the user is told to inspect."""
+    settings_path = tmp_path / "settings.json"
+    sm.merge(
+        settings_path, POSIX_TEMPLATE, brain_cmd=BRAIN_CMD,
+        brain_python=BRAIN_PYTHON, brain_hooks=BRAIN_HOOKS, brain_vault="/home/josé/Vaults",
+    )
+    raw = settings_path.read_bytes()
+    assert "josé".encode("utf-8") in raw
+    assert b"\\u00e9" not in raw
 
 
 # --------------------------------------------------------------- uninstall ----
@@ -506,6 +574,78 @@ def test_installed_commands_are_always_self_recognised(tmp_path):
         sm._assert_block_is_ownable(
             block, kwargs.get("brain_hooks", ""), kwargs.get("brain_launch", "")
         )
+
+
+# ------------------------------------------------------- managed files ---------
+
+MARKED = f"{sm.MANAGED_MARKER}\n# ours\n"
+
+
+def test_has_managed_marker_reads_only_the_head(tmp_path):
+    ours = tmp_path / "CLAUDE.md"
+    ours.write_text(MARKED, encoding="utf-8")
+    assert sm.has_managed_marker(ours)
+
+    frontmatter = tmp_path / "SKILL.md"
+    frontmatter.write_text(f"---\nname: brain\n---\n{sm.MANAGED_MARKER}\n\n# Brain\n", encoding="utf-8")
+    assert sm.has_managed_marker(frontmatter), "the skill's marker sits after its frontmatter"
+
+    buried = tmp_path / "buried.md"
+    buried.write_text("\n" * (sm.MARKER_HEAD_LINES + 5) + sm.MANAGED_MARKER + "\n", encoding="utf-8")
+    assert not sm.has_managed_marker(buried), "a marker past the head is a mention, not a claim"
+
+    assert not sm.has_managed_marker(tmp_path / "missing.md")
+
+
+@pytest.mark.parametrize("header", [
+    "rem Generated by brain-setup.py - do not edit by hand.",
+    "rem Generated by setup-windows.ps1 - do not edit by hand. Re-run setup-windows.ps1 to regenerate.",
+    f"# {sm.MANAGED_MARKER}",
+])
+def test_generated_launchers_are_recognised_in_every_form_ever_written(tmp_path, header):
+    """The retired Windows installer wrote its own header, and the brain.cmd it left
+    behind is precisely the file the uninstaller must be able to remove."""
+    launcher = tmp_path / "brain.cmd"
+    launcher.write_text(f"@echo off\r\n{header}\r\n", encoding="utf-8")
+    assert sm.is_generated_launcher(launcher)
+
+
+def test_a_users_own_file_at_a_launcher_name_is_not_claimed(tmp_path):
+    theirs = tmp_path / "brain.cmd"
+    theirs.write_text("@echo off\r\nrem my own wrapper\r\n", encoding="utf-8")
+    assert not sm.is_generated_launcher(theirs)
+
+
+def test_write_managed_text_backs_up_a_users_file_and_replaces_ours(tmp_path):
+    target = tmp_path / "CLAUDE.md"
+    target.write_text("# my own global instructions\n", encoding="utf-8")
+
+    backup = sm.write_managed_text(target, MARKED)
+    assert backup is not None and backup.is_file()
+    assert backup.read_text(encoding="utf-8") == "# my own global instructions\n"
+    assert target.read_text(encoding="utf-8") == MARKED
+
+    # Ours now: replaced in place, no second backup.
+    again = sm.write_managed_text(target, MARKED + "# v2\n")
+    assert again is None
+    assert [p.name for p in tmp_path.glob("*.brain-backup-*")] == [backup.name]
+
+
+def test_write_managed_text_refuses_text_without_the_marker(tmp_path):
+    """Otherwise the next run would back our own output up as a user file, forever."""
+    with pytest.raises(ValueError, match="managed-by"):
+        sm.write_managed_text(tmp_path / "x.md", "# no marker here\n")
+    assert not (tmp_path / "x.md").exists()
+
+
+def test_write_managed_text_honours_the_encoding(tmp_path):
+    target = tmp_path / "launch.cmd"
+    sm.write_managed_text(target, f"rem {sm.MANAGED_MARKER}\r\nset X=caf\u00e9\r\n", encoding="cp437")
+    assert target.read_bytes() == f"rem {sm.MANAGED_MARKER}\r\nset X=caf\u00e9\r\n".encode("cp437")
+    with pytest.raises(UnicodeEncodeError):
+        sm.write_managed_text(tmp_path / "bad.cmd", f"rem {sm.MANAGED_MARKER}\r\nset X=\u0421\r\n", encoding="cp437")
+    assert not (tmp_path / "bad.cmd").exists()
+    assert not list(tmp_path.glob("*.tmp")), "a failed encode must not leave a temp file"
 
 
 def test_an_unownable_template_is_rejected(tmp_path):

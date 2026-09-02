@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "BRAIN_VAULT=__BRAIN_VAULT__ __BRAIN_PYTHON__ __BRAIN_HOOKS__/session_start.py",
+            "command": "BRAIN_VAULT=\"__BRAIN_VAULT__\" \"__BRAIN_PYTHON__\" \"__BRAIN_HOOKS__/session_start.py\"",
             "timeout": 15
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "BRAIN_VAULT=__BRAIN_VAULT__ __BRAIN_PYTHON__ __BRAIN_HOOKS__/subagent_start.py",
+            "command": "BRAIN_VAULT=\"__BRAIN_VAULT__\" \"__BRAIN_PYTHON__\" \"__BRAIN_HOOKS__/subagent_start.py\"",
             "timeout": 15
           }
         ]
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "BRAIN_VAULT=__BRAIN_VAULT__ __BRAIN_PYTHON__ __BRAIN_HOOKS__/stop.py",
+            "command": "BRAIN_VAULT=\"__BRAIN_VAULT__\" \"__BRAIN_PYTHON__\" \"__BRAIN_HOOKS__/stop.py\"",
             "timeout": 5
           }
         ]
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "BRAIN_VAULT=__BRAIN_VAULT__ __BRAIN_PYTHON__ __BRAIN_HOOKS__/user_prompt_submit.py",
+            "command": "BRAIN_VAULT=\"__BRAIN_VAULT__\" \"__BRAIN_PYTHON__\" \"__BRAIN_HOOKS__/user_prompt_submit.py\"",
             "timeout": 5
           }
         ]
@@ -49,7 +49,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "BRAIN_VAULT=__BRAIN_VAULT__ __BRAIN_PYTHON__ __BRAIN_HOOKS__/pre_compact.py",
+            "command": "BRAIN_VAULT=\"__BRAIN_VAULT__\" \"__BRAIN_PYTHON__\" \"__BRAIN_HOOKS__/pre_compact.py\"",
             "timeout": 30
           }
         ]
@@ -60,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "BRAIN_VAULT=__BRAIN_VAULT__ __BRAIN_PYTHON__ __BRAIN_HOOKS__/session_end.py",
+            "command": "BRAIN_VAULT=\"__BRAIN_VAULT__\" \"__BRAIN_PYTHON__\" \"__BRAIN_HOOKS__/session_end.py\"",
             "timeout": 30
           }
         ]

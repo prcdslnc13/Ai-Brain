@@ -28,11 +28,18 @@ WHAT IT GUARANTEES
 
 OWNERSHIP DETECTION
     A hook command is Brain-owned when it mentions `BRAIN_VAULT=`, `brain-launch`,
-    or the repo's `hooks/` directory (in either slash direction, case-insensitively).
-    Install and uninstall share this predicate on purpose - an asymmetry here means
-    either orphaned hooks after uninstall or duplicated hooks after reinstall. The
-    `BRAIN_VAULT=` clause is deliberately broad: a third-party hook that exports our
-    vault variable is, for these purposes, ours.
+    or the repo's `hooks/` directory (in either slash direction, case-insensitively,
+    quoted or not). Install and uninstall share this predicate on purpose - an
+    asymmetry here means either orphaned hooks after uninstall or duplicated hooks
+    after reinstall. The `BRAIN_VAULT=` clause is deliberately broad: a third-party
+    hook that exports our vault variable is, for these purposes, ours.
+
+MANAGED FILES
+    The installer also writes files that are not settings.json - the global
+    CLAUDE.md, the brain skill, and the generated launchers. `MANAGED_MARKER` is how
+    both halves tell a file we wrote from one the user wrote: the installer backs up
+    an unmarked file before replacing it, the uninstaller leaves an unmarked file
+    alone. `write_managed_text` is the one writer for those files.
 """
 
 from __future__ import annotations
@@ -78,6 +85,9 @@ def is_brain_command(cmd: object, hooks_dir: str = "", launch_cmd: str = "") -> 
     low = cmd.lower()
     if "brain_vault=" in low or "brain-launch" in low:
         return True
+    # Substring matching, deliberately: the rendered commands quote every path
+    # (a space in a username must not split a hook command), and a quoted path
+    # still contains the bare one.
     for candidate in (hooks_dir, launch_cmd):
         for variant in _path_variants(candidate):
             if variant and variant in low:
@@ -100,14 +110,22 @@ def is_brain_permission_rule(rule: object) -> bool:
 
     Must recognize the superseded blanket rules too, not just what this version
     emits: prune runs before re-add, so a shape this misses is a stale standing
-    approval that survives every future re-install. Three generations so far --
-    `Bash(BRAIN_VAULT=... /bin/brain:*)`, the Windows `brain.cmd` wrapper path, and
-    the current `BRAIN_AGENT_SURFACE=1`-prefixed per-subcommand rules.
+    approval that survives every future re-install. Four generations so far --
+    `Bash(BRAIN_VAULT=... /bin/brain:*)`, the Windows `brain.cmd` wrapper path, the
+    `BRAIN_AGENT_SURFACE=1`-prefixed POSIX per-subcommand rules, and the current
+    `"<venv python>" "<config>/brain-agent.py"` launcher on every platform.
+
+    The `.cmd` and env-prefix shapes are gone for a reason, not just superseded:
+    cmd.exe re-expands `%*` after the caller's quoting is done, so a Git Bash
+    argument like `x"&echo pwned` ran a second command through the pre-approved
+    wrapper (the BatBadBut class, CVE-2024-24576), and Claude Code's rule matcher
+    does not reliably match past a leading `VAR=value` assignment. Pruning them on
+    re-install is what closes the hole for an existing install.
     """
     if not isinstance(rule, str) or not rule.startswith("Bash("):
         return False
     low = rule.lower()
-    if "brain.cmd" in low or "brain_agent_surface=" in low:
+    if "brain.cmd" in low or "brain-agent.py" in low or "brain_agent_surface=" in low:
         return True
     return rule.startswith("Bash(BRAIN_VAULT=") and "/bin/brain" in rule
 
@@ -159,18 +177,25 @@ def backup_path_for(path: Path, now: datetime | None = None) -> Path:
     return candidate
 
 
-def atomic_write_text(path: Path, text: str) -> None:
+def atomic_write_text(path: Path, text: str, encoding: str = "utf-8") -> None:
     """Write via a same-directory temp file + os.replace.
 
     Same-directory because os.replace is only atomic within one filesystem. On any
     failure the temp file is removed and the original is left exactly as it was - a
     settings.json half-written by an interrupted installer is unrecoverable.
+
+    `encoding` exists for exactly one caller: the Windows batch launcher, which
+    cmd.exe reads in the OEM codepage. Everything else is UTF-8. The encode happens
+    BEFORE the temp file is created, so an unencodable path raises a plain
+    UnicodeEncodeError and leaves no temp file behind. No newline translation:
+    callers spell their own line endings (LF for text, CRLF for batch).
     """
+    data = text.encode(encoding)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(text)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -186,7 +211,9 @@ def save_settings(path: Path, settings: dict) -> tuple[bool, Path | None]:
     A no-op re-run writes nothing and takes no backup, so repeated `setup` runs do
     not litter the config dir with identical backups.
     """
-    text = json.dumps(settings, indent=2) + "\n"
+    # ensure_ascii=False: the file is UTF-8, and a path with an accented username
+    # should read as one in the file, not as a `\u00e9` escape.
+    text = json.dumps(settings, indent=2, ensure_ascii=False) + "\n"
     new_bytes = text.encode("utf-8")
     try:
         old_bytes = path.read_bytes() if path.exists() else None
@@ -203,6 +230,81 @@ def save_settings(path: Path, settings: dict) -> tuple[bool, Path | None]:
             raise SettingsError(f"cannot write backup {backup}: {exc}") from exc
     atomic_write_text(path, text)
     return True, backup
+
+
+# ------------------------------------------------------------ managed files --
+
+MANAGED_MARKER = "<!-- managed-by: ai-brain -->"
+
+# How far into a file the marker may sit. It is line 1 of the global CLAUDE.md, but
+# the brain skill has YAML frontmatter that must start at line 1, so its marker is
+# the first line after the closing `---`; the generated launchers carry it in a
+# comment near the top. Head-only so a huge unrelated file is not read whole.
+MARKER_HEAD_LINES = 12
+
+# What the generated launchers say about themselves. The retired Windows installer
+# wrote the second form; an install it produced still has that brain.cmd on disk,
+# and the uninstaller has to recognise it to remove it.
+GENERATED_BY_LINES = (
+    "Generated by brain-setup.py",
+    "Generated by setup-windows.ps1",
+)
+
+
+def _head_lines(path: Path) -> list[str]:
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            return [next(fh, "") for _ in range(MARKER_HEAD_LINES)]
+    except OSError:
+        return []
+
+
+def has_managed_marker(path: Path) -> bool:
+    """True when `path` carries the managed-by marker in its head.
+
+    The predicate both halves use: the installer backs up a file WITHOUT it before
+    overwriting, the uninstaller refuses to delete one without it. A hand-written
+    global CLAUDE.md is the user's own configuration and must survive both.
+    """
+    return any(MANAGED_MARKER in line for line in _head_lines(path))
+
+
+def is_generated_launcher(path: Path) -> bool:
+    """True for a launcher this installer (or the retired one) generated."""
+    return any(
+        MANAGED_MARKER in line or any(tag in line for tag in GENERATED_BY_LINES)
+        for line in _head_lines(path)
+    )
+
+
+def backup_file(path: Path) -> Path:
+    """Copy `path` to a timestamped sibling (`<name>.brain-backup-<stamp>`)."""
+    backup = backup_path_for(path)
+    backup.write_bytes(path.read_bytes())
+    return backup
+
+
+def write_managed_text(path: Path, text: str, encoding: str = "utf-8") -> Path | None:
+    """Write a file the installer owns, backing up a user-written one first.
+
+    Returns the backup path when one was taken, else None. Two rules:
+      - an existing file WITHOUT the managed marker is somebody's hand-written
+        configuration; it is backed up before being replaced, never silently lost;
+      - a file WITH the marker is ours from a previous run and is replaced in place.
+    The write is atomic either way. `text` itself must carry the marker, or the next
+    run would back it up as a user file - asserted here so a template cannot drift
+    out of the scheme unnoticed.
+    """
+    if not any(MANAGED_MARKER in line for line in text.splitlines()[:MARKER_HEAD_LINES]):
+        raise ValueError(
+            f"refusing to write {path.name} without {MANAGED_MARKER!r} in its first "
+            f"{MARKER_HEAD_LINES} lines: the next run could not tell it from a user file"
+        )
+    backup = None
+    if path.exists() and not has_managed_marker(path):
+        backup = backup_file(path)
+    atomic_write_text(path, text, encoding=encoding)
+    return backup
 
 
 # -------------------------------------------------------------------- merge --
@@ -341,21 +443,40 @@ def render_hooks_template(
 ) -> dict:
     """Substitute the placeholders and return the template's `hooks` block.
 
+    Substitution happens on the PARSED structure, never on the JSON text. A
+    backslash path spliced into JSON source is an escape sequence, not a path:
+    `D:\\new\\tab` became a newline and a tab, `D:\\Users\\x` failed to parse at all.
+    Walking the parsed strings makes any path a plain string value.
+
     `brain_launch` is forward-slashed here, not by the caller: Claude Code on Windows
     often runs hooks through Git Bash, which strips single backslashes as escapes, so
     a backslashed brain-launch.cmd path would reach the OS with its separators eaten.
     Forward slashes work in cmd.exe, bash and python.exe alike.
     """
-    text = template_text
-    if brain_python:
-        text = text.replace("__BRAIN_PYTHON__", brain_python)
-    if brain_hooks:
-        text = text.replace("__BRAIN_HOOKS__", brain_hooks)
-    if brain_vault:
-        text = text.replace("__BRAIN_VAULT__", brain_vault)
-    if brain_launch:
-        text = text.replace("__BRAIN_LAUNCH__", brain_launch.replace("\\", "/"))
-    block = json.loads(text)["hooks"]
+    substitutions = {
+        "__BRAIN_PYTHON__": brain_python,
+        "__BRAIN_HOOKS__": brain_hooks,
+        "__BRAIN_VAULT__": brain_vault,
+        "__BRAIN_LAUNCH__": brain_launch.replace("\\", "/") if brain_launch else "",
+    }
+
+    def walk(node: object) -> object:
+        if isinstance(node, str):
+            for placeholder, value in substitutions.items():
+                if value:
+                    node = node.replace(placeholder, value)
+            return node
+        if isinstance(node, list):
+            return [walk(item) for item in node]
+        if isinstance(node, dict):
+            return {key: walk(value) for key, value in node.items()}
+        return node
+
+    try:
+        data = json.loads(template_text)
+    except json.JSONDecodeError as exc:
+        raise SettingsError(f"hooks template is not valid JSON: {exc}") from exc
+    block = walk(data.get("hooks") if isinstance(data, dict) else None)
     if not isinstance(block, dict):
         raise SettingsError("hooks template does not contain a `hooks` object")
     return block

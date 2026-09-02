@@ -25,6 +25,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+import shlex
 from pathlib import Path
 
 import pytest
@@ -196,7 +197,7 @@ def test_every_hook_template_command_maps_to_a_real_hook():
     for template in ("templates/settings.hooks.json", "templates/settings.hooks.win.json"):
         for event, entries in json.loads(read(template))["hooks"].items():
             command = entries[0]["hooks"][0]["command"]
-            name = command.split()[-1].replace("__BRAIN_HOOKS__/", "")
+            name = shlex.split(command)[-1].replace("__BRAIN_HOOKS__/", "")
             name = name[:-3] if name.endswith(".py") else name
             assert (hooks_dir / f"{name}.py").is_file(), (
                 f"{template} wires {event} to '{name}', but hooks/{name}.py does not exist"
