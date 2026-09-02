@@ -17,6 +17,7 @@ online when the model is genuinely absent (then bounded by the timeouts, to self
 
 from __future__ import annotations
 
+import codecs
 import os
 import sqlite3
 import struct
@@ -526,24 +527,57 @@ def _wipe_for_model_change(conn) -> None:
     _stamp_recipe(conn)
 
 
+# How much of a file embed_text() reads when a slice budget is in force. The slice
+# is name + description + the first `budget` chars of the body, all of which sit
+# at the top of the file, so reading past this is I/O for text the model never
+# sees — a 200 KB checkpoint costs the same as a 2 KB memory. Only the raw-file
+# recipe (budget 0) reads the whole file.
+EMBED_READ_BYTES = 16 * 1024
+
+
+def _read_for_embedding(path: Path, budget: int) -> str:
+    """Strict UTF-8 text of `path` — the whole file, or its head under a budget.
+
+    Strict on purpose: the vault is UTF-8 everywhere else (`Memory.from_file`,
+    the bundle, recall), and a note that is not is a note the rest of the system
+    cannot read either. The caller skips it and says so; decoding it leniently
+    here would index text nothing else can serve.
+
+    The head is decoded incrementally so a multibyte character straddling the
+    read boundary is held back rather than raised on — that is a valid file, not
+    a corrupt one. A genuinely invalid byte still raises UnicodeDecodeError.
+    """
+    if budget <= 0:
+        return Path(path).read_text(encoding="utf-8")
+    with open(path, "rb") as fh:
+        head = fh.read(EMBED_READ_BYTES)
+        truncated = bool(fh.read(1))
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    return decoder.decode(head, final=not truncated)
+
+
 def embed_text(path: Path) -> str:
     """The text to embed for `path`: title + description + body lead, budget-capped.
 
     Falls back to the raw file whenever the frontmatter can't be parsed, so a
     malformed note still gets indexed rather than silently embedding an empty
     string (doctor's MALFORMED_FRONTMATTER exists precisely because those happen).
+
+    Raises OSError or UnicodeDecodeError (a ValueError) for a file that cannot be
+    read as UTF-8; sync() and upsert() treat both as "skip this one file".
     """
     budget = _embed_text_budget()
-    raw_text = Path(path).read_text(encoding="utf-8")
+    raw_text = _read_for_embedding(Path(path), budget)
     if budget <= 0:
         return raw_text
     # The whole slice-building path is inside the try, not just from_file(): the
     # fields it hands back are parsed YAML, and reading them is exactly as capable
-    # of raising as parsing them was. Anything that escapes here escapes sync()
-    # too — the batch loop only catches OSError — and search_memories turns that
-    # into "embed unavailable", so one unparseable note would take vector search
-    # down for the entire vault. Falling back to the raw file keeps the blast
-    # radius at the one file, which is what the promise above says.
+    # of raising as parsing them was. sync() only skips a file for OSError and
+    # ValueError; anything else that escaped here would escape sync() too, and
+    # search_memories turns that into "embed unavailable", so one unparseable note
+    # would take vector search down for the entire vault. Falling back to the raw
+    # file keeps the blast radius at the one file, which is what the promise
+    # above says.
     try:
         mem = vault.Memory.from_text(Path(path), raw_text)
         parts = [mem.name or Path(path).stem]
@@ -692,25 +726,53 @@ def spawn_background_reindex(min_backlog: int = 1) -> bool:
             return False
         import subprocess
 
-        kwargs: dict = {
-            "stdin": subprocess.DEVNULL,
-            "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.DEVNULL,
-            "cwd": str(Path(sys.executable).parent),
-            "env": os.environ.copy(),
-        }
-        if os.name == "nt":
-            # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP — no console window,
-            # survives the parent.
-            kwargs["creationflags"] = 0x00000008 | 0x00000200
-        else:
-            kwargs["start_new_session"] = True
-        subprocess.Popen(
-            [sys.executable, "-m", "brain_mcp.cli", "reindex"], **kwargs
-        )
+        # The child's output goes to a log, not DEVNULL. A detached reindex that
+        # dies has nobody watching it: with its stderr discarded, a crash left
+        # only INDEX_STALE warning forever and no way to learn why. Opened with
+        # truncation — the file holds the *latest* pass only, so it cannot grow
+        # without bound — and the spawn is gated on the reindex lock, so nothing
+        # else is writing it. Falls back to DEVNULL if the log cannot be opened;
+        # a reindex is worth more than its diagnostics.
+        log = None
+        try:
+            log_path = reindex_log_path()
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log = open(log_path, "wb")
+        except OSError:
+            log = None
+        try:
+            kwargs: dict = {
+                "stdin": subprocess.DEVNULL,
+                "stdout": log if log is not None else subprocess.DEVNULL,
+                "stderr": subprocess.STDOUT if log is not None else subprocess.DEVNULL,
+                "cwd": str(Path(sys.executable).parent),
+                "env": os.environ.copy(),
+            }
+            if os.name == "nt":
+                # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP — no console window,
+                # survives the parent.
+                kwargs["creationflags"] = 0x00000008 | 0x00000200
+            else:
+                kwargs["start_new_session"] = True
+            subprocess.Popen(
+                [sys.executable, "-m", "brain_mcp.cli", "reindex"], **kwargs
+            )
+        finally:
+            if log is not None:
+                log.close()  # the child holds its own handle
         return True
     except Exception:
         return False
+
+
+def reindex_log_path() -> Path:
+    """Where a SessionStart-spawned reindex writes its stdout+stderr.
+
+    Under `.index/` beside the lock — machine-local, never synced — and holding
+    the most recent pass only. Consult it when `INDEX_STALE` persists across
+    sessions: that is the fingerprint of a background reindex that keeps dying.
+    """
+    return vault.vault_root() / ".index" / "reindex.log"
 
 
 def backlog_count() -> int:
@@ -864,6 +926,15 @@ class EmbedIndex:
 
                 done = 0
                 truncated = False
+                # Files this pass could not read. Reported once at the end rather
+                # than per file, and never raised: until 2026-09-01 this loop
+                # caught only OSError, and UnicodeDecodeError is a ValueError, so
+                # one cp1252 note escaped sync() entirely — every foreground
+                # recall fell back to ripgrep, `brain reindex` crashed, and the
+                # SessionStart-spawned child died silently on DEVNULL. Worse,
+                # chunks run newest-first and the failing chunk never committed,
+                # so nothing older than that note was ever indexed again.
+                skipped: list[tuple[str, BaseException]] = []
                 for i in range(0, len(pending), cls.SYNC_CHUNK):
                     # `and done` guarantees forward progress even on a zero budget.
                     if deadline is not None and done and time.monotonic() >= deadline:
@@ -873,7 +944,8 @@ class EmbedIndex:
                     for key, mtime in pending[i:i + cls.SYNC_CHUNK]:
                         try:
                             batch.append((key, mtime, embed_text(_key_path(key, root))))
-                        except OSError:
+                        except (OSError, ValueError) as e:
+                            skipped.append((key, e))
                             continue
                     if not batch:
                         continue
@@ -888,6 +960,14 @@ class EmbedIndex:
                     # keep its progress or successive recalls redo the same work.
                     conn.commit()
                     done += len(batch)
+
+                if skipped:
+                    key0, err0 = skipped[0]
+                    print(
+                        f"brain embed: skipped {len(skipped)} unreadable file(s), "
+                        f"e.g. {key0}: {err0}",
+                        file=sys.stderr,
+                    )
 
                 if rebuilding and not truncated:
                     # Stamp only once every row carries the new recipe. Stamping up
@@ -949,7 +1029,9 @@ class EmbedIndex:
             text = embed_text(Path(path))
             mtime = Path(path).stat().st_mtime
             vec = _EMBEDDER.embed_one(text)
-        except (OSError, EmbedUnavailable):
+        except (OSError, ValueError, EmbedUnavailable):
+            # ValueError covers UnicodeDecodeError: a save must never fail on
+            # the index's account, whatever the note's bytes are.
             return
         root = vault.vault_root()
         conn = _connect()
