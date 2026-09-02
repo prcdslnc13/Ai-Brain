@@ -52,7 +52,12 @@ BRAIN_VAULT = "/vault/Ai-Brain"
 # The current approved-command shape: two quoted paths, no env prefix, no .cmd.
 BRAIN_CMD = f'"{BRAIN_PYTHON}" "/home/x/.claude/brain-agent.py"'
 
-HOOK_EVENTS = sorted(json.loads(POSIX_TEMPLATE.read_text(encoding="utf-8"))["hooks"])
+_POSIX_HOOKS = json.loads(POSIX_TEMPLATE.read_text(encoding="utf-8"))["hooks"]
+HOOK_EVENTS = sorted(_POSIX_HOOKS)
+# How many Brain groups the template registers per event. Not always one: the
+# preload events carry vault.PRELOAD_PARTS entries each (one per hook-output part).
+TEMPLATE_GROUPS = {event: len(groups) for event, groups in _POSIX_HOOKS.items()}
+TEMPLATE_GROUP_TOTAL = sum(TEMPLATE_GROUPS.values())
 
 
 def posix_merge(settings_path: Path) -> dict:
@@ -120,7 +125,9 @@ def test_third_party_hooks_survive_two_merges(tmp_path):
         assert theirs == [f"/usr/local/bin/their-{event}.sh"], (
             f"{event}: third-party hook lost or duplicated: {commands}"
         )
-        assert len(ours) == 1, f"{event}: expected exactly one Brain hook, got {ours}"
+        assert len(ours) == TEMPLATE_GROUPS[event], (
+            f"{event}: expected exactly {TEMPLATE_GROUPS[event]} Brain hook(s), got {ours}"
+        )
 
 
 def test_every_template_event_is_installed(tmp_path):
@@ -273,7 +280,7 @@ def test_windows_template_merges_and_is_idempotent(tmp_path):
     settings = json.loads(settings_path.read_text(encoding="utf-8"))
     for event in HOOK_EVENTS:
         commands = all_commands(settings, event)
-        assert len([c for c in commands if "brain-launch" in c]) == 1
+        assert len([c for c in commands if "brain-launch" in c]) == TEMPLATE_GROUPS[event]
         assert [c for c in commands if "their-" in c]
         # Forward slashes: Git Bash eats single backslashes out of hook commands.
         # (Checked on the commands themselves -- the JSON encoding of the quotes
@@ -333,7 +340,7 @@ def test_prune_removes_only_brain_owned_entries(tmp_path):
     report = sm.prune(settings_path, brain_hooks=BRAIN_HOOKS)
 
     settings = json.loads(settings_path.read_text(encoding="utf-8"))
-    assert report["removed"] == len(HOOK_EVENTS) + len(sm.AGENT_SUBCOMMANDS)
+    assert report["removed"] == TEMPLATE_GROUP_TOTAL + len(sm.AGENT_SUBCOMMANDS)
     for event in HOOK_EVENTS:
         assert all_commands(settings, event) == [f"/usr/local/bin/their-{event}.sh"]
     assert settings["permissions"]["allow"] == ["Bash(ls:*)", "Read(//tmp/**)"]

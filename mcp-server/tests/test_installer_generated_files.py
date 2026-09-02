@@ -179,8 +179,12 @@ def test_percent_signs_in_baked_paths_are_escaped_but_batch_syntax_is_not(setup,
     assert "(%%PY%%)" in text and r"100%%\hooks" in text
     assert text.count("%~1") == 1, "the hook-name argument must still expand"
     assert text.count("%ERRORLEVEL%") == 1, "the exit code must still expand"
-    # Every remaining % is either doubled or part of one of the two batch tokens.
+    for n in range(2, 10):
+        assert text.count(f"%{n}") == 1, f"argument %{n} must still be forwarded (preload --part/--parts)"
+    # Every remaining % is either doubled or part of one of the batch tokens.
     stripped = text.replace("%%", "").replace("%~1", "").replace("%ERRORLEVEL%", "")
+    for n in range(2, 10):
+        stripped = stripped.replace(f"%{n}", "")
     assert "%" not in stripped, stripped
 
 

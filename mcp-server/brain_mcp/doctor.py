@@ -158,6 +158,12 @@ def _check_frontmatter(brain: Path) -> list[Finding]:
                 text = p.read_text(encoding="utf-8")
             except OSError:
                 continue
+            except ValueError:
+                # A cp1252 note raises UnicodeDecodeError — a ValueError, which the
+                # OSError catch let straight through the whole doctor and cost the
+                # session its preload (F4). It is a finding, not a crash.
+                bad.append((p, "not valid UTF-8"))
+                continue
             if not text.startswith("---"):
                 bad.append((p, "no frontmatter"))
                 continue
@@ -174,7 +180,8 @@ def _check_frontmatter(brain: Path) -> list[Finding]:
                 bad.append((p, "frontmatter is not a mapping"))
                 continue
             t = fm.get("type")
-            if t not in KNOWN_TYPES:
+            # `type: [x]` parses to a list, and `list in set` raises TypeError.
+            if not isinstance(t, str) or t not in KNOWN_TYPES:
                 bad.append((p, f"type is {t!r}"))
     if not bad:
         return [Finding("ok", "FRONTMATTER_OK", "all memory frontmatter parses with a valid type")]
@@ -598,7 +605,11 @@ def _check_stale_uncommitted(
     checkpoints = list(sessions.glob("*.md"))
     if not checkpoints:
         return []
-    latest_mtime = max(p.stat().st_mtime for p in checkpoints)
+    # safe_mtime, not p.stat(): a checkpoint deleted by sync or brain-compact
+    # between the glob and the stat raised out of the comprehension (F4).
+    latest_mtime = max(vault.safe_mtime(p) for p in checkpoints)
+    if latest_mtime == 0.0:
+        return []
 
     commit_age_hours: float | None = None
     try:
@@ -703,8 +714,10 @@ def _check_stale_checkpoint(brain: Path, project: str | None) -> list[Finding]:
     checkpoints = list(sessions.glob("*.md"))
     if not checkpoints:
         return []
-    newest = max(checkpoints, key=lambda p: p.stat().st_mtime)
-    age_days = (datetime.now().timestamp() - newest.stat().st_mtime) / 86400
+    newest_mtime = max(vault.safe_mtime(p) for p in checkpoints)
+    if newest_mtime == 0.0:
+        return []
+    age_days = (datetime.now().timestamp() - newest_mtime) / 86400
     if age_days > 30:
         return [Finding(
             "info", "STALE_CHECKPOINT",
@@ -720,7 +733,14 @@ def _check_stale_checkpoint(brain: Path, project: str | None) -> list[Finding]:
 MEMORY_BODY_SOFT_LIMIT = 1500
 
 
-def _check_bundle_budget(project: str | None) -> list[Finding]:
+# Chars reserved on part 1 for the health banner when doctor sizes the parts. The
+# hook passes the *real* banner into `render_parts`, so its part 1 is exact; doctor
+# runs before the banner exists and sizes against this allowance instead.
+BANNER_RESERVE_CHARS = 1200
+
+
+def _check_bundle_budget(project: str | None,
+                         bundle_cache: dict | None = None) -> list[Finding]:
     """Both preload paths drop entries once they hit their byte budget — silently.
 
     A skipped memory is indistinguishable from one the model chose to ignore, so this
@@ -728,46 +748,171 @@ def _check_bundle_budget(project: str | None) -> list[Finding]:
     subagent budgets are sized independently: on 2026-08-06 the corpus had grown past
     the 44 KB subagent budget (3 feedback rules dropped from every subagent) while this
     check — then sizing only the 72 KB session budget — reported OK.
+
+    Two budgets, one read: the corpus is collected once and assembled twice (F12).
+    The assembled bundles are stashed in `bundle_cache` (`session`, `subagent`) so
+    the SessionStart hook can render what doctor already built.
+
+    Sizing also renders exactly what the hooks would emit — `render_parts` at the
+    hook output cap — because the vault-side byte budget cannot see the harness's
+    per-hook cap (2026-09-01): a 44 KB bundle passed BUNDLE_BUDGET_OK for weeks
+    while Claude Code spilled it to a file the model never read.
+    `PRELOAD_PART_OVERSIZED` fires if any part would exceed the cap and
+    `PRELOAD_OVERFLOW` names what fell off the last part into the catalogue.
     """
+    from . import brain_prep
+
     findings: list[Finding] = []
+    try:
+        candidates = vault.collect_preload_candidates(project)
+    except Exception as exc:  # never let a health check break the session banner
+        return [Finding(
+            "info", "BUNDLE_CHECK_FAILED",
+            f"Could not read the preload corpus to size it: {exc}",
+        )]
 
     def size_one(label: str, warn_code: str, ok_code: str, knob: str,
-                 bundle_project: str | None, budget_kb: float | None,
-                 slim: bool = False) -> Finding:
+                 cache_key: str, budget_kb: float | None, slim: bool,
+                 banner_reserve: int) -> list[Finding]:
         try:
-            bundle = vault.session_start_bundle(bundle_project, budget_kb=budget_kb, slim=slim)
-        except Exception as exc:  # never let a health check break the session banner
-            return Finding(
+            bundle = vault.assemble_bundle(candidates, budget_kb=budget_kb, slim=slim)
+        except Exception as exc:
+            return [Finding(
                 "info", "BUNDLE_CHECK_FAILED",
                 f"Could not build the {label} preload bundle to size it: {exc}",
-            )
+            )]
+        if bundle_cache is not None:
+            bundle_cache[cache_key] = bundle
+        out: list[Finding] = []
         limit = bundle.get("budget_limit_kb")
         used = bundle.get("budget_consumed_kb")
         skipped = bundle.get("skipped_sections") or {}
+        pinned_note = ""
+        if bundle.get("pinned_clipped"):
+            pinned_note = (
+                f" ({len(bundle['pinned_clipped'])} pinned item(s) clipped to the per-item "
+                f"cap, {bundle.get('pinned_kb')} KB pinned)"
+            )
         if skipped:
             detail = ", ".join(f"{n} {sec}" for sec, n in sorted(skipped.items()))
-            return Finding(
+            out.append(Finding(
                 "warn", warn_code,
-                f"{label} preload hit its {limit} KB budget and skipped {detail}.",
+                f"{label} preload hit its {limit} KB budget and skipped {detail}{pinned_note}.",
                 "Those memories are saved but never loaded, so their rules stop applying with "
-                f"no visible failure. Raise {knob}, or compact oversized memories.",
-            )
-        deferred = bundle.get("deferred_why_kb") or 0
-        note = f", {deferred} KB of **Why:** deferred to recall" if deferred else ""
-        return Finding(
-            "ok", ok_code, f"{label} preload {used}/{limit} KB, nothing skipped{note}"
-        )
+                f"no visible failure. Raise {knob}, or compact oversized memories. The skipped "
+                "names are catalogued at the end of the preload for `brain recall`.",
+            ))
+        else:
+            deferred = bundle.get("deferred_why_kb") or 0
+            note = f", {deferred} KB of **Why:** deferred to recall" if deferred else ""
+            out.append(Finding(
+                "ok", ok_code,
+                f"{label} preload {used}/{limit} KB, nothing skipped{note}{pinned_note}",
+            ))
 
-    findings.append(size_one(
+        # Now the harness side: what the hook entries would actually deliver.
+        cap = vault.hook_output_cap()
+        try:
+            parts = brain_prep.render_parts(bundle, banner="#" * banner_reserve)
+        except Exception as exc:
+            out.append(Finding(
+                "info", "BUNDLE_CHECK_FAILED",
+                f"Could not render the {label} preload parts to size them: {exc}",
+            ))
+            return out
+        oversized = [i + 1 for i, p in enumerate(parts) if len(p) > cap]
+        if oversized:
+            out.append(Finding(
+                "warn", "PRELOAD_PART_OVERSIZED",
+                f"{label} preload part(s) {oversized} exceed the {cap}-char hook output cap "
+                f"(sizes: {[len(p) for p in parts]}).",
+                "Claude Code spills a hook output over 10,000 chars to a file the model "
+                "never reads. Lower BRAIN_HOOK_OUTPUT_CAP is not the fix — a single item "
+                "larger than a part is; find it with `brain doctor` OVERSIZED_MEMORIES.",
+            ))
+        delivered = {
+            path for p in parts
+            for path in re.findall(r"^### (.+)$", p, flags=re.MULTILINE)
+        }
+        overflow = [
+            vault.memory_display_name(item["path"])
+            for section in bundle.get("sections", [])
+            for item in section["items"]
+            if item["path"] not in delivered
+        ]
+        if overflow:
+            sample = ", ".join(overflow[:5])
+            more = f" (+{len(overflow) - 5} more)" if len(overflow) > 5 else ""
+            out.append(Finding(
+                "warn", "PRELOAD_OVERFLOW",
+                f"{label} preload: {len(overflow)} memories fit the {limit} KB budget but not "
+                f"in {vault.PRELOAD_PARTS} hook parts of {cap} chars; catalogued by name on "
+                f"the last part: {sample}{more}.",
+                "They are one `brain recall <name>` away, not lost. To load them by default, "
+                "compact the largest memories, or register more hook parts (vault.PRELOAD_PARTS).",
+            ))
+        return out
+
+    findings.extend(size_one(
         "SessionStart", "BUNDLE_SATURATED", "BUNDLE_BUDGET_OK",
-        "BRAIN_BUNDLE_BUDGET_KB", project, None))
+        "BRAIN_BUNDLE_BUDGET_KB", "session", None, False, BANNER_RESERVE_CHARS))
     if os.environ.get("BRAIN_SUBAGENT_PRELOAD", "1") != "0":
         # Mirror the SubagentStart hook exactly: slim bundle (project feedback but no
-        # overview/checkpoint), subagent budget.
-        findings.append(size_one(
+        # overview/checkpoint), subagent budget, no banner.
+        findings.extend(size_one(
             "SubagentStart", "SUBAGENT_BUNDLE_SATURATED", "SUBAGENT_BUNDLE_OK",
-            "BRAIN_SUBAGENT_BUDGET_KB", project, vault.subagent_budget_kb(), slim=True))
+            "BRAIN_SUBAGENT_BUDGET_KB", "subagent", vault.subagent_budget_kb(), True, 0))
     return findings
+
+
+def _check_pinned_sizes(brain: Path) -> list[Finding]:
+    """Overviews and newest checkpoints over their per-item preload cap.
+
+    `_check_memory_sizes` scans user/feedback only, so on 2026-09-01 an 80 KB
+    checkpoint consumed the whole session bundle (81.98/72 KB, every user and
+    feedback entry skipped) while MEMORY_SIZES_OK reported clean (F5). Pinned
+    items are clipped now, so this is informational: what is clipped is what the
+    session does not see.
+    """
+    oversized: list[tuple[int, int, str]] = []
+    projects = vault.projects_root(brain)
+    if not projects.exists():
+        return [Finding("ok", "PINNED_SIZES_OK", "no projects to size")]
+    for proj in sorted(p for p in projects.iterdir() if p.is_dir()):
+        overview = proj / "overview.md"
+        if overview.exists():
+            try:
+                n = len(overview.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                n = 0
+            cap = vault.pinned_max_chars("overview")
+            if n > cap:
+                oversized.append((n, cap, f"projects/{proj.name}/overview.md"))
+        latest = vault.latest_checkpoint(proj / "sessions")
+        if latest is not None:
+            try:
+                n = len(latest.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                n = 0
+            cap = vault.pinned_max_chars("checkpoint")
+            if n > cap:
+                oversized.append((n, cap, f"projects/{proj.name}/sessions/{latest.name}"))
+    if not oversized:
+        return [Finding(
+            "ok", "PINNED_SIZES_OK",
+            "every overview and newest checkpoint preloads whole (under its per-item cap)",
+        )]
+    oversized.sort(reverse=True)
+    worst = ", ".join(f"{name} ({n} > {cap} chars)" for n, cap, name in oversized[:3])
+    more = f" (+{len(oversized) - 3} more)" if len(oversized) > 3 else ""
+    return [Finding(
+        "info", "OVERSIZED_PINNED",
+        f"{len(oversized)} pinned preload item(s) exceed their per-item cap and load "
+        f"clipped: {worst}{more}.",
+        "The preload carries the head plus a marker saying how to read the rest. Keep "
+        "overviews under BRAIN_PRELOAD_PINNED_MAX_CHARS; long checkpoints are fine on "
+        "disk, the next session just sees the top of them.",
+    )]
 
 
 def _preload_cost(text: str) -> int:
@@ -1034,13 +1179,46 @@ def _check_near_duplicates(brain: Path) -> list[Finding]:
         return []  # hygiene check must never break the session banner
 
 
+def _run_check(findings: list[Finding], name: str, fn, *args) -> None:
+    """Run one check, converting a raise into a CHECK_FAILED finding.
+
+    `check()` is called from the SessionStart hook, where an exception used to be
+    treated as a fatal vault error: the hook emitted a banner blaming a package
+    import and exited before building the bundle, so any one raising check cost
+    the session every memory (F4). Eighteen checks with no isolation is eighteen
+    ways to lose the preload; a failed check is a finding like any other.
+    """
+    try:
+        findings.extend(fn(*args))
+    except Exception as exc:
+        findings.append(Finding(
+            "info", "CHECK_FAILED",
+            f"health check {name} raised {type(exc).__name__}: {exc}",
+            "The preload is unaffected. Run `brain doctor` for the full report; if it "
+            "reproduces, the check has a bug worth a fix.",
+        ))
+
+
 def check(
     project: str | None = None,
     project_cwd: str | Path | None = None,
+    bundle_cache: dict | None = None,
 ) -> list[dict]:
+    """Run every health check; never raises for a check's own bug.
+
+    `bundle_cache`, when given, receives the preload bundles the budget check
+    assembled (`session`, `subagent`) so the SessionStart hook renders what doctor
+    already built instead of reading the corpus again (F12).
+    """
     findings: list[Finding] = []
 
-    vault_findings = _check_brain_vault()
+    try:
+        vault_findings = _check_brain_vault()
+    except Exception as exc:
+        vault_findings = [Finding(
+            "error", "BRAIN_VAULT_UNSET",
+            f"could not resolve the vault: {type(exc).__name__}: {exc}",
+        )]
     findings.extend(vault_findings)
     if any(f.severity == "error" for f in vault_findings):
         return [f.to_dict() for f in findings]
@@ -1062,24 +1240,29 @@ def check(
             ))
             project = None
 
-    findings.extend(_check_subdirs(brain))
-    findings.extend(_check_sync_conflicts(brain))
-    findings.extend(_check_frontmatter(brain))
-    findings.extend(_check_bundle_budget(project))
-    findings.extend(_check_memory_sizes(brain))
-    findings.extend(_check_shadowed_overviews(brain))
-    findings.extend(_check_stub_only_projects(brain))
-    findings.extend(_check_near_duplicates(brain))
-    findings.extend(_check_vector_index(brain))
-    findings.extend(_check_index_stale(brain))
-    findings.extend(_check_index_recipe(brain))
-    findings.extend(_check_editable_install())
-    findings.extend(_check_fastembed())
-    findings.extend(_check_project_overview(brain, project))
-    findings.extend(_check_stale_checkpoint(brain, project))
-    findings.extend(_check_stale_uncommitted(brain, project, project_cwd))
-    findings.extend(_check_save_gap(brain))
-    findings.extend(_check_promise_gap(brain))
+    checks = (
+        ("subdirs", _check_subdirs, (brain,)),
+        ("sync_conflicts", _check_sync_conflicts, (brain,)),
+        ("frontmatter", _check_frontmatter, (brain,)),
+        ("bundle_budget", _check_bundle_budget, (project, bundle_cache)),
+        ("memory_sizes", _check_memory_sizes, (brain,)),
+        ("pinned_sizes", _check_pinned_sizes, (brain,)),
+        ("shadowed_overviews", _check_shadowed_overviews, (brain,)),
+        ("stub_only_projects", _check_stub_only_projects, (brain,)),
+        ("near_duplicates", _check_near_duplicates, (brain,)),
+        ("vector_index", _check_vector_index, (brain,)),
+        ("index_stale", _check_index_stale, (brain,)),
+        ("index_recipe", _check_index_recipe, (brain,)),
+        ("editable_install", _check_editable_install, ()),
+        ("fastembed", _check_fastembed, ()),
+        ("project_overview", _check_project_overview, (brain, project)),
+        ("stale_checkpoint", _check_stale_checkpoint, (brain, project)),
+        ("stale_uncommitted", _check_stale_uncommitted, (brain, project, project_cwd)),
+        ("save_gap", _check_save_gap, (brain,)),
+        ("promise_gap", _check_promise_gap, (brain,)),
+    )
+    for name, fn, args in checks:
+        _run_check(findings, name, fn, *args)
 
     return [f.to_dict() for f in findings]
 
@@ -1096,7 +1279,12 @@ def worst_severity(findings: list[dict]) -> str:
 def render_banner(findings: list[dict], min_severity: str = "warn") -> str:
     """Render warn+error findings as a markdown banner. Returns '' if nothing to show."""
     min_idx = SEVERITY_ORDER.index(min_severity)
-    visible = [f for f in findings if SEVERITY_ORDER.index(f["severity"]) >= min_idx]
+
+    def rank(f: dict) -> int:
+        sev = f.get("severity", "ok")
+        return SEVERITY_ORDER.index(sev) if sev in SEVERITY_ORDER else 0
+
+    visible = [f for f in findings if rank(f) >= min_idx]
     if not visible:
         return ""
     # The banner sits *outside* the memory fence, i.e. in the position the model reads
@@ -1107,10 +1295,11 @@ def render_banner(findings: list[dict], min_severity: str = "warn") -> str:
 
     lines = ["## Brain Health", ""]
     for f in visible:
-        label = f["severity"].upper()
-        line = f"- **[{label}]** `{f['code']}` — {vault.neutralize_fence(f['message'])}"
+        label = str(f.get("severity", "ok")).upper()
+        code = f.get("code", "UNKNOWN")
+        line = f"- **[{label}]** `{code}` — {vault.neutralize_fence(str(f.get('message', '')))}"
         if f.get("hint"):
-            line += f"  \n  *{f['hint']}*"
+            line += f"  \n  *{vault.neutralize_fence(str(f['hint']))}*"
         lines.append(line)
     lines.append("")
     return "\n".join(lines)

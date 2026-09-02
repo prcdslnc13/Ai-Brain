@@ -5,7 +5,34 @@
         "hooks": [
           {
             "type": "command",
-            "command": "BRAIN_VAULT=\"__BRAIN_VAULT__\" \"__BRAIN_PYTHON__\" \"__BRAIN_HOOKS__/session_start.py\"",
+            "command": "BRAIN_VAULT=\"__BRAIN_VAULT__\" \"__BRAIN_PYTHON__\" \"__BRAIN_HOOKS__/session_start.py\" --part 1 --parts 4",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "BRAIN_VAULT=\"__BRAIN_VAULT__\" \"__BRAIN_PYTHON__\" \"__BRAIN_HOOKS__/session_start.py\" --part 2 --parts 4",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "BRAIN_VAULT=\"__BRAIN_VAULT__\" \"__BRAIN_PYTHON__\" \"__BRAIN_HOOKS__/session_start.py\" --part 3 --parts 4",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "BRAIN_VAULT=\"__BRAIN_VAULT__\" \"__BRAIN_PYTHON__\" \"__BRAIN_HOOKS__/session_start.py\" --part 4 --parts 4",
             "timeout": 15
           }
         ]
@@ -16,7 +43,34 @@
         "hooks": [
           {
             "type": "command",
-            "command": "BRAIN_VAULT=\"__BRAIN_VAULT__\" \"__BRAIN_PYTHON__\" \"__BRAIN_HOOKS__/subagent_start.py\"",
+            "command": "BRAIN_VAULT=\"__BRAIN_VAULT__\" \"__BRAIN_PYTHON__\" \"__BRAIN_HOOKS__/subagent_start.py\" --part 1 --parts 4",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "BRAIN_VAULT=\"__BRAIN_VAULT__\" \"__BRAIN_PYTHON__\" \"__BRAIN_HOOKS__/subagent_start.py\" --part 2 --parts 4",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "BRAIN_VAULT=\"__BRAIN_VAULT__\" \"__BRAIN_PYTHON__\" \"__BRAIN_HOOKS__/subagent_start.py\" --part 3 --parts 4",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "BRAIN_VAULT=\"__BRAIN_VAULT__\" \"__BRAIN_PYTHON__\" \"__BRAIN_HOOKS__/subagent_start.py\" --part 4 --parts 4",
             "timeout": 15
           }
         ]
