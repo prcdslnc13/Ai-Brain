@@ -84,6 +84,19 @@ def embedding_vault(vault_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return vault_dir
 
 
+@pytest.fixture(scope="session")
+def dead_pid() -> int:
+    """A pid the OS reports as not running: a child that has already exited.
+
+    For tests that plant a reindex lock and need it judged *stale* — a literal
+    like 12345 may be a live process on the machine running the suite.
+    """
+    import subprocess
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    return proc.pid
+
+
 def _reset_module_state() -> None:
     """Clear module-level caches that would otherwise leak between vaults.
 

@@ -188,7 +188,7 @@ def test_reindex_lock_defers_index_checks(populated_vault: Path, index_db: Path)
 
 
 def test_a_stale_lock_does_not_defer_checks_forever(
-    populated_vault: Path, index_db: Path
+    populated_vault: Path, index_db: Path, dead_pid: int
 ) -> None:
     """A lock left behind by a killed process must not mute the checks permanently."""
     import os
@@ -198,7 +198,7 @@ def test_a_stale_lock_does_not_defer_checks_forever(
 
     lock = populated_vault / ".index" / "reindex.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
-    lock.write_text("12345", encoding="utf-8")
+    lock.write_text(str(dead_pid), encoding="utf-8")
     ancient = time.time() - (embed.REINDEX_LOCK_STALE_S + 60)
     os.utime(lock, (ancient, ancient))
 

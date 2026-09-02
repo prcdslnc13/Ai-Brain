@@ -652,49 +652,211 @@ def _indexable(root: Path) -> dict[str, float]:
 
 # A reindex outlives the hook that starts it, so the guard against concurrent
 # passes has to be cross-process (a threading.Lock only covers _SYNC_LOCK's
-# process). Treat a lock older than this as abandoned by a killed process.
+# process). The lock is a file holding the owner's pid, and the owner touches it
+# after every chunk commit (see sync()), so its mtime is a heartbeat: a lock this
+# old belongs to a pass that has stopped making progress. That alone is not
+# "abandoned", though — a rebuild of a large vault can legitimately run past it —
+# so age only makes the lock a *candidate*; the pid decides (see _lock_state).
 REINDEX_LOCK_STALE_S = 1800
+
+# Past this, a lock is abandoned whatever its pid says. The heartbeat keeps a live
+# pass's lock fresh, so only a dead one can reach this age — unless its pid has
+# been reused by some unrelated long-lived process, which is the case this exists
+# to bound.
+REINDEX_LOCK_ABANDON_S = 24 * 3600
 
 
 def _reindex_lock_path() -> Path:
     return vault.vault_root() / ".index" / "reindex.lock"
 
 
+def _read_lock_pid(lock: Path) -> int | None:
+    """The pid recorded in the lock, or None for a pidless/unreadable one.
+
+    None is also what a lock returns in the instant between its O_EXCL create and
+    its pid write; every consumer treats None as "cannot tell", never as "free".
+    """
+    try:
+        raw = lock.read_text(encoding="ascii", errors="ignore").strip()
+    except OSError:
+        return None
+    return int(raw) if raw.isdigit() else None
+
+
+def _pid_alive(pid: int) -> bool | None:
+    """True/False when the OS can say whether `pid` is a live process, else None."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        return _pid_alive_windows(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by someone else
+    except OSError:
+        return None
+    return True
+
+
+def _pid_alive_windows(pid: int) -> bool | None:
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        # restype matters: the default c_int truncates a 64-bit HANDLE.
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.GetExitCodeProcess.restype = wintypes.BOOL
+        k32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            err = ctypes.get_last_error()
+            if err == 87:   # ERROR_INVALID_PARAMETER: no such process
+                return False
+            if err == 5:    # ERROR_ACCESS_DENIED: exists, not ours to open
+                return True
+            return None
+        try:
+            code = wintypes.DWORD()
+            if not k32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return None
+            return code.value == 259  # STILL_ACTIVE
+        finally:
+            k32.CloseHandle(handle)
+    except Exception:
+        return None
+
+
+def _lock_state(lock: Path) -> str:
+    """'free', 'held' or 'stale'.
+
+    Age gates everything: a lock younger than REINDEX_LOCK_STALE_S is held, full
+    stop, and costs one stat to say so. An older one is stale only if its owner
+    is *dead* — a live pid past the age means a pass still running, which the old
+    age-only rule declared abandoned at 30 minutes while it was alive: the next
+    SessionStart then unlinked the live lock and spawned a second pass, and the
+    first pass's release deleted the second's lock. When the OS cannot say
+    (pidless lock, unknown error), the age test stands alone, as it always did.
+    """
+    try:
+        st = lock.stat()
+    except FileNotFoundError:
+        return "free"
+    except OSError:
+        return "held"  # cannot inspect it: assume the conservative answer
+    age = time.time() - st.st_mtime
+    if age <= REINDEX_LOCK_STALE_S:
+        return "held"
+    if age > REINDEX_LOCK_ABANDON_S:
+        return "stale"
+    pid = _read_lock_pid(lock)
+    alive = _pid_alive(pid) if pid is not None else None
+    return "held" if alive is True else "stale"
+
+
 def reindex_lock_held() -> bool:
     try:
-        lock = _reindex_lock_path()
-        if not lock.exists():
-            return False
-        if time.time() - lock.stat().st_mtime > REINDEX_LOCK_STALE_S:
-            return False
+        return _lock_state(_reindex_lock_path()) == "held"
     except OSError:
         return False
+
+
+def _retire_stale_lock(lock: Path, judged: os.stat_result) -> bool:
+    """Clear a lock previously judged stale, without clearing anyone else's.
+
+    Rename rather than unlink: a rename is atomic and only one of two racing
+    takeovers can win it, so two processes that both observed "stale" cannot both
+    clear the path and both create — the check-then-act hole in the old unlink.
+    The renamed file is then verified against the stat that produced the verdict:
+    if the other process already retired the stale lock and created a fresh one
+    in the gap, what we renamed is *its* lock, and it goes straight back.
+    """
+    tomb = lock.with_name(f"{lock.name}.stale-{os.getpid()}")
+    try:
+        os.replace(lock, tomb)
+    except OSError:
+        return False  # gone already (someone else retired it), or not ours to move
+    try:
+        moved = tomb.stat()
+    except OSError:
+        return False
+    if (moved.st_mtime, moved.st_size) != (judged.st_mtime, judged.st_size):
+        try:
+            os.replace(tomb, lock)
+        except OSError:
+            pass
+        return False
+    try:
+        tomb.unlink()
+    except OSError:
+        pass
     return True
 
 
 def acquire_reindex_lock() -> bool:
-    """Best-effort cross-process lock. O_EXCL create, with stale-lock takeover."""
+    """Cross-process lock: O_EXCL create, pid inside, stale-lock takeover.
+
+    Returns True only when this process now owns the lock. It never returns True
+    on an unexpected OSError — the old version did ("can't lock, don't block the
+    reindex"), which turned a read-only or permission-denied `.index/` into two
+    unsynchronised writers.
+    """
+    lock = _reindex_lock_path()
     try:
-        lock = _reindex_lock_path()
         lock.parent.mkdir(parents=True, exist_ok=True)
-        if lock.exists() and time.time() - lock.stat().st_mtime > REINDEX_LOCK_STALE_S:
-            lock.unlink(missing_ok=True)
-        fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        return False
     except OSError:
-        # Can't lock (read-only vault, permissions) — don't block the reindex.
+        return False
+    for attempt in range(2):
+        try:
+            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            if attempt:
+                return False
+            try:
+                judged = lock.stat()
+            except OSError:
+                return False
+            if _lock_state(lock) != "stale":
+                return False
+            _retire_stale_lock(lock, judged)
+            continue  # the second O_EXCL decides, whoever cleared the path
+        except OSError:
+            return False
+        try:
+            os.write(fd, str(os.getpid()).encode("ascii"))
+        finally:
+            os.close(fd)
         return True
+    return False
+
+
+def _heartbeat_reindex_lock() -> None:
+    """Refresh the lock's mtime — only if this process owns it."""
+    lock = _reindex_lock_path()
     try:
-        os.write(fd, str(os.getpid()).encode())
-    finally:
-        os.close(fd)
-    return True
+        if _read_lock_pid(lock) == os.getpid():
+            os.utime(lock, None)
+    except OSError:
+        pass
 
 
 def release_reindex_lock() -> None:
+    """Release the lock — only if this process owns it.
+
+    An unconditional unlink deleted whichever lock was there, including one a
+    later pass had taken over after judging ours stale.
+    """
+    lock = _reindex_lock_path()
     try:
-        _reindex_lock_path().unlink(missing_ok=True)
+        if _read_lock_pid(lock) != os.getpid():
+            return
+        lock.unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -960,6 +1122,13 @@ class EmbedIndex:
                     # keep its progress or successive recalls redo the same work.
                     conn.commit()
                     done += len(batch)
+                    if not foreground:
+                        # Heartbeat. Unbounded passes are the ones that hold the
+                        # reindex lock (the CLI and the MCP warmup take it; a
+                        # foreground pass never does), and a lock that is not
+                        # touched looks abandoned at REINDEX_LOCK_STALE_S however
+                        # alive its owner is. A no-op unless this pid owns it.
+                        _heartbeat_reindex_lock()
 
                 if skipped:
                     key0, err0 = skipped[0]
