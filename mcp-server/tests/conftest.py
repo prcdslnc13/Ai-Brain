@@ -24,6 +24,23 @@ sys.path.insert(0, str(REPO_ROOT / "mcp-server"))
 sys.path.insert(0, str(REPO_ROOT / "hooks"))
 
 
+def load_repo_script(filename: str):
+    """Import a repo-root script (`brain-setup.py`, `brain-uninstall.py`, ...) by path.
+
+    Their names carry a dash, so they cannot be imported by name, and the repo root
+    is deliberately not on sys.path. Every call returns a FRESH module object that is
+    not registered in sys.modules, so a test can monkeypatch `IS_WINDOWS` or `VENV_PY`
+    on its copy without leaking into another test's.
+    """
+    import importlib.util
+
+    path = REPO_ROOT / filename
+    spec = importlib.util.spec_from_file_location(filename.replace("-", "_")[:-3], path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _write(path: Path, text: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")

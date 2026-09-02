@@ -25,9 +25,12 @@ from __future__ import annotations
 import ast
 import json
 import re
+import shlex
 from pathlib import Path
 
 import pytest
+
+from conftest import load_repo_script
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -98,15 +101,19 @@ def test_the_shared_module_writes_and_prunes_the_permission_rule():
     design — and does it invisibly, since an unanswered prompt looks exactly like the
     model choosing not to save. The prune half is what keeps a re-run from
     accumulating duplicates, and it must recognise every rule shape ever written: an
-    env-prefixed `.../bin/brain` on POSIX, a `brain.cmd` wrapper path on Windows, and
-    the current per-subcommand rules carrying the agent-surface gate.
+    env-prefixed `.../bin/brain` on POSIX, a `brain.cmd` wrapper path on Windows, the
+    `BRAIN_AGENT_SURFACE=1`-prefixed per-subcommand rules, and the current
+    `brain-agent.py` launcher rules.
     """
     src = read(SHARED_MERGE)
     assert 'f"Bash({brain_cmd} {sub}:*)"' in src, "the shared module no longer writes the rules"
     assert "AGENT_SUBCOMMANDS" in src, "the narrow per-subcommand rule list is gone"
     assert "def prune_permission_rules" in src, "nothing removes the rules on uninstall"
     assert re.search(r"is_brain_permission_rule", src)
-    assert "/bin/brain" in src and "brain.cmd" in src and "brain_agent_surface=" in src, (
+    assert (
+        "/bin/brain" in src and "brain.cmd" in src
+        and "brain_agent_surface=" in src and "brain-agent.py" in src
+    ), (
         "the prune predicate must match every rule shape we have ever written, or a "
         "superseded rule becomes a standing approval that survives each re-install"
     )
@@ -138,34 +145,109 @@ def test_no_installer_installs_the_package_editable(installer):
     assert "--editable" not in src, f"{installer} installs brain-mcp editable"
 
 
-def test_the_installer_reads_and_writes_templates_as_utf8():
-    """Every file read/write in the installer names an encoding.
+# File I/O calls the installer makes, and what each may say about its encoding.
+# The three writer helpers default to UTF-8 when the kwarg is absent; read_text /
+# write_text / open default to the locale, which is the bug.
+IO_CALLS = {"read_text", "write_text", "open", "write_managed_text", "_write_managed",
+            "atomic_write_text"}
+DEFAULT_UTF8_CALLS = {"write_managed_text", "_write_managed", "atomic_write_text"}
+# The one function allowed -- required -- to write something other than UTF-8: the
+# Windows batch launcher, which cmd.exe reads in the OEM codepage.
+BATCH_WRITERS = {"write_windows_launch_cmd"}
+
+
+def _io_calls_by_function(src: str):
+    """(enclosing FunctionDef, call node, call name) for every IO call."""
+    tree = ast.parse(src)
+    owner: dict[int, tuple[ast.FunctionDef, ast.Call, str]] = {}
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Attribute):
+                name = node.func.attr
+            elif isinstance(node.func, ast.Name):
+                name = node.func.id
+            else:
+                continue
+            if name in IO_CALLS:
+                # ast.walk is breadth-first, so an inner def overwrites its outer.
+                owner[id(node)] = (fn, node, name)
+    return list(owner.values())
+
+
+def _forwards_own_utf8_parameter(fn: ast.FunctionDef, value: ast.expr) -> bool:
+    """`encoding=encoding` inside `def f(..., encoding="utf-8")` is a pass-through
+    with a UTF-8 default, not a locale-default write."""
+    if not isinstance(value, ast.Name):
+        return False
+    args = fn.args
+    params = args.args + args.kwonlyargs
+    defaults = [None] * (len(args.args) - len(args.defaults)) + list(args.defaults) + list(args.kw_defaults)
+    for param, default in zip(params, defaults):
+        if param.arg == value.id:
+            return isinstance(default, ast.Constant) and str(default.value).lower().startswith("utf-8")
+    return False
+
+
+def test_the_installer_names_the_right_encoding_for_every_file_it_touches():
+    """Every file read/write in the installer names UTF-8 explicitly -- except the
+    Windows batch launcher, which must NOT be UTF-8.
 
     On 2026-08-24 `setup-windows.ps1` produced 43 mojibake sequences in the generated
     global CLAUDE.md and 7 in the brain skill — the two load-bearing behavioural
-    files, corrupted by the one step whose whole job is to write them. The templates
-    themselves were clean, so nothing upstream showed the damage.
+    files, corrupted by the one step whose whole job is to write them. That script is
+    gone (ROADMAP 3G) but the bug class is not: `read_text()` with no encoding uses
+    the locale default, cp1252 on a stock Windows.
 
-    That script is gone (ROADMAP 3G) but the bug class is not: it belongs to whoever
-    renders the templates, which is now `brain-setup.py` alone. Python is not immune —
-    `read_text()` with no encoding uses the locale default, which is cp1252 on a
-    stock Windows, reintroducing exactly this.
+    The batch file is the mirror image (found 2026-09-01): cmd.exe reads `.cmd` files
+    in the OEM codepage, so a `brain-launch.cmd` written as UTF-8 with a non-ASCII
+    path set BRAIN_VAULT to a directory that does not exist and every hook failed
+    silently. The previous version of this test accepted any `encoding=` kwarg at
+    all, which the UTF-8 batch write satisfied.
 
     Parsed rather than grepped: a regex for the call stops at the first `)`, so
     `write_text(t.replace(a, b), encoding="utf-8")` reads as unqualified.
     """
-    tree = ast.parse(read("brain-setup.py"))
     offenders = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+    oem_writes = 0
+    for fn, node, call_name in _io_calls_by_function(read("brain-setup.py")):
+        fn_name = fn.name
+        where = f"line {node.lineno}: {call_name}() in {fn_name}"
+        kw = next((k for k in node.keywords if k.arg == "encoding"), None)
+        if kw is None:
+            if call_name not in DEFAULT_UTF8_CALLS:
+                offenders.append(f"{where} has no explicit encoding")
+            elif fn_name in BATCH_WRITERS:
+                offenders.append(f"{where} would write the batch file as UTF-8 (default)")
             continue
-        if node.func.attr not in ("read_text", "write_text", "open"):
-            continue
-        if not any(kw.arg == "encoding" for kw in node.keywords):
-            offenders.append(f"line {node.lineno}: .{node.func.attr}()")
-    assert not offenders, (
-        "brain-setup.py has file I/O with no explicit encoding: " + "; ".join(offenders)
-    )
+        literal = kw.value.value if isinstance(kw.value, ast.Constant) else None
+        if fn_name in BATCH_WRITERS:
+            if isinstance(literal, str):
+                offenders.append(f"{where} hard-codes {literal!r}; cmd.exe reads the OEM codepage")
+            else:
+                oem_writes += 1
+        elif isinstance(literal, str):
+            if not literal.lower().startswith("utf-8"):
+                offenders.append(f"{where} uses {literal!r}; only the batch launcher may not be UTF-8")
+        elif not _forwards_own_utf8_parameter(fn, kw.value):
+            offenders.append(f"{where} must pass the literal encoding='utf-8', not {ast.unparse(kw.value)}")
+    assert not offenders, "brain-setup.py encoding problems: " + "; ".join(offenders)
+    assert oem_writes >= 1, "the batch launcher is no longer written in the OEM codepage"
+
+
+def test_the_batch_launcher_has_no_non_ascii_of_its_own():
+    """Whatever the user's paths are, the fixed text of brain-launch.cmd must encode
+    in every OEM codepage -- the old header carried an em dash, which cp437 cannot
+    represent, so the write would have failed on every install once the encoding
+    was fixed. Rendered with ASCII paths so only the template's own text is tested."""
+    setup = load_repo_script("brain-setup.py")
+    fn_src = read("brain-setup.py")
+    body = fn_src[fn_src.index("def write_windows_launch_cmd("):fn_src.index("def merge_settings_json(")]
+    assert body.isascii(), "write_windows_launch_cmd contains non-ASCII text of its own"
+    assert setup.MANAGED_MARKER.isascii()
 
 
 def test_hook_templates_cover_the_same_events():
@@ -191,16 +273,64 @@ def test_hook_templates_cover_the_same_events():
 
 
 def test_every_hook_template_command_maps_to_a_real_hook():
-    """A typo'd hook name fails silently — Claude Code logs it and moves on."""
+    """A typo'd hook name fails silently — Claude Code logs it and moves on.
+
+    Split with shlex, the way a shell would: the placeholders are quoted in the
+    templates, and `str.split()` would hand back the closing quote as part of the name.
+    """
     hooks_dir = REPO_ROOT / "hooks"
     for template in ("templates/settings.hooks.json", "templates/settings.hooks.win.json"):
         for event, entries in json.loads(read(template))["hooks"].items():
             command = entries[0]["hooks"][0]["command"]
-            name = command.split()[-1].replace("__BRAIN_HOOKS__/", "")
+            name = shlex.split(command)[-1].replace("__BRAIN_HOOKS__/", "")
             name = name[:-3] if name.endswith(".py") else name
             assert (hooks_dir / f"{name}.py").is_file(), (
                 f"{template} wires {event} to '{name}', but hooks/{name}.py does not exist"
             )
+
+
+# Paths with a space in every component the templates interpolate. A space in a
+# username is ordinary on Windows ("C:\Users\Jo Bloggs") and a bare placeholder split
+# the command there: every hook failed, and failed silently.
+SPACED = {
+    "brain_python": "/Users/jo bloggs/src/Ai Brain/mcp-server/.venv/bin/python",
+    "brain_hooks": "/Users/jo bloggs/src/Ai Brain/hooks",
+    "brain_vault": "/Users/jo bloggs/Vaults/Ai Brain",
+    "brain_launch": r"C:\Users\Jo Bloggs\.claude\brain-launch.cmd",
+}
+
+
+@pytest.mark.parametrize(
+    "template, kwargs, expected_words",
+    [
+        ("templates/settings.hooks.json",
+         {k: SPACED[k] for k in ("brain_python", "brain_hooks", "brain_vault")}, 3),
+        ("templates/settings.hooks.win.json", {"brain_launch": SPACED["brain_launch"]}, 2),
+    ],
+    ids=["posix", "windows"],
+)
+def test_hook_templates_quote_every_placeholder(template, kwargs, expected_words):
+    """Rendered with spaced paths, each command must shell-split into exactly the
+    words the platform expects -- `VAR=value python hook.py` on POSIX, `launcher
+    hook-name` on Windows -- with every path intact as ONE word. And the quoted
+    rendering must still be recognised as ours, or a re-install could not prune it."""
+    sm = load_repo_script("brain_settings_merge.py")
+    block = sm.render_hooks_template(read(template), **kwargs)
+    for event, groups in block.items():
+        for group in groups:
+            for hook in group["hooks"]:
+                command = hook["command"]
+                words = shlex.split(command)
+                assert len(words) == expected_words, f"{template} {event}: {command!r} -> {words}"
+                if "brain_launch" in kwargs:
+                    assert words[0] == kwargs["brain_launch"].replace("\\", "/")
+                else:
+                    assert words[0] == f"BRAIN_VAULT={kwargs['brain_vault']}"
+                    assert words[1] == kwargs["brain_python"]
+                    assert words[2].startswith(kwargs["brain_hooks"] + "/")
+                assert sm.is_brain_command(
+                    command, kwargs.get("brain_hooks", ""), kwargs.get("brain_launch", "")
+                ), f"quoted rendering not recognised as Brain-owned: {command!r}"
 
 
 # ----------------------------------------------------- the installer runs its own tests

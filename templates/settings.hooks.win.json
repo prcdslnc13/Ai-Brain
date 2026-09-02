@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "__BRAIN_LAUNCH__ session_start",
+            "command": "\"__BRAIN_LAUNCH__\" session_start",
             "timeout": 15
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "__BRAIN_LAUNCH__ subagent_start",
+            "command": "\"__BRAIN_LAUNCH__\" subagent_start",
             "timeout": 15
           }
         ]
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "__BRAIN_LAUNCH__ stop",
+            "command": "\"__BRAIN_LAUNCH__\" stop",
             "timeout": 5
           }
         ]
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "__BRAIN_LAUNCH__ user_prompt_submit",
+            "command": "\"__BRAIN_LAUNCH__\" user_prompt_submit",
             "timeout": 5
           }
         ]
@@ -49,7 +49,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "__BRAIN_LAUNCH__ pre_compact",
+            "command": "\"__BRAIN_LAUNCH__\" pre_compact",
             "timeout": 30
           }
         ]
@@ -60,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "__BRAIN_LAUNCH__ session_end",
+            "command": "\"__BRAIN_LAUNCH__\" session_end",
             "timeout": 30
           }
         ]
