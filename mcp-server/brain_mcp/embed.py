@@ -17,6 +17,7 @@ online when the model is genuinely absent (then bounded by the timeouts, to self
 
 from __future__ import annotations
 
+import codecs
 import os
 import sqlite3
 import struct
@@ -25,6 +26,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import quote
 
 from . import vault
 
@@ -191,14 +193,60 @@ def _normalize_key(key: str, root: Path) -> str:
 # failing here — every writer holds the lock only for one chunk's commit.
 SQLITE_BUSY_TIMEOUT_S = 30.0
 
+# Readers wait far less. A query only needs the SHARED lock, which a writer denies
+# for the milliseconds of a chunk commit, so 5s is already generous — and a recall
+# that cannot read the index in that time is better served by the ripgrep fallback
+# than by a 30s stall. (Doctor waits even less; see doctor.index_busy_timeout.)
+SQLITE_READ_TIMEOUT_S = 5.0
+
+
+class IndexBusy(RuntimeError):
+    """A read-only index operation gave up waiting for another process's write lock.
+
+    Distinct from "the index is empty" or "the index is missing", both of which a
+    caller may legitimately treat as zero work: a locked index is one whose state is
+    *unknown*, and reporting it as up to date would be a false OK.
+    """
+
+
+def _is_lock_error(exc: BaseException) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    msg = str(exc).lower()
+    return "locked" in msg or "busy" in msg
+
+
+def index_uri(idx: Path, mode: str = "ro") -> str:
+    """sqlite URI for the index file at `idx`, safe for any vault path.
+
+    The path component is percent-encoded. A raw f-string (`f"file:{idx}?mode=ro"`)
+    is truncated by the first `#` or `?` in the path and misread at the first `%`,
+    and sqlite then opens *another* file — verified on 2026-09-01: a vault under a
+    directory named `uri test#1` opened an empty database and reported "no such
+    table". Every URI to the index must be built here; a test asserts no module
+    interpolates one by hand.
+    """
+    return "file:" + quote(Path(idx).as_posix(), safe="/:") + "?mode=" + mode
+
 
 def _connect() -> sqlite3.Connection:
+    """Writer connection: creates the schema and runs the one-time migrations.
+
+    Returns with **no transaction open**. The `INSERT OR IGNORE` below begins one
+    under sqlite3's legacy transaction control, and until 2026-09-01 nothing
+    committed it, so every connection held sqlite's RESERVED write lock from
+    connect to close: `sync()` held it through its whole `_indexable()` walk and
+    the first chunk's embedding rather than for one commit, and the matrix load
+    of a *read* held it too — so concurrent recalls from the MCP server and the
+    CLI serialised on a 30s timeout for no reason.
+    """
     conn = sqlite3.connect(_index_path(), timeout=SQLITE_BUSY_TIMEOUT_S)
     conn.execute(
         "CREATE TABLE IF NOT EXISTS embeddings ("
         "  path TEXT PRIMARY KEY,"
         "  mtime REAL NOT NULL,"
-        "  vector BLOB NOT NULL"
+        "  vector BLOB NOT NULL,"
+        "  recipe TEXT"
         ")"
     )
     conn.execute(
@@ -210,7 +258,21 @@ def _connect() -> sqlite3.Connection:
     )
     _stamp_recipe_if_empty(conn)
     _migrate_path_format(conn)
+    _migrate_recipe_column(conn)
+    conn.commit()
     return conn
+
+
+def _connect_ro(timeout: float = SQLITE_READ_TIMEOUT_S) -> sqlite3.Connection:
+    """Read-only connection to an *existing* index.
+
+    `mode=ro` never takes the RESERVED lock, so a query cannot block a writer and
+    two readers cannot block each other. Raises sqlite3.OperationalError when the
+    index file does not exist — callers decide whether that means "no vectors" or
+    "create it" (only `_connect()` creates).
+    """
+    idx = _index_path()
+    return sqlite3.connect(index_uri(idx), uri=True, timeout=timeout)
 
 
 _SYNC_LOCK = threading.Lock()
@@ -274,16 +336,13 @@ def _text_recipe_id() -> str:
     return f"v{EMBED_TEXT_VERSION}:{_embed_text_budget()}:{EMBED_MODEL}"
 
 
-def stored_text_recipe(conn=None) -> str | None:
+def stored_text_recipe(conn=None, timeout: float = SQLITE_READ_TIMEOUT_S) -> str | None:
     own = conn is None
     if own:
         try:
-            idx = _index_path()
-            if not idx.exists():
+            if not _index_path().exists():
                 return None
-            conn = sqlite3.connect(
-                f"file:{idx}?mode=ro", uri=True, timeout=SQLITE_BUSY_TIMEOUT_S
-            )
+            conn = _connect_ro(timeout)
         except sqlite3.DatabaseError:
             return None
     try:
@@ -303,21 +362,20 @@ def _index_is_empty(conn) -> bool:
         return True
 
 
-def text_recipe_changed(conn=None) -> bool:
+def text_recipe_changed(conn=None, timeout: float = SQLITE_READ_TIMEOUT_S) -> bool:
     """True when a *populated* index was built by a different embed_text() recipe.
 
     An empty index is never "changed": there are no vectors to invalidate, so the
-    answer is no even though it carries no stamp yet.
+    answer is no even though it carries no stamp yet. `timeout` is how long to
+    wait for the lock when opening our own connection — doctor passes its short
+    hook-safe budget; nothing else should need to.
     """
     own = conn is None
     if own:
-        idx = _index_path()
-        if not idx.exists():
+        if not _index_path().exists():
             return False
         try:
-            conn = sqlite3.connect(
-                f"file:{idx}?mode=ro", uri=True, timeout=SQLITE_BUSY_TIMEOUT_S
-            )
+            conn = _connect_ro(timeout)
         except sqlite3.DatabaseError:
             return False
     try:
@@ -449,6 +507,37 @@ def _migrate_path_format(conn) -> None:
         return
 
 
+def _migrate_recipe_column(conn) -> None:
+    """One-time: add the per-row `recipe` column and backfill it from `meta`.
+
+    Before this column existed the recipe was a single stamp in `meta`, written
+    only after a rebuild's last chunk. Since every row counted as pending while
+    the stamp was stale, an interrupted rebuild restarted from zero — the rows
+    it *had* re-embedded were indistinguishable from the ones it had not. With
+    the recipe on the row, the pending set is "rows whose recipe differs", so a
+    pass resumes where the last one died.
+
+    In place: an ALTER TABLE plus one UPDATE, no vector touched, so the epoch is
+    not bumped — a cached matrix stays valid. Rows the backfill leaves NULL (an
+    index that predates the meta stamp) simply differ from every recipe and get
+    re-embedded on the next unbounded pass, which `text_recipe_changed()` — also
+    True for a missing stamp — will have spawned.
+    """
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(embeddings)")}
+        if "recipe" in cols:
+            return
+        conn.execute("ALTER TABLE embeddings ADD COLUMN recipe TEXT")
+        stored = stored_text_recipe(conn)
+        if stored:
+            conn.execute(
+                "UPDATE embeddings SET recipe = ? WHERE recipe IS NULL", (stored,)
+            )
+        conn.commit()
+    except sqlite3.DatabaseError:
+        return
+
+
 def _recipe_model(recipe: str | None) -> str | None:
     """The model component of a recipe id (`v{version}:{budget}:{model}`)."""
     if not recipe:
@@ -471,24 +560,57 @@ def _wipe_for_model_change(conn) -> None:
     _stamp_recipe(conn)
 
 
+# How much of a file embed_text() reads when a slice budget is in force. The slice
+# is name + description + the first `budget` chars of the body, all of which sit
+# at the top of the file, so reading past this is I/O for text the model never
+# sees — a 200 KB checkpoint costs the same as a 2 KB memory. Only the raw-file
+# recipe (budget 0) reads the whole file.
+EMBED_READ_BYTES = 16 * 1024
+
+
+def _read_for_embedding(path: Path, budget: int) -> str:
+    """Strict UTF-8 text of `path` — the whole file, or its head under a budget.
+
+    Strict on purpose: the vault is UTF-8 everywhere else (`Memory.from_file`,
+    the bundle, recall), and a note that is not is a note the rest of the system
+    cannot read either. The caller skips it and says so; decoding it leniently
+    here would index text nothing else can serve.
+
+    The head is decoded incrementally so a multibyte character straddling the
+    read boundary is held back rather than raised on — that is a valid file, not
+    a corrupt one. A genuinely invalid byte still raises UnicodeDecodeError.
+    """
+    if budget <= 0:
+        return Path(path).read_text(encoding="utf-8")
+    with open(path, "rb") as fh:
+        head = fh.read(EMBED_READ_BYTES)
+        truncated = bool(fh.read(1))
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    return decoder.decode(head, final=not truncated)
+
+
 def embed_text(path: Path) -> str:
     """The text to embed for `path`: title + description + body lead, budget-capped.
 
     Falls back to the raw file whenever the frontmatter can't be parsed, so a
     malformed note still gets indexed rather than silently embedding an empty
     string (doctor's MALFORMED_FRONTMATTER exists precisely because those happen).
+
+    Raises OSError or UnicodeDecodeError (a ValueError) for a file that cannot be
+    read as UTF-8; sync() and upsert() treat both as "skip this one file".
     """
     budget = _embed_text_budget()
-    raw_text = Path(path).read_text(encoding="utf-8")
+    raw_text = _read_for_embedding(Path(path), budget)
     if budget <= 0:
         return raw_text
     # The whole slice-building path is inside the try, not just from_file(): the
     # fields it hands back are parsed YAML, and reading them is exactly as capable
-    # of raising as parsing them was. Anything that escapes here escapes sync()
-    # too — the batch loop only catches OSError — and search_memories turns that
-    # into "embed unavailable", so one unparseable note would take vector search
-    # down for the entire vault. Falling back to the raw file keeps the blast
-    # radius at the one file, which is what the promise above says.
+    # of raising as parsing them was. sync() only skips a file for OSError and
+    # ValueError; anything else that escaped here would escape sync() too, and
+    # search_memories turns that into "embed unavailable", so one unparseable note
+    # would take vector search down for the entire vault. Falling back to the raw
+    # file keeps the blast radius at the one file, which is what the promise
+    # above says.
     try:
         mem = vault.Memory.from_text(Path(path), raw_text)
         parts = [mem.name or Path(path).stem]
@@ -563,49 +685,211 @@ def _indexable(root: Path) -> dict[str, float]:
 
 # A reindex outlives the hook that starts it, so the guard against concurrent
 # passes has to be cross-process (a threading.Lock only covers _SYNC_LOCK's
-# process). Treat a lock older than this as abandoned by a killed process.
+# process). The lock is a file holding the owner's pid, and the owner touches it
+# after every chunk commit (see sync()), so its mtime is a heartbeat: a lock this
+# old belongs to a pass that has stopped making progress. That alone is not
+# "abandoned", though — a rebuild of a large vault can legitimately run past it —
+# so age only makes the lock a *candidate*; the pid decides (see _lock_state).
 REINDEX_LOCK_STALE_S = 1800
+
+# Past this, a lock is abandoned whatever its pid says. The heartbeat keeps a live
+# pass's lock fresh, so only a dead one can reach this age — unless its pid has
+# been reused by some unrelated long-lived process, which is the case this exists
+# to bound.
+REINDEX_LOCK_ABANDON_S = 24 * 3600
 
 
 def _reindex_lock_path() -> Path:
     return vault.vault_root() / ".index" / "reindex.lock"
 
 
+def _read_lock_pid(lock: Path) -> int | None:
+    """The pid recorded in the lock, or None for a pidless/unreadable one.
+
+    None is also what a lock returns in the instant between its O_EXCL create and
+    its pid write; every consumer treats None as "cannot tell", never as "free".
+    """
+    try:
+        raw = lock.read_text(encoding="ascii", errors="ignore").strip()
+    except OSError:
+        return None
+    return int(raw) if raw.isdigit() else None
+
+
+def _pid_alive(pid: int) -> bool | None:
+    """True/False when the OS can say whether `pid` is a live process, else None."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        return _pid_alive_windows(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by someone else
+    except OSError:
+        return None
+    return True
+
+
+def _pid_alive_windows(pid: int) -> bool | None:
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        # restype matters: the default c_int truncates a 64-bit HANDLE.
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.GetExitCodeProcess.restype = wintypes.BOOL
+        k32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            err = ctypes.get_last_error()
+            if err == 87:   # ERROR_INVALID_PARAMETER: no such process
+                return False
+            if err == 5:    # ERROR_ACCESS_DENIED: exists, not ours to open
+                return True
+            return None
+        try:
+            code = wintypes.DWORD()
+            if not k32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return None
+            return code.value == 259  # STILL_ACTIVE
+        finally:
+            k32.CloseHandle(handle)
+    except Exception:
+        return None
+
+
+def _lock_state(lock: Path) -> str:
+    """'free', 'held' or 'stale'.
+
+    Age gates everything: a lock younger than REINDEX_LOCK_STALE_S is held, full
+    stop, and costs one stat to say so. An older one is stale only if its owner
+    is *dead* — a live pid past the age means a pass still running, which the old
+    age-only rule declared abandoned at 30 minutes while it was alive: the next
+    SessionStart then unlinked the live lock and spawned a second pass, and the
+    first pass's release deleted the second's lock. When the OS cannot say
+    (pidless lock, unknown error), the age test stands alone, as it always did.
+    """
+    try:
+        st = lock.stat()
+    except FileNotFoundError:
+        return "free"
+    except OSError:
+        return "held"  # cannot inspect it: assume the conservative answer
+    age = time.time() - st.st_mtime
+    if age <= REINDEX_LOCK_STALE_S:
+        return "held"
+    if age > REINDEX_LOCK_ABANDON_S:
+        return "stale"
+    pid = _read_lock_pid(lock)
+    alive = _pid_alive(pid) if pid is not None else None
+    return "held" if alive is True else "stale"
+
+
 def reindex_lock_held() -> bool:
     try:
-        lock = _reindex_lock_path()
-        if not lock.exists():
-            return False
-        if time.time() - lock.stat().st_mtime > REINDEX_LOCK_STALE_S:
-            return False
+        return _lock_state(_reindex_lock_path()) == "held"
     except OSError:
         return False
+
+
+def _retire_stale_lock(lock: Path, judged: os.stat_result) -> bool:
+    """Clear a lock previously judged stale, without clearing anyone else's.
+
+    Rename rather than unlink: a rename is atomic and only one of two racing
+    takeovers can win it, so two processes that both observed "stale" cannot both
+    clear the path and both create — the check-then-act hole in the old unlink.
+    The renamed file is then verified against the stat that produced the verdict:
+    if the other process already retired the stale lock and created a fresh one
+    in the gap, what we renamed is *its* lock, and it goes straight back.
+    """
+    tomb = lock.with_name(f"{lock.name}.stale-{os.getpid()}")
+    try:
+        os.replace(lock, tomb)
+    except OSError:
+        return False  # gone already (someone else retired it), or not ours to move
+    try:
+        moved = tomb.stat()
+    except OSError:
+        return False
+    if (moved.st_mtime, moved.st_size) != (judged.st_mtime, judged.st_size):
+        try:
+            os.replace(tomb, lock)
+        except OSError:
+            pass
+        return False
+    try:
+        tomb.unlink()
+    except OSError:
+        pass
     return True
 
 
 def acquire_reindex_lock() -> bool:
-    """Best-effort cross-process lock. O_EXCL create, with stale-lock takeover."""
+    """Cross-process lock: O_EXCL create, pid inside, stale-lock takeover.
+
+    Returns True only when this process now owns the lock. It never returns True
+    on an unexpected OSError — the old version did ("can't lock, don't block the
+    reindex"), which turned a read-only or permission-denied `.index/` into two
+    unsynchronised writers.
+    """
+    lock = _reindex_lock_path()
     try:
-        lock = _reindex_lock_path()
         lock.parent.mkdir(parents=True, exist_ok=True)
-        if lock.exists() and time.time() - lock.stat().st_mtime > REINDEX_LOCK_STALE_S:
-            lock.unlink(missing_ok=True)
-        fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        return False
     except OSError:
-        # Can't lock (read-only vault, permissions) — don't block the reindex.
+        return False
+    for attempt in range(2):
+        try:
+            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            if attempt:
+                return False
+            try:
+                judged = lock.stat()
+            except OSError:
+                return False
+            if _lock_state(lock) != "stale":
+                return False
+            _retire_stale_lock(lock, judged)
+            continue  # the second O_EXCL decides, whoever cleared the path
+        except OSError:
+            return False
+        try:
+            os.write(fd, str(os.getpid()).encode("ascii"))
+        finally:
+            os.close(fd)
         return True
+    return False
+
+
+def _heartbeat_reindex_lock() -> None:
+    """Refresh the lock's mtime — only if this process owns it."""
+    lock = _reindex_lock_path()
     try:
-        os.write(fd, str(os.getpid()).encode())
-    finally:
-        os.close(fd)
-    return True
+        if _read_lock_pid(lock) == os.getpid():
+            os.utime(lock, None)
+    except OSError:
+        pass
 
 
 def release_reindex_lock() -> None:
+    """Release the lock — only if this process owns it.
+
+    An unconditional unlink deleted whichever lock was there, including one a
+    later pass had taken over after judging ours stale.
+    """
+    lock = _reindex_lock_path()
     try:
-        _reindex_lock_path().unlink(missing_ok=True)
+        if _read_lock_pid(lock) != os.getpid():
+            return
+        lock.unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -637,25 +921,53 @@ def spawn_background_reindex(min_backlog: int = 1) -> bool:
             return False
         import subprocess
 
-        kwargs: dict = {
-            "stdin": subprocess.DEVNULL,
-            "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.DEVNULL,
-            "cwd": str(Path(sys.executable).parent),
-            "env": os.environ.copy(),
-        }
-        if os.name == "nt":
-            # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP — no console window,
-            # survives the parent.
-            kwargs["creationflags"] = 0x00000008 | 0x00000200
-        else:
-            kwargs["start_new_session"] = True
-        subprocess.Popen(
-            [sys.executable, "-m", "brain_mcp.cli", "reindex"], **kwargs
-        )
+        # The child's output goes to a log, not DEVNULL. A detached reindex that
+        # dies has nobody watching it: with its stderr discarded, a crash left
+        # only INDEX_STALE warning forever and no way to learn why. Opened with
+        # truncation — the file holds the *latest* pass only, so it cannot grow
+        # without bound — and the spawn is gated on the reindex lock, so nothing
+        # else is writing it. Falls back to DEVNULL if the log cannot be opened;
+        # a reindex is worth more than its diagnostics.
+        log = None
+        try:
+            log_path = reindex_log_path()
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log = open(log_path, "wb")
+        except OSError:
+            log = None
+        try:
+            kwargs: dict = {
+                "stdin": subprocess.DEVNULL,
+                "stdout": log if log is not None else subprocess.DEVNULL,
+                "stderr": subprocess.STDOUT if log is not None else subprocess.DEVNULL,
+                "cwd": str(Path(sys.executable).parent),
+                "env": os.environ.copy(),
+            }
+            if os.name == "nt":
+                # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP — no console window,
+                # survives the parent.
+                kwargs["creationflags"] = 0x00000008 | 0x00000200
+            else:
+                kwargs["start_new_session"] = True
+            subprocess.Popen(
+                [sys.executable, "-m", "brain_mcp.cli", "reindex"], **kwargs
+            )
+        finally:
+            if log is not None:
+                log.close()  # the child holds its own handle
         return True
     except Exception:
         return False
+
+
+def reindex_log_path() -> Path:
+    """Where a SessionStart-spawned reindex writes its stdout+stderr.
+
+    Under `.index/` beside the lock — machine-local, never synced — and holding
+    the most recent pass only. Consult it when `INDEX_STALE` persists across
+    sessions: that is the fingerprint of a background reindex that keeps dying.
+    """
+    return vault.vault_root() / ".index" / "reindex.log"
 
 
 def backlog_count() -> int:
@@ -774,9 +1086,12 @@ class EmbedIndex:
                               file=sys.stderr)
                         rebuilding = True
 
-                existing: dict[str, float] = {}
-                for path, mtime in conn.execute("SELECT path, mtime FROM embeddings"):
-                    existing[path] = mtime
+                recipe = _text_recipe_id()
+                existing: dict[str, tuple[float, str | None]] = {}
+                for path, mtime, row_recipe in conn.execute(
+                    "SELECT path, mtime, recipe FROM embeddings"
+                ):
+                    existing[path] = (mtime, row_recipe)
 
                 # Aged-out checkpoints drop out of `current` and are therefore
                 # deleted below, alongside genuinely removed files — which is what
@@ -791,10 +1106,16 @@ class EmbedIndex:
 
                 pending: list[tuple[str, float]] = []
                 for key, mtime in current.items():
-                    # A rebuild ignores what is already stored — every row's vector
-                    # is from the superseded recipe, however fresh its mtime is.
-                    prior = None if rebuilding else existing.get(key)
-                    if prior is None or mtime > prior + 1e-6:
+                    prior = existing.get(key)
+                    stale_row = prior is None or mtime > prior[0] + 1e-6
+                    # A rebuild replaces the rows still carrying the superseded
+                    # recipe, however fresh their mtime — and *only* those. Rows a
+                    # previous, interrupted pass already re-embedded carry the
+                    # current recipe and are skipped, which is what makes a
+                    # rebuild resumable instead of restarting from zero.
+                    if rebuilding and prior is not None and prior[1] != recipe:
+                        stale_row = True
+                    if stale_row:
                         if foreground and vault.is_session_path(_key_path(key, root)):
                             continue
                         pending.append((key, mtime))
@@ -809,6 +1130,15 @@ class EmbedIndex:
 
                 done = 0
                 truncated = False
+                # Files this pass could not read. Reported once at the end rather
+                # than per file, and never raised: until 2026-09-01 this loop
+                # caught only OSError, and UnicodeDecodeError is a ValueError, so
+                # one cp1252 note escaped sync() entirely — every foreground
+                # recall fell back to ripgrep, `brain reindex` crashed, and the
+                # SessionStart-spawned child died silently on DEVNULL. Worse,
+                # chunks run newest-first and the failing chunk never committed,
+                # so nothing older than that note was ever indexed again.
+                skipped: list[tuple[str, BaseException]] = []
                 for i in range(0, len(pending), cls.SYNC_CHUNK):
                     # `and done` guarantees forward progress even on a zero budget.
                     if deadline is not None and done and time.monotonic() >= deadline:
@@ -818,21 +1148,39 @@ class EmbedIndex:
                     for key, mtime in pending[i:i + cls.SYNC_CHUNK]:
                         try:
                             batch.append((key, mtime, embed_text(_key_path(key, root))))
-                        except OSError:
+                        except (OSError, ValueError) as e:
+                            skipped.append((key, e))
                             continue
                     if not batch:
                         continue
                     vectors = _EMBEDDER.embed_many([t for (_, _, t) in batch])
                     conn.executemany(
-                        "INSERT INTO embeddings(path, mtime, vector) VALUES (?, ?, ?) "
-                        "ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, vector=excluded.vector",
-                        [(pa, mt, _vec_to_blob(v)) for (pa, mt, _), v in zip(batch, vectors)],
+                        "INSERT INTO embeddings(path, mtime, vector, recipe) VALUES (?, ?, ?, ?) "
+                        "ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, "
+                        "vector=excluded.vector, recipe=excluded.recipe",
+                        [(pa, mt, _vec_to_blob(v), recipe)
+                         for (pa, mt, _), v in zip(batch, vectors)],
                     )
                     _bump_vector_epoch(conn)
                     # Commit per chunk, not once at the end: a time-boxed pass must
                     # keep its progress or successive recalls redo the same work.
                     conn.commit()
                     done += len(batch)
+                    if not foreground:
+                        # Heartbeat. Unbounded passes are the ones that hold the
+                        # reindex lock (the CLI and the MCP warmup take it; a
+                        # foreground pass never does), and a lock that is not
+                        # touched looks abandoned at REINDEX_LOCK_STALE_S however
+                        # alive its owner is. A no-op unless this pid owns it.
+                        _heartbeat_reindex_lock()
+
+                if skipped:
+                    key0, err0 = skipped[0]
+                    print(
+                        f"brain embed: skipped {len(skipped)} unreadable file(s), "
+                        f"e.g. {key0}: {err0}",
+                        file=sys.stderr,
+                    )
 
                 if rebuilding and not truncated:
                     # Stamp only once every row carries the new recipe. Stamping up
@@ -847,11 +1195,16 @@ class EmbedIndex:
                 conn.close()
 
     @classmethod
-    def backlog(cls) -> int:
+    def backlog(cls, timeout: float = SQLITE_READ_TIMEOUT_S) -> int:
         """Count files whose embedding is missing or stale.
 
         Stat-only — no model load, no embedding — so doctor and the session-start
         hook can call it to decide whether a reindex is worth kicking off.
+
+        Raises IndexBusy when another process holds the write lock past `timeout`:
+        the backlog is then unknown, and 0 would read as "up to date". Any other
+        read failure still returns 0 (a missing or unreadable index is somebody
+        else's finding).
         """
         try:
             root = vault.vault_root()
@@ -862,9 +1215,7 @@ class EmbedIndex:
             return len(_indexable(root))
         existing: dict[str, float] = {}
         try:
-            conn = sqlite3.connect(
-                f"file:{idx}?mode=ro", uri=True, timeout=SQLITE_BUSY_TIMEOUT_S
-            )
+            conn = _connect_ro(timeout)
             try:
                 for path, mtime in conn.execute("SELECT path, mtime FROM embeddings"):
                     # Normalize as we read: this connection is read-only and never
@@ -873,7 +1224,9 @@ class EmbedIndex:
                     existing[_normalize_key(path, root)] = mtime
             finally:
                 conn.close()
-        except sqlite3.DatabaseError:
+        except sqlite3.DatabaseError as e:
+            if _is_lock_error(e):
+                raise IndexBusy(str(e)) from e
             return 0
         n = 0
         for path, mtime in _indexable(root).items():
@@ -889,15 +1242,18 @@ class EmbedIndex:
             text = embed_text(Path(path))
             mtime = Path(path).stat().st_mtime
             vec = _EMBEDDER.embed_one(text)
-        except (OSError, EmbedUnavailable):
+        except (OSError, ValueError, EmbedUnavailable):
+            # ValueError covers UnicodeDecodeError: a save must never fail on
+            # the index's account, whatever the note's bytes are.
             return
         root = vault.vault_root()
         conn = _connect()
         try:
             conn.execute(
-                "INSERT INTO embeddings(path, mtime, vector) VALUES (?, ?, ?) "
-                "ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, vector=excluded.vector",
-                (_index_key(Path(path), root), mtime, _vec_to_blob(vec)),
+                "INSERT INTO embeddings(path, mtime, vector, recipe) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, "
+                "vector=excluded.vector, recipe=excluded.recipe",
+                (_index_key(Path(path), root), mtime, _vec_to_blob(vec), _text_recipe_id()),
             )
             _bump_vector_epoch(conn)
             conn.commit()
@@ -920,10 +1276,21 @@ class EmbedIndex:
 
     @classmethod
     def _normalized_matrix(cls, project_filter: str | None):
-        """Load, filter, and cache the normalized vector matrix."""
+        """Load, filter, and cache the normalized vector matrix.
+
+        Read-only: this used to open a writer connection, which (until the commit
+        in `_connect()` landed) held the RESERVED lock for the whole BLOB read and
+        serialised every concurrent recall behind it. A query has no business with
+        the write lock at all; a missing index simply has no vectors.
+        """
         import numpy as np
 
-        conn = _connect()
+        try:
+            conn = _connect_ro()
+        except sqlite3.OperationalError:
+            if not _index_path().exists():
+                return [], None
+            raise
         try:
             row = conn.execute("SELECT COUNT(*), COALESCE(MAX(mtime), 0) FROM embeddings").fetchone()
             # The epoch is what makes this key able to see a vector change that left

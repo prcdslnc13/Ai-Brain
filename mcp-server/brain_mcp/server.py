@@ -291,13 +291,20 @@ async def call_tool(name: str, arguments: dict | None) -> list[TextContent]:
             )
             return _text(render.render_recall(payload))
         if name == "brain_save":
-            path = vault.write_memory(
+            result = vault.save_memory(
                 mtype=args["type"],
                 name=args["name"],
                 content=args["content"],
                 project=args.get("project"),
             )
-            return _ok({"saved": str(path)})
+            payload: dict = {"saved": str(result.path), "overwrote": result.overwrote}
+            if result.overwrote:
+                payload["previous_version"] = (
+                    str(result.previous_version) if result.previous_version else None
+                )
+            if result.unchanged:
+                payload["unchanged"] = True
+            return _ok(payload)
         if name == "brain_list":
             payload = render.list_payload(
                 mtype=args.get("type"),

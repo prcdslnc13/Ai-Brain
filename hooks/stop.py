@@ -13,7 +13,7 @@ Two jobs, in order:
    safety-net checkpoint fired — ~70 minutes of migration work lost.
 
 2. **Audit**: append a one-line breadcrumb to Brain/activity.md:
-     timestamp account project [sig=Y|N sav=Y|N nud=Y|N pro=Y|N too=Y|N sys=Y|N] — snippet
+     timestamp account project [sig=Y|N sav=Y|N nud=Y|N pro=Y|N too=Y|N sys=Y|N re=Y|N] — snippet
    Columns:
      sig — did the user's last message match a save-signal pattern?
      sav — did a brain save happen this turn? Counts both the MCP tools
@@ -37,13 +37,29 @@ Two jobs, in order:
            model-authored whatever triggered the turn, and the gate applies
            on sys=Y turns too. Found 2026-07-28: ~9% of rows were
            notification turns, and a skill expansion scored a false sig=Y.
+           The prefix list is `brain_mcp.transcript.SYSTEM_TURN_PREFIXES`,
+           shared with the checkpoint renderer.
+     re  — is this Stop a *re-entry* after the gate blocked (payload
+           `stop_hook_active=true`)? The re-entry's assistant text still spans
+           the whole turn, original promise included, so `pro` is Y whether the
+           model then saved or recanted. Doctor treats a re=Y row as the
+           outcome of the row before it, never as a fresh unfulfilled promise
+           (2026-09-01: every gate block used to produce a PROMISE_GAP warning
+           at the next SessionStart, for a promise the gate had already made
+           the model resolve).
    `brain_doctor._check_save_gap` and `_check_promise_gap` read the tail of
    activity.md to surface long-run gaps.
 
 No LLM calls. No marker files. No pending-saves backlog. `stop_hook_active` in
 the payload signals we were re-entered after a previous block — skip the gate
-in that case to avoid an infinite loop (the audit column still fires, so
-brain_doctor can see the miss).
+in that case to avoid an infinite loop (the audit column still fires, tagged
+re=Y, so brain_doctor can see the outcome).
+
+The transcript is read from the END, not the start: the hook has a 5 s budget
+(templates/settings.hooks*.json) and a session transcript grows without bound
+— 13 MB of it took 0.11 s to parse whole, linearly, so a long session with big
+tool outputs crossed the budget, after which there was no gate and no audit
+row for the rest of the session. Only the last turn is ever parsed now.
 """
 
 from __future__ import annotations
@@ -69,6 +85,12 @@ from _savesig import (
     nudge_enabled,
 )
 
+try:
+    from brain_mcp.transcript import is_system_turn
+except Exception:  # pragma: no cover — venv broken; the audit still runs, untagged
+    def is_system_turn(text: str) -> bool:  # type: ignore[misc]
+        return False
+
 BRAIN_SAVE_TOOL_NAMES = {
     "brain_save",
     "brain_checkpoint",
@@ -82,26 +104,80 @@ BRAIN_SAVE_TOOL_NAMES = {
 # Bash/PowerShell instead of calling an MCP tool.
 SHELL_TOOL_NAMES = {"Bash", "PowerShell"}
 
-# Matches the brain CLI (bare, path-prefixed, .exe/.cmd, optionally the whole
-# path in quotes) followed by a save/checkpoint subcommand. Deliberately does
-# NOT match the phrase inside quoted arguments (e.g. `git commit -m "brain
-# save fix"`): the quoted alternative requires the closing quote immediately
-# after the executable name, and the bare alternative rejects a quote directly
-# before `brain`.
+# ---- CLI save detection -----------------------------------------------------
+#
+# A save "counts" only when the brain executable sits at a *command position*:
+# the start of the string, after a newline or a shell separator (`;`, `&&`,
+# `||`, `|`, `&`), inside `$(…)` or backticks, or after a `(`/`{` group opener
+# — optionally preceded by `VAR=value` env-prefix assignments, which is how the
+# POSIX templates spell it (`BRAIN_VAULT=… …/bin/brain checkpoint X`). Before
+# matching, every quoted span and every heredoc body is blanked, so the phrase
+# cannot count from inside an argument. Until 2026-09-01 the old regex accepted
+# any whitespace as a command boundary and only rejected a quote *immediately*
+# before the word, so `git commit -m "Fix brain checkpoint naming"` and a
+# heredoc body that mentioned `brain save` both satisfied the gate with no
+# save having happened.
+
+# A quoted span whose whole content is a path to the brain executable — the
+# Windows wrapper lives under a home dir that may contain a space, so
+# `"C:\Users\Joe Bloggs\.claude\brain.cmd" save …` is a real invocation. Such
+# spans are replaced by a bare `brain` token; every other quoted span is blanked.
+_QUOTED_EXE_RE = re.compile(r"^(?:[A-Za-z]:)?[^\n]*?brain(?:\.exe|\.cmd)?$", re.IGNORECASE)
+_QUOTED_SPAN_RE = re.compile(r'"(?:[^"\\\n]|\\.)*"|\'[^\'\n]*\'')
+# `<<EOF`, `<<-EOF`, `<<'EOF'`, `<<"EOF"`: the body runs from the end of that
+# line to the terminator line. Bash-style; PowerShell has no heredoc syntax
+# (its here-strings @'…'@ are handled as quoted spans, since the regex above
+# blanks from the opening quote to the next matching one).
+_HEREDOC_OPEN_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
 _CLI_SAVE_RE = re.compile(
-    r"""(?:^|[;&|]\s*|\s)                                  # command start or separator
-        (?:
-            ["'](?:[A-Za-z]:)?[^"'\n]*brain(?:\.exe|\.cmd)?["']  # quoted path
-          | (?:[A-Za-z]:)?[\w~./\\-]*brain(?:\.exe|\.cmd)?       # bare path
-        )
+    r"""(?:^|[\n;&|(`{]|\$\()\s*                      # command position
+        (?:\w+=\S*\s+)*                                  # env-prefix assignments
+        (?:[A-Za-z]:)?[\w~./\\-]*brain(?:\.exe|\.cmd)?   # the executable
         \s+(?:save|checkpoint)\b""",
     re.IGNORECASE | re.VERBOSE,
 )
 
 
-def is_cli_save_command(command: str) -> bool:
-    return bool(command) and bool(_CLI_SAVE_RE.search(command))
+def _blank_heredoc_bodies(command: str) -> str:
+    lines = command.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        m = _HEREDOC_OPEN_RE.search(line)
+        i += 1
+        if not m:
+            continue
+        terminator = m.group(2)
+        while i < len(lines):
+            body = lines[i]
+            i += 1
+            if body.strip() == terminator:
+                out.append(body)
+                break
+            out.append("")
+    return "\n".join(out)
 
+
+def _blank_quoted_spans(command: str) -> str:
+    def repl(m: re.Match) -> str:
+        inner = m.group(0)[1:-1]
+        if _QUOTED_EXE_RE.match(inner):
+            return "brain"
+        return '""'
+    return _QUOTED_SPAN_RE.sub(repl, command)
+
+
+def is_cli_save_command(command: str) -> bool:
+    if not command:
+        return False
+    cleaned = _blank_quoted_spans(_blank_heredoc_bodies(command))
+    return bool(_CLI_SAVE_RE.search(cleaned))
+
+
+# ---- transcript --------------------------------------------------------------
 
 def _message_text(msg) -> str:
     if isinstance(msg, str):
@@ -116,52 +192,97 @@ def _message_text(msg) -> str:
     return ""
 
 
-def _iter_transcript(transcript_path: str | None):
-    if not transcript_path:
-        return
-    p = Path(transcript_path)
-    if not p.exists():
-        return
+def _role(obj: dict) -> str | None:
+    return obj.get("type") or (obj.get("message") or {}).get("role") or obj.get("role")
+
+
+# Cheap byte-level pre-filters so a line is only json-parsed when it can matter.
+# Claude Code writes compact JSON, but the `\s*` tolerates a pretty-printed
+# transcript too. A file-history snapshot or a progress entry matches neither
+# and costs one regex scan instead of a parse.
+_USER_HINT_RE = re.compile(rb'"(?:type|role)"\s*:\s*"user"')
+_ASSISTANT_HINT_RE = re.compile(rb'"(?:type|role)"\s*:\s*"assistant"')
+
+_TAIL_BLOCK = 64 * 1024
+
+
+def _iter_lines_backwards(path: Path, block: int = _TAIL_BLOCK):
+    """Yield the file's lines as bytes, last line first, reading in blocks
+    from the end so the cost of reaching the last turn is the size of that
+    turn, not of the session."""
+    with path.open("rb") as f:
+        f.seek(0, os.SEEK_END)
+        pos = f.tell()
+        buf = b""
+        while pos > 0:
+            step = min(block, pos)
+            pos -= step
+            f.seek(pos)
+            buf = f.read(step) + buf
+            lines = buf.split(b"\n")
+            buf = lines[0]
+            for line in reversed(lines[1:]):
+                yield line
+        if buf:
+            yield buf
+
+
+def _loads(raw: bytes) -> dict | None:
     try:
-        with p.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    yield json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-    except Exception:
-        return
+        obj = json.loads(raw.decode("utf-8", errors="replace"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return obj if isinstance(obj, dict) else None
 
 
 def _analyze_last_turn(transcript_path: str | None) -> tuple[str, str, int]:
     """Return (last_user_text, assistant_text_since, brain_tool_calls_since).
 
-    A "turn" is everything after the most recent user message:
+    A "turn" is everything after the most recent user message that carries
+    text (a tool_result-only user entry is not a turn boundary):
       - assistant_text = concatenated text from every assistant message in the
         turn (there may be multiple if tool calls interleaved)
       - brain_tool_calls = count of tool_use blocks whose name is in
-        BRAIN_SAVE_TOOL_NAMES
+        BRAIN_SAVE_TOOL_NAMES, plus shell tool_uses whose command invokes the
+        brain CLI's save/checkpoint subcommands.
+
+    Walks the transcript backwards and stops at that user message; only the
+    lines after it are ever parsed. An unreadable file is reported on stderr
+    and treated as an empty turn — the old blanket `except Exception: return`
+    silently evaluated a truncated, stale turn instead.
     """
-    entries = list(_iter_transcript(transcript_path))
-    last_user_idx = -1
+    if not transcript_path:
+        return "", "", 0
+    p = Path(transcript_path)
+    if not p.exists():
+        return "", "", 0
+
     last_user_text = ""
-    for i, obj in enumerate(entries):
-        role = obj.get("type") or (obj.get("message") or {}).get("role") or obj.get("role")
-        if role == "user":
-            msg = obj.get("message") or obj
-            text = _message_text(msg)
-            if text.strip():
-                last_user_idx = i
-                last_user_text = text.strip()
+    tail: list[bytes] = []  # lines after the last user turn, newest first
+    try:
+        for raw in _iter_lines_backwards(p):
+            raw = raw.strip()
+            if not raw:
+                continue
+            if _USER_HINT_RE.search(raw):
+                obj = _loads(raw)
+                if obj is not None and _role(obj) == "user":
+                    text = _message_text(obj.get("message") or obj)
+                    if text.strip():
+                        last_user_text = text.strip()
+                        break
+            tail.append(raw)
+    except OSError as e:
+        sys.stderr.write(f"brain stop: cannot read transcript {p}: {e}\n")
+        return "", "", 0
 
     assistant_texts: list[str] = []
     brain_tool_count = 0
-    for obj in entries[last_user_idx + 1:]:
-        role = obj.get("type") or (obj.get("message") or {}).get("role") or obj.get("role")
-        if role != "assistant":
+    for raw in reversed(tail):
+        if not _ASSISTANT_HINT_RE.search(raw):
+            continue
+        obj = _loads(raw)
+        if obj is None or _role(obj) != "assistant":
             continue
         msg = obj.get("message") or obj
         content = msg.get("content") if isinstance(msg, dict) else None
@@ -189,27 +310,7 @@ def _analyze_last_turn(transcript_path: str | None) -> tuple[str, str, int]:
     return last_user_text, assistant_text, brain_tool_count
 
 
-# Prefixes that mark a transcript "user" message as system-generated rather than
-# typed by the user: background-task notifications, skill/command expansions,
-# and local-command output. These turns can contain arbitrary text (skill bodies
-# match save-signal phrases like "I want"; notifications quote assistant prose),
-# so sig measured on them says nothing about the user. Rows are tagged sys=Y
-# and doctor's SAVE_GAP check skips them. PROMISE_GAP does NOT skip them, and
-# the Stop-gate still applies: pro measures assistant text, which is genuinely
-# model-authored whatever triggered the turn.
-_SYSTEM_TURN_PREFIXES = (
-    "<task-notification>",
-    "[SYSTEM NOTIFICATION",
-    "<command-name>",
-    "<local-command-stdout>",
-    "Base directory for this skill:",
-    "<system-reminder>",
-)
-
-
-def is_system_turn(text: str) -> bool:
-    return text.lstrip().startswith(_SYSTEM_TURN_PREFIXES)
-
+# ---- audit -------------------------------------------------------------------
 
 def _yn(flag: bool) -> str:
     return "Y" if flag else "N"
@@ -288,7 +389,8 @@ def main() -> None:
     snippet = last_user.replace("\n", " ")[:80]
     columns = (
         f"[sig={_yn(signal)} sav={_yn(saved)} nud={_yn(nudged)} "
-        f"pro={_yn(promised)} too={_yn(tools_ok)} sys={_yn(system_turn)}]"
+        f"pro={_yn(promised)} too={_yn(tools_ok)} sys={_yn(system_turn)} "
+        f"re={_yn(stop_active)}]"
     )
     try:
         append_activity(f"{now_stamp()} {account} {project} {columns} — {snippet}")

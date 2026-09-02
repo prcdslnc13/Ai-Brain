@@ -82,8 +82,8 @@ python3 ~/src/Ai-Brain/brain-setup.py --non-interactive \
 ```
 
 The wizard is the only install path — it covers macOS, Linux and Windows, gates on
-Python >= 3.11, writes the Windows `brain.cmd` / `brain-launch.cmd` wrappers where
-needed, and runs the test suite as its last step. The old per-platform shell scripts
+Python >= 3.11, writes the per-config-dir `brain-agent.py` launcher (and, on Windows,
+the `brain-launch.cmd` hook wrapper), and runs the test suite as its last step. The old per-platform shell scripts
 were retired on 2026-08-25 (see ROADMAP 3G).
 
 On Ubuntu 22.04 the default `python3` is 3.10 (too old for `brain-mcp`); the wizard

@@ -38,15 +38,18 @@ The moving parts fit together as follows:
   - Feedback can be **project-scoped** (2026-08-06): `brain save feedback --project X` lands in
     `projects/X/feedback/` and preloads only in that project's sessions (and its subagents —
     the slim bundle includes project feedback but not overview/checkpoint). Global feedback
-    stays in `feedback/`. Bundle fill order is project-feedback → user → global feedback, so a
-    tight budget drops global feedback first.
+    stays in `feedback/`. Bundle fill order is project-feedback → global feedback → user (reordered 2026-09-01;
+    user used to precede global feedback, and under the per-hook output cap that pushed
+    every behavioural rule into the catalogue), so a tight budget drops user context first.
   - Core logic lives in `brain_mcp/vault.py` (search, write, frontmatter, session bundle);
     recall/list payload caps and compact-markdown rendering in `brain_mcp/render.py` (shared by
     both frontends — keep it that way); health checks in `brain_mcp/doctor.py`. Everything reads
     `BRAIN_VAULT` from env and operates on files inside `$BRAIN_VAULT/Brain/`.
 
 - **`hooks/`** — Python scripts wired into Claude Code's hook events via `settings.json`:
-  - `session_start.py` — preloads the vault bundle as `additionalContext` so the model sees user
+  - `session_start.py` — preloads the vault bundle as `additionalContext` — delivered in `vault.PRELOAD_PARTS`
+    parts, one hook entry each, because Claude Code caps a single hook's output at 10,000
+    chars (see the gotcha below) — so the model sees user
     profile + feedback + project context in its system prompt at every session start. Also runs
     `brain_mcp.doctor.check(project, project_cwd)` and prepends a `## Brain Health` banner for any
     warn/error findings: silent failures like unset `BRAIN_VAULT`, Obsidian Sync conflict files,
@@ -109,7 +112,7 @@ The moving parts fit together as follows:
     paths, `.exe`/`.cmd`, and quoting, but deliberately not matching the phrase inside quoted
     arguments). Disable per-install with `BRAIN_STOP_GATE=0`. Re-entries (payload
     `stop_hook_active=true`) bypass the gate to avoid infinite loops. (2) Audit: append a
-    breadcrumb to `Brain/activity.md` with columns `[sig=Y|N sav=Y|N nud=Y|N pro=Y|N too=Y|N sys=Y|N]` —
+    breadcrumb to `Brain/activity.md` with columns `[sig=Y|N sav=Y|N nud=Y|N pro=Y|N too=Y|N sys=Y|N re=Y|N]` —
     save-signal in user message, brain save this turn (either interface), UserPromptSubmit nudge
     enabled, save-promise in assistant message, whether a save interface was *available this
     session* (the `brain` CLI exists in the repo venv, or the MCP server is registered in the
@@ -204,13 +207,13 @@ The moving parts fit together as follows:
   is opt-in**: only `--with-mcp` runs `claude mcp add`; without it, any existing user-scope
   `brain` registration is *removed* so the CLI-first token saving actually lands.
 
-  On Windows it generates the two per-install wrappers Unix-style env prefixes can't provide:
-  `<config-dir>rain-launch.cmd` for hook commands in `settings.json` (`<launch.cmd>
-  <hook-name>`, no JSON quote-escaping) and `<config-dir>rain.cmd` — the CLI wrapper
-  substituted for `__BRAIN_CMD__`, which bakes in `BRAIN_VAULT` plus `BRAIN_AGENT_SURFACE=1`
-  and forwards args to the venv's `brain.exe` — and merges
-  `templates/settings.hooks.win.json` instead of `settings.hooks.json`. Hooks and server/CLI
-  code are identical across platforms.
+  The model-facing command is the same on every platform: `"<venv python>" "<config-dir>/brain-agent.py"`,
+  a generated stdlib-only launcher that sets `BRAIN_VAULT` and `BRAIN_AGENT_SURFACE=1` in
+  `os.environ` and calls `brain_mcp.cli.main()` — never a `.cmd` and never an env-prefix (see
+  the F2 gotcha). On Windows it additionally generates `<config-dir>rain-launch.cmd` for the
+  HOOK commands in `settings.json` (`<launch.cmd> <hook-name> [args]`, fixed text from the
+  template, never model-chosen) and merges `templates/settings.hooks.win.json` instead of
+  `settings.hooks.json`. Hooks and server/CLI code are identical across platforms.
 
   It runs on **any** Python 3 (`from __future__ import annotations`, no `match`, stdlib only —
   verified on macOS 26.5.1's stock 3.9.6); `find_python3` then locates a 3.11+ *for the venv*,
@@ -288,7 +291,7 @@ python3 ~/src/Ai-Brain/brain-setup.py
 # Exercise the brain CLI directly (the primary interface; same caps/rendering as MCP)
 BRAIN_VAULT=~/Vaults/Ai-Brain ~/src/Ai-Brain/mcp-server/.venv/bin/brain stats
 BRAIN_VAULT=~/Vaults/Ai-Brain ~/src/Ai-Brain/mcp-server/.venv/bin/brain recall lmstudio
-# On Windows, use the generated wrapper instead: <config-dir>/brain.cmd stats
+# Or the pre-approved launcher every platform now uses: "<venv python>" "<config-dir>/brain-agent.py" stats
 
 # Verify the MCP server is registered and connected — only meaningful after a --with-mcp
 # install (omit CLAUDE_CONFIG_DIR for the default ~/.claude)
@@ -795,14 +798,15 @@ BRAIN_VAULT=~/Vaults/Ai-Brain \
 
   **Narrowing the permission rule cannot fix this** — Claude Code's rules are *prefix*
   matches, so `Bash(<cmd> save:*)` still matches `save --file <anything>`. The enforceable
-  boundary is `BRAIN_AGENT_SURFACE=1`, baked into the approved prefix itself (the generated
-  `brain.cmd` sets it on Windows; it leads the `BRAIN_CMD` env prefix on POSIX).
+  boundary is `BRAIN_AGENT_SURFACE=1`, set from inside the generated
+  `brain-agent.py` launcher on every platform (2026-09-01; it used to be a `.cmd` wrapper on
+  Windows and an env prefix on POSIX — both gone, see the F2 gotcha).
   `cli._enforce_agent_surface` refuses `--file`, `--from-pi` and `--from-cherryd` under it
   and exits 2. An invocation *without* the variable is simply not pre-approved, so it
   prompts like any other command — which is why operators, timers and the pi extension
-  (which clears the variable explicitly, since `BRAIN_PI_CMD` may point at the wrapper)
-  keep the full CLI. Three things must stay in step or the boundary is decoration: all
-  four installers must bake the variable in, `SKILL.md`'s own `allowed-tools` must stay
+  (which clears the variable in its own spawns' env only)
+  keep the full CLI. Three things must stay in step or the boundary is decoration: the
+  installer must bake the variable into the launcher, `SKILL.md`'s own `allowed-tools` must stay
   narrowed (it is a *second* pre-approval door), and any new option that opens a
   caller-supplied path must join `cli.RESTRICTED_OPTIONS` — `test_agent_surface.py`
   asserts all three.
@@ -868,6 +872,264 @@ BRAIN_VAULT=~/Vaults/Ai-Brain \
   by `project_dir`'s containment check and by `forget_memory`'s "inside the Brain dir" guard.
   Both guards *fail safe*, so the symptom is an intermittent refusal, not a hole — which is
   why it survived a green test suite. Any new resolved-path comparison goes through it.
+
+- **Claude Code caps ONE hook command's `additionalContext` at 10,000 chars — the preload is
+  delivered in `vault.PRELOAD_PARTS` parts, and the vault-side byte budget cannot see this
+  (fixed 2026-09-01, F1).** Anything larger is written to
+  `<config>/projects/<proj>/<session>/tool-results/hook-*-additionalContext.txt` and the model
+  receives a `<persisted-output>` header plus ~2 KB (bracketed on 2.1.258 with a controlled
+  hook: 9,526 chars delivered whole, 11,026 spilled). The session bundle was ~44 KB and the
+  subagent bundle ~35 KB, so from at least 2026-08-06 no session or subagent received a user
+  memory, a feedback rule, the overview or the latest checkpoint — only the banner and the
+  index — while `BUNDLE_BUDGET_OK` reported clean. The cap is **per hook command** (a 9.5 KB
+  test hook arrived intact in the same session where the Brain's hook spilled), so both
+  templates register `PRELOAD_PARTS` (7) entries per preload event, each
+  `--part I --parts N`, and `brain_prep.render_parts` renders one part per entry under
+  `BRAIN_HOOK_OUTPUT_CAP` (9000; headroom for the JSON envelope). Parts arrive in **any
+  order** (observed 3, 4, 2, 1), so every part is self-describing, carries its own trust
+  notice (full on part 1, `TRUST_NOTICE_SHORT` after) and its own fence; part 1 holds the
+  banner (outside the fence), index, overview, checkpoint and project feedback, later parts
+  continue project-feedback → global feedback → user. Items never split; one larger than a
+  part is clipped with a recall hint. Whatever does not fit — plus what the byte budget
+  skipped — is **catalogued by name** (`- type/stem`) on the last part under "Saved but not
+  loaded", one `brain recall` away instead of a bare count. Only part 1 runs
+  doctor/stub/reindex and renders the bundle doctor built (`check(..., bundle_cache=)`).
+  Doctor renders exactly what the hooks emit: `PRELOAD_PART_OVERSIZED` (a part over the cap)
+  and `PRELOAD_OVERFLOW` (names that fell into the catalogue). Three things must agree or
+  delivery silently degrades: `PRELOAD_PARTS`, the entry count in **both** templates
+  (`test_preload_parts.py` asserts it), and `brain-launch.cmd` forwarding `%2..%9` — it used
+  to exec the hook with no args, which would make every entry emit the whole bundle. No
+  `--part` = whole bundle as one document (brain-prep, pi, LMStudio unchanged).
+  global-CLAUDE.md also tells the model to read a `<persisted-output>` file in full before
+  its first response — the stopgap for any harness or config that still spills. Sized
+  against the real vault on 2026-09-01: 6 parts carried all but one user memory (largest
+  part ~9.0 KB), so 7 is the default for headroom; at 4 parts every global feedback rule
+  fell into the catalogue, which is why the fill order
+  changed (next bullet).
+
+- **Global feedback fills before user memories (reordered 2026-09-01).** Feedback memories
+  are the behavioural rules the Brain exists to deliver; user memories are context, and
+  `user/` had grown to 19 files / ~23 KB of mostly incident notes. Under the per-hook cap
+  whatever fills last is what gets catalogued instead of loaded, and with user first every
+  one of the 16 global feedback rules was pushed off the end — the same self-defeating shape
+  the 12 KB subagent budget produced on 2026-07-30 (11 user entries, zero feedback). Order is
+  now project-feedback → global feedback → user. If the corpus outgrows 7 parts again, the
+  right move is compacting `user/` (re-type incident notes as `project`/`reference`), not
+  another reorder.
+
+- **`doctor.check()` isolates every check, and the SessionStart hook never treats a check
+  failure as a vault failure (F4, 2026-09-01).** Eighteen checks ran with no isolation and
+  the hook caught everything in one `try`, so any raising check emitted a banner blaming a
+  package import and exited *before building the bundle* — one bad file cost the session
+  every memory. Concrete raisers: a cp1252 note (UnicodeDecodeError is a ValueError, not
+  OSError), `type: [x]` (`list in set` → TypeError), non-mapping YAML in
+  `is_overview_stub`/`read_frontmatter_type`, and `p.stat()` in a comprehension on a
+  checkpoint deleted between glob and stat. Now `_run_check` turns a raise into an info
+  `CHECK_FAILED` finding; `vault._read_frontmatter_head` returns None for anything that is
+  not a UTF-8 mapping; sort keys and `max()` over files use `vault.safe_mtime`
+  (`test_no_sort_key_on_the_preload_path_stats_unguarded` fails the build on
+  `key=lambda p: p.stat()` in vault/doctor/brain_prep/the preload hooks — `compact.py` and
+  `transcript.py` still carry the pattern off the preload path); the hook separates import
+  failure (banner, stop) from doctor failure (`DOCTOR_FAILED` warn on top of a full preload)
+  and wraps the render. `search_memories` catches `(OSError, ValueError)` per file for the
+  same reason: a cp1252 note that ripgrep matched lexically costs one hit, not the recall.
+
+- **Pinned preload items are clipped, and the never-empty guard counts elastic items only
+  (F5, 2026-09-01).** `add_pinned` never checked the budget and the guard counted pinned
+  items, so one 80 KB checkpoint consumed the whole bundle (81.98/72 KB), every user and
+  feedback entry was skipped, and `MEMORY_SIZES_OK` reported clean because it scans
+  user/feedback only. Overview and latest checkpoint are clipped to
+  `vault.pinned_max_chars()` (3500/2500 chars, `BRAIN_PRELOAD_PINNED_MAX_CHARS`) with a
+  marker saying where the rest is; `pinned_kb`/`pinned_clipped` ride on the bundle;
+  `OVERSIZED_PINNED` (info) flags overviews and newest checkpoints per project.
+  `latest_checkpoint()` skips 0-byte files (a leftover `O_EXCL` reservation must not become
+  "the most recent checkpoint") and breaks mtime ties by name. Budget knobs go through
+  `_budget_kb_from_env`: `inf` raised OverflowError at `int()`, `nan` raised ValueError
+  outside the guarded parse, both dropped the preload; now clamped to a finite positive
+  range (F24).
+
+- **The model-facing Brain command is a Python launcher, never a `.cmd` and never an
+  env-prefix (fixed 2026-09-01, F2).** `brain-setup.py` used to pre-approve
+  `<config>/brain.cmd`, a batch file forwarding `%*` to `brain.exe`. From Git Bash — which
+  is what Claude Code's Bash tool is on Windows — `brain.cmd recall 'x"&echo INJECTED'` ran
+  `echo INJECTED` as a second cmd.exe command: bash escapes the embedded quote as `\"`,
+  cmd.exe ignores that escape, and `%*` re-expands the text (BatBadBut, CVE-2024-24576).
+  Since that command sits in `permissions.allow`, the injection ran unattended; it also
+  voided the `BRAIN_AGENT_SURFACE` gate and let cmd expand `%VAR%` inside arguments. The
+  POSIX shape had the mirror-image failure: `BRAIN_AGENT_SURFACE=1 BRAIN_VAULT="…"
+  "/venv/bin/brain"` is a rule Claude Code's matcher does not reliably match past the
+  leading assignment, so it may never have pre-approved anything. Both are gone.
+  `brain_cmd_token()` now writes `<config>/brain-agent.py` (stdlib-only; sets both variables
+  in `os.environ`, then calls `brain_mcp.cli.main()`) and returns
+  `"<venv python>" "<config>/brain-agent.py"` — two quoted paths, on every platform. Nothing
+  between the model and `argv` re-parses text. `brain-launch.cmd` survives for **hooks
+  only**, because its arguments are fixed text from `settings.json`. Existing installs
+  upgrade on re-run: `is_brain_permission_rule` recognises every shape ever written
+  (`.cmd`, env-prefix, launcher) so the old rules are pruned, and `cleanup()` deletes the
+  legacy `brain.cmd` when its header says an installer generated it.
+  `test_agent_surface.py` imports the installer, builds the token under both `IS_WINDOWS`
+  values (no `.cmd`/`.bat`, no `VAR=` prefix, exactly two `shlex` words), executes the
+  launcher in a subprocess (`save --file` exits 2; `BRAIN_VAULT` is baked in, not
+  inherited) and pushes the BatBadBut payload through Git Bash against the real approved
+  command. If you ever need a wrapper again, it has to be one that receives `argv` already
+  split.
+
+- **Files the installer writes are marked, backed up when they aren't ours, and OEM-encoded
+  when cmd.exe reads them (2026-09-01, F8/F9/F21/F26).** `brain_settings_merge.write_managed_text`
+  is the ONE writer for the global `CLAUDE.md`, the brain skill and the generated launchers:
+  a destination without `MANAGED_MARKER` is a hand-written file and is copied to
+  `<name>.brain-backup-<stamp>` before being replaced (it used to be silently clobbered), and
+  the uninstaller refuses to delete anything without the marker — including `skills/brain`,
+  which it used to `rmtree` unconditionally. The skill's marker sits *after* its YAML
+  frontmatter, which must stay on line 1. Both hook templates quote every placeholder — a
+  space in the username split the command and every hook failed silently — and
+  `render_hooks_template` substitutes on the *parsed* JSON, because a backslash path spliced
+  into JSON text is an escape sequence (`D:\new\tab` became a newline and a tab).
+  `brain-launch.cmd` is written in the OEM codepage (`GetOEMCP()`, what cmd.exe actually
+  reads batch files in — not UTF-8, not the ANSI page Python's locale reports) with `%`
+  doubled in baked paths (`v%1x` spliced the hook's first argument into `BRAIN_VAULT`); an
+  unencodable path is a reported settings failure naming the codepage, never a traceback,
+  and the file's own text must stay ASCII. The parity encoding test demands the literal
+  `"utf-8"` everywhere in `brain-setup.py` *except* `write_windows_launch_cmd`, where it
+  demands a non-literal; both halves are the bug class. `cleanup()` deletes
+  `<config>/.mcp.json` only when it parses as a Brain-only registration.
+
+- **The lexical query is data — `_ripgrep_argv` passes it as `-F … -e <query> -- <root>`,
+  and every one of those flags is load-bearing (2026-09-01, F3).** The query was positional
+  and regex: a query beginning with a dash was parsed by rg as an option (`--pre=<cmd>` runs
+  a command against every file in the vault), and it reaches this function from argparse
+  (anything after `--`) and from the MCP tool, i.e. from a model. `foo(` made rg exit 2 and
+  the lexical half of recall silently returned nothing, while the docstring promised a
+  literal match. `-F` makes it a fixed string, `-e` makes it an operand, `--` ends option
+  parsing before the root. `test_lexical_search_argv.py` fakes the subprocess boundary (rg is
+  not on every PATH) and asserts the argv *shape*, and pins the no-rg Python fallback to the
+  same literal, case-folded semantics.
+
+- **`_connect()` must return with no transaction open, and the query path must not use it
+  (2026-09-01, F13).** Its `INSERT OR IGNORE INTO meta` opened a transaction under sqlite3's
+  legacy control and nothing committed it, so every connection held the RESERVED write lock
+  from connect to close: the matrix load behind every recall held it for its whole BLOB
+  scan, `sync()` held it through the vault walk and the first chunk's embedding — not per
+  chunk, whatever the comment claimed — and concurrent recalls from the MCP server and the
+  CLI serialised on the 30s timeout. `_connect()` commits before returning;
+  `_normalized_matrix` opens `_connect_ro()` (`mode=ro`, `SQLITE_READ_TIMEOUT_S` = 5s).
+  `backlog()` and `text_recipe_changed()` take `timeout=` and doctor passes
+  `index_busy_timeout()`. `backlog()` raises `IndexBusy` on a lock rather than returning 0,
+  because 0 means "up to date". Build every sqlite URI with `embed.index_uri()` — a `#` or
+  `?` in the vault path truncates a raw `f"file:{path}?mode=ro"` and sqlite quietly opens
+  *some other file* (reproduced: an empty database and "no such table" with no error); a
+  test fails the build on any `sqlite3.connect("file:…")` that bypasses it.
+
+- **One unreadable note costs the index one row, not the pass (2026-09-01, F6).**
+  `embed_text()` read strict UTF-8 and the sync loop caught only `OSError`;
+  `UnicodeDecodeError` is a `ValueError`, so one cp1252 note escaped `sync()`: every
+  foreground recall fell back to ripgrep, `brain reindex` crashed, and the
+  SessionStart-spawned child died with stderr on DEVNULL so INDEX_STALE warned forever and
+  nothing said why. `sync()`/`upsert()` now skip `(OSError, ValueError)` per file and report
+  once per pass; the detached child writes to `.index/reindex.log` (truncated on each spawn
+  — **read it when INDEX_STALE persists across sessions**). Under a slice budget
+  `embed_text()` reads only `EMBED_READ_BYTES` (16 KB), decoded incrementally so a multibyte
+  character on the boundary is held back; the slice is byte-identical so
+  `EMBED_TEXT_VERSION` did not move.
+
+- **The reindex lock is owned by a pid, kept alive by a heartbeat, and stale only when old
+  AND dead; the recipe lives on the row, so a rebuild resumes (2026-09-01, F14/F15).** Age
+  alone (30 min) declared a live long rebuild abandoned: the next SessionStart unlinked the
+  live lock and spawned a second pass, the first pass's unconditional release then deleted
+  the second's lock, and two processes both observing "stale" could both unlink and both
+  create. Now `sync()` touches the lock after every chunk commit on unbounded passes,
+  `_lock_state` checks the pid only past `REINDEX_LOCK_STALE_S`, `REINDEX_LOCK_ABANDON_S`
+  (24h) bounds pid reuse, release/heartbeat act only on our own pid, takeover renames the
+  stale file and verifies it, and `acquire` never claims ownership on an unexpected error.
+  **Never plant a literal pid like `12345` in a test** — use `conftest.dead_pid`. With one
+  recipe stamp in `meta` written after the last chunk, an interrupted rebuild restarted
+  from zero; `embeddings.recipe` is added in place by `_connect()` (`ALTER TABLE` +
+  backfill; no vector touched, no epoch bump), every insert stamps the current recipe, and
+  a rebuild's pending set is rows whose recipe differs. The F6/F14/F15 tests drive `sync()`
+  for real by monkeypatching `embed._EMBEDDER` with a stub returning fixed 384-dim vectors —
+  use that pattern for any sync-path test rather than the real embedder.
+
+- **Hooks read their payload through `_common.read_payload()` and nothing else — it pins
+  UTF-8 before the read (2026-09-01, F7).** Claude Code hands hooks UTF-8 JSON, but a piped
+  Python on Windows decodes stdin as cp1252 and the launcher sets only `BRAIN_VAULT`; the
+  2026-07-29 fix covered `cli.py` only. A cwd of `D:/tmp/Café—x` arrived as `CafÃ©â€”x`,
+  passed `validate_project_name` (a blacklist by design), and the overview stub,
+  checkpoints and scoped feedback landed in a mojibake project dir while the real project
+  never preloaded; a Cyrillic cwd hit an undefined cp1252 byte and killed the hook.
+  `read_payload` calls `force_utf8_stdio()` first; `test_hook_stdio_utf8.py` runs every hook
+  under `PYTHONIOENCODING=cp1252` and fails the build if any hook touches `sys.stdin`
+  itself. Hooks also never create the vault: `vault_brain()` used to `mkdir` `Brain/`, so a
+  mistyped or not-yet-synced `BRAIN_VAULT` got a phantom vault on the first Stop and
+  `BRAIN_DIR_MISSING` could never fire again. `append_activity` writes nothing when the
+  directory is absent, and cuts `activity.md` back to its newest 1,500 rows once it passes
+  2,000 (it was 243 KB, rewritten every turn on every machine through Obsidian Sync).
+
+- **`stop.py` reads the transcript from the END, blanks quoted spans before matching, and
+  audit rows carry `re=Y|N` (2026-09-01, F16/F17/F18).** It used to `list()` every JSON line
+  on every turn under the Stop hook's 5 s timeout — linear, so a long session crossed the
+  budget and silently lost both the gate and the audit row for the rest of its life.
+  `_analyze_last_turn` walks backwards in 64 KB blocks with a byte-regex pre-filter and
+  stops at the last user entry that carries text; `test_stop_hook.py` holds it under 1 s on
+  a 50 MB transcript. `is_cli_save_command` used to accept any whitespace as a boundary, so
+  `git commit -m "Fix brain checkpoint naming"` satisfied the gate with no save; it now
+  blanks quoted spans and heredoc bodies and anchors the executable at a command position
+  (env-prefix assignments allowed). Every save-promise pattern in `_savesig.py` requires a
+  Brain noun — bare `memory` was blocking turns on "store the result in memory" — and the
+  emphasis-strip regexes are bounded (the old one was quadratic: 1 s on 20,000 asterisks).
+  On a re-entry after a gate block the assistant text still spans the whole turn, promise
+  included, and the *first* row of a blocked turn is `pro=Y sav=N` by construction, so every
+  gate block produced a `PROMISE_GAP` warning; `doctor._audited_rows` treats a `re=Y` row as
+  superseding the preceding row for the same account+project and `_check_promise_gap` skips
+  gated turns. `brain_mcp.transcript.SYSTEM_TURN_PREFIXES` is THE list of system-generated
+  user-turn markers — `stop.py` and `parse_claude_transcript` each kept their own and 9 of
+  249 checkpoints carried subagent output where the user's request belonged; a test fails
+  the build if a marker literal appears anywhere else.
+
+- **The pi extension clears `BRAIN_AGENT_SURFACE` in its own spawns' env, never in
+  `process.env` (2026-09-01, F23).** `pi.exec` has no per-call env, so the extension
+  assigned `process.env.BRAIN_AGENT_SURFACE = "0"` — and the model's shell tool inherits
+  `process.env`, so every command the *model* ran had the gate cleared. Operator-owned
+  commands now go through `node:child_process` `execFile` with `shell: false` and an
+  explicit env. `BRAIN_PI_CMD` must be the venv executable (Node ≥ 20.12 refuses .cmd/.bat
+  under `shell:false`), and `resolvePrepCmd` only looks for a sibling `brain-prep` when
+  `brainCmd` is absolute.
+
+- **A save that replaces a memory archives what it replaced — and a slug is not a title
+  (2026-09-01, F10/F11).** `write_memory` composed `<slug>.md` and wrote over whatever was
+  there: "Git discipline" and "git   discipline!" are one path, and every non-Latin title
+  slugified to the bare `untitled`, so a model saving a new rule under a colliding title
+  erased a user correction with no trace. Overwrite-by-title is a feature (the stub upgrade
+  relies on it), so `vault.save_memory()` does not refuse: it copies the previous content to
+  `Brain/archive/versions/<rel path>/<stamp>-<machine>[_NN].md` first (newest
+  `VERSION_KEEP`=5 kept; `archive/` is in `EXCLUDE_DIRS`, so versions never reach the index,
+  `brain list`, recall or a preload, but Obsidian Sync carries them), reports it (`warning:
+  overwrote …` on stderr; `overwrote`/`previous_version` in the MCP result), and writes
+  nothing on a byte-identical re-save (`unchanged`). Version names are **monotonic within a
+  second**, not lowest-free like checkpoints — pruning frees the lowest names, so a reused
+  low slot made the newest version sort as the oldest and get pruned. `slugify`
+  transliterates via NFKD (`Café notes` → `cafe-notes`; a pre-existing `caf-notes.md` will
+  not be matched by a re-save — doctor's near-duplicate check surfaces it) and appends
+  `-<8 hex of sha1(title)>` when no ASCII survives. Caller frontmatter is honoured only when
+  it parses as a mapping: a body opening with a markdown horizontal rule used to be written
+  verbatim with no `type`, vanishing from every typed recall. A declared `type` that differs
+  from the requested one is a `ValueError`, a missing one is filled in. `forget_memory`
+  accepted anything under `Brain/` from the pre-approved surface — `_index.md`,
+  `activity.md`, the sqlite index; it now requires a `.md` that `is_memory_path` accepts.
+
+- **brain-compact buckets and ages by the date in the filename, never mtime — and merges by
+  marked section (2026-09-01, F19/F20).** mtime is when compaction last *wrote* a file, so
+  every daily one run produced landed in a single weekly named for the run's week, each
+  stage's ageing clock restarted on every run, and two machines compacting the same daily
+  on different days filed it under different weeks. `_day_of`/`_week_from_name` read the
+  date in the name; `_compact_project(…, today=)` is the injectable clock, and a test fails
+  if `st_mtime` is read anywhere else. Absorbed sections are marked
+  `<!-- brain-compact source: <name> -->` (the legacy `## <name>.md` heading is still
+  parsed, and headings inside absorbed bodies are no longer merge keys), a source is
+  reclaimed once every section it holds is in the target (the crash-between-write-and-unlink
+  leftover used to sit as a raw preload candidate forever), and archiving merges into an
+  existing archived weekly instead of `shutil.move`-ing over it. Test fixtures use
+  today-relative stamps: a literal January date ages past every threshold the moment the
+  year rolls on.
 
 ## Testing
 

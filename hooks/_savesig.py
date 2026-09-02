@@ -54,27 +54,36 @@ def is_save_signal(text: str) -> bool:
 #
 # Design: precision over recall. A miss means a silent loss (bad), but a false
 # positive means an irritating turn-block that tells the model to "save or
-# recant" — annoying but recoverable. We still bias toward keywords that are
-# brain-specific ("checkpoint", "brain", "vault", or "as a <memory-type>") to
-# avoid blocking on generic "I'll save the file" / "let me write the test".
+# recant" — annoying but recoverable. Every pattern therefore requires a
+# Brain-specific noun: "brain", "the vault", "long-term memory", "checkpoint",
+# or "as (a) <memory-type> (memory|note|entry|record|context)". Bare "memory"
+# was dropped on 2026-09-01: "I'll store the result in memory" is ordinary
+# programming prose, as are "add it as a user setting" and "save that as a
+# reference implementation", and all three used to block the turn.
+_FUTURE = r"(?:i'?ll|i will|let me|i'?m\s+going\s+to|i am going to)"
+_SAVE_VERB = r"(?:save|record|store|pin|persist|write|note)"
+_BRAIN_NOUN = r"(?:(?:the\s+)?brain|(?:the\s+)?vault|long-term memory|checkpoint)"
+# "as feedback" is Brain vocabulary on its own; the other three types are
+# ordinary English words and need a memory noun after them.
+_AS_TYPE = (
+    r"as\s+(?:a\s+|an\s+|new\s+)?"
+    r"(?:feedback(?:\s+(?:memory|note|entry|record))?"
+    r"|(?:user|project|reference)\s+(?:memory|note|entry|record|context))"
+)
 PROMISE_PATTERNS = (
-    # Future-tense save-verb + brain keyword / as-<type> within 120 chars.
-    r"\b(i'?ll|i will|let me|i'?m\s+going\s+to|i am going to)\s+"
-    r"(save|record|store|pin|persist|write|note)\b[^.\n]{0,120}?"
-    r"\b(brain|vault|memory|as\s+(a\s+|an\s+|new\s+)?(feedback|project|user|reference))\b",
+    # Future-tense save-verb + brain noun / as-<type> within 120 chars.
+    rf"\b{_FUTURE}\s+{_SAVE_VERB}\b[^.\n]{{0,120}}?\b(?:{_BRAIN_NOUN}|{_AS_TYPE})\b",
     # "checkpoint" is brain-specific vocab — future-tense alone is enough.
-    r"\b(i'?ll|i will|let me|i'?m\s+going\s+to|i am going to)\s+checkpoint\b",
+    rf"\b{_FUTURE}\s+checkpoint\b",
     # Progressive form with explicit destination: "saving this to brain".
-    r"\b(saving|recording|storing|writing|noting)\b[^.\n]{0,80}?"
-    r"\b(to|in|into)\s+(the\s+)?(brain|vault|memory)\b",
+    rf"\b(?:saving|recording|storing|writing|noting)\b[^.\n]{{0,80}}?"
+    rf"\b(?:to|in|into)\s+{_BRAIN_NOUN}\b",
     # "Checkpointing …" as a verb — always brain-specific.
     r"\bcheckpointing\b",
     # "Saving now" / "saving this now" — shorthand commitment.
-    r"\b(saving|recording)\s+(this\s+|that\s+|it\s+|them\s+)?now\b",
+    r"\b(?:saving|recording)\s+(?:this\s+|that\s+|it\s+|them\s+)?now\b",
     # "I'll save that as feedback" / "saving as a project memory".
-    r"\b(i'?ll|let me|i'?m\s+going\s+to|saving|recording)\b[^.\n]{0,30}"
-    r"\bas\s+(a\s+|an\s+|new\s+)?(feedback|project|user|reference)\s+"
-    r"(memory|note|entry|record)?\b",
+    rf"\b(?:{_FUTURE}|saving|recording)\b[^.\n]{{0,30}}\b{_AS_TYPE}\b",
 )
 
 _PROMISE_COMPILED = tuple(re.compile(p, re.IGNORECASE) for p in PROMISE_PATTERNS)
@@ -84,13 +93,19 @@ _PROMISE_COMPILED = tuple(re.compile(p, re.IGNORECASE) for p in PROMISE_PATTERNS
 # never wrapped in backticks or asterisk emphasis. Without this strip, the
 # gate false-positives on Brain-related summaries that enumerate the very
 # phrases it matches (e.g. *"I'll save this to brain"* in a docstring).
+#
+# Every span pattern is bounded. `\*+[^*\n]+?\*+` was quadratic on a run of
+# asterisks (1 s on 20,000 of them, inside a hook with a 5 s budget), and the
+# underscore pattern's two unbounded `[^_\n]*` runs backtracked against each
+# other on long whitespace. Markdown emphasis is 1-3 markers wide and a real
+# emphasised span is short; anything longer is not emphasis and may stay.
 _EMPHASIS_STRIP_PATTERNS = (
-    re.compile(r"```[\s\S]*?```"),          # fenced code blocks
-    re.compile(r"`[^`\n]*`"),                # inline backtick spans
-    re.compile(r"\*+[^*\n]+?\*+"),           # *italic* and **bold**
+    re.compile(r"```[\s\S]*?```"),                  # fenced code blocks
+    re.compile(r"`[^`\n]*`"),                        # inline backtick spans
+    re.compile(r"\*{1,3}[^*\n]{1,400}?\*{1,3}"),     # *italic* and **bold**
     # Underscore italic only when the span contains whitespace — avoids stripping
     # code identifiers like `is_save_promise` or `BRAIN_STOP_GATE`.
-    re.compile(r"_[^_\n]*\s[^_\n]*_"),
+    re.compile(r"_[^_\n]{0,200}\s[^_\n]{0,200}_"),
 )
 
 

@@ -10,10 +10,17 @@ unasked — a local-file exfiltration primitive.
 
 Narrowing the permission rule alone cannot fix this: Claude Code's rules are PREFIX
 matches, so `Bash(<cmd> save:*)` still matches `save --file <anything>`. The enforceable
-boundary is the env var baked into the approved prefix — the generated `brain.cmd` on
-Windows, the `BRAIN_AGENT_SURFACE=1 BRAIN_VAULT=... /bin/brain` prefix on POSIX — which
-the CLI reads and refuses the file-import options under. An invocation *without* the
-variable is simply not pre-approved and prompts like any other command.
+boundary is the env var the approved command sets from inside — the generated
+`brain-agent.py` launcher, run by the venv's python, on every platform — which the CLI
+reads and refuses the file-import options under. An invocation *without* the variable
+is simply not pre-approved and prompts like any other command.
+
+The launcher replaced two earlier shapes on 2026-09-01, both of which are asserted
+against below: a Windows `brain.cmd` forwarding `%*` (a command-injection hole — cmd.exe
+re-expands the arguments after Git Bash has quoted them, so `x"&echo pwned` ran a second
+command through the pre-approved wrapper; BatBadBut, CVE-2024-24576) and a POSIX
+`BRAIN_AGENT_SURFACE=1 BRAIN_VAULT=... /bin/brain` env prefix, which Claude Code's rule
+matcher does not reliably match past.
 
 Reproduced 2026-08-25 against the live vault before the fix: the Windows hosts file
 landed in `Brain/user/` as a preloading "user memory".
@@ -22,14 +29,22 @@ landed in `Brain/user/` as a preloading "user memory".
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import re
+import shlex
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from brain_mcp import cli, vault
+from conftest import load_repo_script
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+MCP_SERVER_SRC = REPO_ROOT / "mcp-server"
 
 
 def run(argv: list[str]) -> None:
@@ -203,43 +218,239 @@ def test_forget_cannot_delete_outside_the_vault(vault_dir: Path, secret: Path) -
 
 
 # --------------------------------------------------- the installer sets it ------
+#
+# These run the installer's real functions and the launcher it generates, in a
+# subprocess, against a throwaway vault. The previous version of this section grepped
+# brain-setup.py for two string fragments, which a comment satisfied -- and did, for a
+# while, after the fragments moved into a docstring.
 
-# Both spellings, because the pre-approved command is built two ways: the generated
-# Windows `brain.cmd` wrapper sets the variable with `set`, while the POSIX BRAIN_CMD
-# is an env prefix on the command itself. ROADMAP 3G retired the three platform
-# installers on 2026-08-25, so one file now has to carry both.
-INSTALLER_FRAGMENTS = ['set "BRAIN_AGENT_SURFACE=1"', "BRAIN_AGENT_SURFACE=1 BRAIN_VAULT="]
+SETUP_SCRIPT = "brain-setup.py"
+sm = load_repo_script("brain_settings_merge.py")
 
 
-def test_the_installer_bakes_the_gate_into_the_approved_command() -> None:
-    """One installer, one boundary — and it must hold on both platforms.
+@pytest.fixture(params=["windows", "posix"])
+def installer(request, monkeypatch: pytest.MonkeyPatch):
+    """brain-setup.py imported fresh and pinned to one platform's path shape.
 
-    The pre-approval is a *prefix* match, so narrowing the rule cannot express
-    "no --file"; the variable baked into the approved command is the only thing that
-    can. An installer that forgets it produces a pre-approved command with the FULL
-    CLI surface, and nothing else in the system would notice.
+    The token is built the same way on both platforms now; parametrizing is what
+    proves neither branch can drift back to a shell wrapper or an env prefix.
     """
-    src = (REPO_ROOT / "brain-setup.py").read_text(encoding="utf-8")
-    for fragment in INSTALLER_FRAGMENTS:
-        assert fragment in src, (
-            f"brain-setup.py no longer sets {cli.AGENT_SURFACE_ENV} via {fragment!r}"
+    m = load_repo_script(SETUP_SCRIPT)
+    if request.param == "windows":
+        monkeypatch.setattr(m, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            m, "VENV_PY", Path(r"C:\Users\Jo Bloggs\src\Ai-Brain\mcp-server\.venv\Scripts\python.exe")
         )
+    else:
+        monkeypatch.setattr(m, "IS_WINDOWS", False)
+        monkeypatch.setattr(
+            m, "VENV_PY", Path("/home/jo bloggs/src/Ai-Brain/mcp-server/.venv/bin/python")
+        )
+    return m
 
 
-def test_the_skill_does_not_pre_approve_the_whole_cli() -> None:
+ENV_ASSIGNMENT = re.compile(r"(^|\s)[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def test_the_approved_command_is_two_quoted_paths_and_nothing_else(installer, tmp_path):
+    """The rendered __BRAIN_CMD__ must never be a `.cmd`/`.bat` (cmd.exe re-parses the
+    arguments: command injection) and must never start with `VAR=value` (Claude Code's
+    allow-rule matcher does not reliably match past it: the rule silently never
+    applies). Under both platform branches, from the real function, not from text."""
+    cfg = tmp_path / "claude dir"  # a space, deliberately: it must survive quoting
+    cfg.mkdir()
+    token = installer.brain_cmd_token(cfg, tmp_path / "vault")
+
+    words = shlex.split(token)
+    assert len(words) == 2, f"expected `\"<python>\" \"<launcher>\"`, got {token!r}"
+    interpreter, launcher = words
+    assert token == f'"{interpreter}" "{launcher}"', "both paths must be double-quoted"
+    for word in words:
+        assert not word.lower().endswith((".cmd", ".bat", ".ps1", ".sh")), (
+            f"a shell wrapper is back in the approved command: {word}"
+        )
+    assert not ENV_ASSIGNMENT.search(token), f"env-var assignment prefix is back: {token!r}"
+
+    expected_py = str(installer.VENV_PY)
+    expected_launcher = str(cfg / installer.AGENT_LAUNCHER_NAME)
+    if installer.IS_WINDOWS:
+        expected_py = expected_py.replace("\\", "/")
+        expected_launcher = expected_launcher.replace("\\", "/")
+        assert "\\" not in token, "Git Bash eats single backslashes; the token must be forward-slashed"
+    assert interpreter == expected_py
+    assert launcher == expected_launcher
+    assert (cfg / installer.AGENT_LAUNCHER_NAME).is_file(), "the token names a launcher that was not written"
+
+
+def test_the_launcher_carries_the_managed_marker(installer, tmp_path):
+    """So a re-run replaces it in place and the uninstaller knows it may delete it."""
+    launcher = installer.write_agent_launcher(tmp_path, tmp_path / "vault")
+    assert sm.has_managed_marker(launcher)
+    assert sm.is_generated_launcher(launcher)
+
+
+# ---- the launcher, executed ----------------------------------------------------
+
+def _launcher_env(decoy_vault: Path) -> dict:
+    """The environment a Claude Code Bash tool would hand the launcher, plus a decoy
+    BRAIN_VAULT the launcher MUST override and the source tree on PYTHONPATH so the
+    subprocess runs this checkout's brain_mcp rather than whatever is pip-installed."""
+    env = os.environ.copy()
+    env.pop(cli.AGENT_SURFACE_ENV, None)
+    env["BRAIN_VAULT"] = str(decoy_vault)
+    env["BRAIN_EMBED"] = "0"
+    env["BRAIN_MACHINE"] = "test-host"
+    env["PYTHONPATH"] = str(MCP_SERVER_SRC)
+    return env
+
+
+@pytest.fixture
+def launched(vault_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A generated launcher for a throwaway vault, plus the token that names it.
+
+    VENV_PY is pointed at the interpreter running the tests: the worktree may have
+    no venv at all, and what is under test is the launcher, not pip.
+    """
+    m = load_repo_script(SETUP_SCRIPT)
+    monkeypatch.setattr(m, "VENV_PY", Path(sys.executable))
+    cfg = tmp_path / "config dir"
+    cfg.mkdir()
+    token = m.brain_cmd_token(cfg, vault_dir.parent)
+    decoy = tmp_path / "decoy-vault"
+    (decoy / "Brain" / "user").mkdir(parents=True)
+    return {
+        "token": token,
+        "launcher": cfg / m.AGENT_LAUNCHER_NAME,
+        "env": _launcher_env(decoy),
+        "vault": vault_dir,
+        "decoy": decoy / "Brain",
+    }
+
+
+def run_launcher(launched: dict, args: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(launched["launcher"]), *args],
+        env=launched["env"], capture_output=True, text=True, encoding="utf-8",
+        timeout=120, check=False,
+    )
+
+
+def _all_markdown(root: Path) -> str:
+    return "\n".join(
+        p.read_text(encoding="utf-8", errors="ignore") for p in root.rglob("*.md") if p.is_file()
+    )
+
+
+def test_the_generated_launcher_sets_the_gate(launched: dict, secret: Path) -> None:
+    """Executed, not grepped: `brain-agent.py save user x --file <secret>` must exit 2
+    with the agent-surface refusal, and the secret must reach neither vault."""
+    res = run_launcher(launched, ["save", "user", "notes", "--file", str(secret)])
+    assert res.returncode == 2, res.stderr
+    assert "not available on the agent surface" in res.stderr
+    assert "Traceback" not in res.stderr
+    assert "hunter2" not in _all_markdown(launched["vault"])
+    assert "hunter2" not in _all_markdown(launched["decoy"])
+
+
+def test_the_generated_launcher_bakes_in_the_vault(launched: dict) -> None:
+    """BRAIN_VAULT comes from the launcher, never from the caller's environment: a
+    model (or a hook) cannot redirect a pre-approved save into another directory."""
+    res = run_launcher(launched, ["save", "user", "baked-in", "--content", "hello"])
+    assert res.returncode == 0, res.stderr
+    assert (launched["vault"] / "user" / "baked-in.md").is_file()
+    assert not (launched["decoy"] / "user" / "baked-in.md").exists()
+
+
+BATBADBUT_PAYLOAD = 'zzq"&echo INJECTED'
+
+
+def _injected(output: str) -> bool:
+    """A line that is exactly the sentinel is the output of an injected `echo`; the
+    payload merely being echoed back inside a longer line is not."""
+    return any(line.strip() == "INJECTED" for line in output.splitlines())
+
+
+def test_argv_reaches_the_cli_unparsed(launched: dict) -> None:
+    """The payload must arrive as one argument and be treated as data."""
+    res = run_launcher(launched, ["recall", BATBADBUT_PAYLOAD, "--json"])
+    assert res.returncode == 0, res.stderr
+    assert json.loads(res.stdout)["query"] == BATBADBUT_PAYLOAD
+    assert not _injected(res.stdout + res.stderr)
+
+
+def _git_bash() -> str | None:
+    """The bash Claude Code's Bash tool runs on this platform, or None.
+
+    On Windows that is Git Bash, found explicitly: a bare `which bash` can resolve to
+    System32/bash.exe, which is WSL -- a different machine for these purposes.
+    """
+    if sys.platform != "win32":
+        return shutil.which("bash")
+    for root in (os.environ.get("ProgramFiles"), os.environ.get("ProgramW6432"),
+                 os.environ.get("ProgramFiles(x86)")):
+        if not root:
+            continue
+        for rel in ("Git/bin/bash.exe", "Git/usr/bin/bash.exe"):
+            candidate = Path(root) / rel
+            if candidate.is_file():
+                return str(candidate)
+    found = shutil.which("bash")
+    if found and "system32" not in found.lower():
+        return found
+    return None
+
+
+def test_the_approved_command_survives_a_batbadbut_payload_through_bash(launched: dict) -> None:
+    """The live reproduction of F2, run against the fix: the approved command exactly as
+    the model would type it into the Bash tool, with the argument that used to run
+    `echo INJECTED` as a second command through brain.cmd. Nothing may be injected,
+    and the query must arrive intact."""
+    bash = _git_bash()
+    if not bash:
+        pytest.skip("no bash on this machine")
+    command = f"{launched['token']} recall 'zzq\"&echo INJECTED' --json"
+    res = subprocess.run(
+        [bash, "-c", command], env=launched["env"],
+        capture_output=True, text=True, encoding="utf-8", timeout=120, check=False,
+    )
+    assert res.returncode == 0, res.stderr
+    assert not _injected(res.stdout + res.stderr), f"command injection through the approved command:\n{res.stdout}"
+    assert json.loads(res.stdout)["query"] == BATBADBUT_PAYLOAD
+
+
+# ---- the second pre-approval door -----------------------------------------------
+
+def test_the_skill_pre_approves_exactly_the_agent_subcommands() -> None:
     """SKILL.md carries its own `allowed-tools` pre-approval -- a second door that
-    narrowing settings.json alone would leave wide open."""
+    narrowing settings.json alone would leave open. Set equality with the shared
+    subcommand list, so neither side can grow (`reindex`) or shrink (a proactive
+    `save` that prompts) without the other noticing."""
     skill = (REPO_ROOT / "templates" / "skills" / "brain" / "SKILL.md").read_text(
         encoding="utf-8"
     )
     line = next(ln for ln in skill.splitlines() if ln.startswith("allowed-tools:"))
+    rules = {r.strip() for r in line[len("allowed-tools:"):].split(",") if r.strip()}
+    expected = {f"Bash(__BRAIN_CMD__ {sub}:*)" for sub in sm.AGENT_SUBCOMMANDS}
+    assert rules == expected, (
+        f"skill pre-approves {sorted(rules - expected)} that settings.json does not, "
+        f"and misses {sorted(expected - rules)}"
+    )
     assert "Bash(__BRAIN_CMD__:*)" not in line, "the blanket skill pre-approval is back"
-    assert "Bash(__BRAIN_CMD__ recall:*)" in line
 
 
-def test_the_pi_extension_keeps_the_full_surface() -> None:
-    """pi drives `checkpoint --from-pi` as the operator. If BRAIN_PI_CMD points at the
-    generated brain.cmd wrapper, the gate would fail every automatic checkpoint with an
-    exit 2 that nothing surfaces."""
+def test_the_pi_extension_keeps_the_full_surface_for_its_own_spawns_only() -> None:
+    """pi drives `checkpoint --from-pi` as the operator, so its own spawns clear the
+    gate — but in *their* environment, never in `process.env`. pi's `exec` has no
+    per-call env, so the extension used to assign `process.env.BRAIN_AGENT_SURFACE =
+    "0"`, and the model's shell tool inherits process.env: every command the model
+    ran had the gate cleared, on the one surface the gate exists to bound
+    (2026-09-01). The spawn therefore goes through node:child_process with an
+    explicit env and no shell."""
     src = (REPO_ROOT / "pi" / "extensions" / "brain.ts").read_text(encoding="utf-8")
-    assert 'process.env.BRAIN_AGENT_SURFACE = "0"' in src
+    assert 'BRAIN_AGENT_SURFACE: "0"' in src, "the extension's own spawns must clear the gate"
+    assert not re.search(r"process\.env\.BRAIN_AGENT_SURFACE\s*=", src), (
+        "assigning BRAIN_AGENT_SURFACE process-wide clears the gate for the model's shell tool"
+    )
+    assert "pi.exec(" not in src, "pi.exec cannot scope env per call; spawn via node:child_process"
+    assert "shell: false" in src
+    assert 'from "node:child_process"' in src

@@ -24,6 +24,23 @@ sys.path.insert(0, str(REPO_ROOT / "mcp-server"))
 sys.path.insert(0, str(REPO_ROOT / "hooks"))
 
 
+def load_repo_script(filename: str):
+    """Import a repo-root script (`brain-setup.py`, `brain-uninstall.py`, ...) by path.
+
+    Their names carry a dash, so they cannot be imported by name, and the repo root
+    is deliberately not on sys.path. Every call returns a FRESH module object that is
+    not registered in sys.modules, so a test can monkeypatch `IS_WINDOWS` or `VENV_PY`
+    on its copy without leaking into another test's.
+    """
+    import importlib.util
+
+    path = REPO_ROOT / filename
+    spec = importlib.util.spec_from_file_location(filename.replace("-", "_")[:-3], path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _write(path: Path, text: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
@@ -82,6 +99,19 @@ def embedding_vault(vault_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     if not embed._model_is_cached(embed._CACHE_DIR):
         pytest.skip("embedding model not cached on this machine")
     return vault_dir
+
+
+@pytest.fixture(scope="session")
+def dead_pid() -> int:
+    """A pid the OS reports as not running: a child that has already exited.
+
+    For tests that plant a reindex lock and need it judged *stale* — a literal
+    like 12345 may be a live process on the machine running the suite.
+    """
+    import subprocess
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    return proc.pid
 
 
 def _reset_module_state() -> None:
