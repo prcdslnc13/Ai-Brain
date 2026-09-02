@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import math
 import os
 import platform
 import re
@@ -597,19 +598,13 @@ def search_memories(query: str, mtype: str | None = None, project: str | None = 
 
     rg_hits = _ripgrep_search(query, root)
 
-    def _mtime(p: Path) -> float:
-        # A file can vanish between ripgrep listing it and this sort reading it — a
-        # checkpoint rollup, a `brain forget`, an Obsidian Sync delete. Raising from
-        # inside a sort key would take the whole recall down, and every other failure
-        # path in this function degrades instead.
-        try:
-            return p.stat().st_mtime
-        except OSError:
-            return 0.0
-
+    # A file can vanish between ripgrep listing it and this sort reading it — a
+    # checkpoint rollup, a `brain forget`, an Obsidian Sync delete. Raising from
+    # inside a sort key would take the whole recall down, and every other failure
+    # path in this function degrades instead; `safe_mtime` is the shared answer.
     extras = sorted(
         (p for p in rg_hits if p not in seen),
-        key=lambda p: (-rg_hits[p], -_mtime(p)),
+        key=lambda p: (-rg_hits[p], -safe_mtime(p)),
     )
     # Only the head participates in the merge; the tail still just appends, so the
     # total match count a caller sees is unchanged.
@@ -642,13 +637,132 @@ def search_memories(query: str, mtype: str | None = None, project: str | None = 
 # with headroom, and SUBAGENT_BUNDLE_SATURATED now fires when it runs out. The real
 # fix is relevance-scoping the preload, not raising this number forever.
 SUBAGENT_BUDGET_DEFAULT_KB = 56.0
+BUNDLE_BUDGET_DEFAULT_KB = 72.0
+
+# Largest budget any knob is allowed to express, in KB. Not a real limit — a
+# 200k-token context would hold it several times over — just a finite ceiling so
+# `int(budget_kb * 1024)` can never see `inf` (OverflowError) or `nan` (ValueError),
+# both of which used to escape the `float()` guard and drop the whole preload.
+BUDGET_MAX_KB = 1024.0 * 1024.0
+
+
+def _budget_kb_from_env(name: str, default: float) -> float:
+    """A byte budget from the environment, clamped to a finite positive range.
+
+    `float("inf")` and `float("nan")` parse without error, so a `try: float()`
+    guard alone passed them straight through to `int()`: `inf` raised
+    OverflowError there and `nan` raised ValueError *outside* the guarded parse,
+    and either exception took the entire session preload with it (F24). A
+    non-positive budget is meaningless too — the bundle would ship nothing but
+    the fence — so it falls back to the default rather than to an empty preload.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if not math.isfinite(value) or value <= 0:
+        return default
+    return min(value, BUDGET_MAX_KB)
 
 
 def subagent_budget_kb() -> float:
+    return _budget_kb_from_env("BRAIN_SUBAGENT_BUDGET_KB", SUBAGENT_BUDGET_DEFAULT_KB)
+
+
+def bundle_budget_kb() -> float:
+    return _budget_kb_from_env("BRAIN_BUNDLE_BUDGET_KB", BUNDLE_BUDGET_DEFAULT_KB)
+
+
+def safe_mtime(p: Path) -> float:
+    """`st_mtime`, or 0.0 when the file is gone.
+
+    A sort key that raises takes the whole enumeration down, and every preload
+    and search path is a list of files that can vanish between glob and stat —
+    a checkpoint rollup, a `brain forget`, an Obsidian Sync delete. Hoisted from
+    `search_memories` (2026-09-01) so the session-bundle sorts use it too.
+    """
     try:
-        return float(os.environ.get("BRAIN_SUBAGENT_BUDGET_KB", str(SUBAGENT_BUDGET_DEFAULT_KB)))
+        return p.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+# --- Hook-output partitioning -------------------------------------------------
+#
+# Claude Code caps what ONE hook command may return as `additionalContext` at
+# 10,000 characters (measured 2026-09-01 on 2.1.258: 9,526 delivered whole, 11,026
+# spilled). Anything larger is written to a `tool-results/hook-*-additionalContext.txt`
+# file and the model receives a `<persisted-output>` header plus the first ~2 KB —
+# which for a 44 KB session bundle was the health banner and the index, and none of
+# the user profile, feedback rules, overview or checkpoint. The cap is per hook
+# *command*, so the preload is delivered as PRELOAD_PARTS separate hook entries,
+# each rendering one part under HOOK_OUTPUT_CAP_DEFAULT chars.
+#
+# PRELOAD_PARTS is the single source of truth for how many entries the two hook
+# templates register per event; test_preload_parts.py asserts the templates match.
+PRELOAD_PARTS = 4
+HOOK_OUTPUT_CAP_DEFAULT = 9000  # chars; headroom under 10,000 for the JSON envelope
+
+# Pinned items (overview, latest checkpoint) never hit the elastic budget, so one
+# 80 KB checkpoint used to consume the whole bundle and starve every user and
+# feedback entry (F5). They are clipped to these per-item caps instead, with a marker
+# saying how to read the rest. BRAIN_PRELOAD_PINNED_MAX_CHARS overrides both. Sized so
+# that part 1 — banner, index, overview, checkpoint, ~1.5 KB of notice and fence — fits
+# under HOOK_OUTPUT_CAP_DEFAULT with ~1.5 KB left for the banner.
+PINNED_OVERVIEW_MAX_CHARS = 3500
+PINNED_CHECKPOINT_MAX_CHARS = 2500
+
+
+def _positive_int_from_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
     except ValueError:
-        return SUBAGENT_BUDGET_DEFAULT_KB
+        return default
+    if not math.isfinite(value) or value < 1:
+        return default
+    return int(min(value, 10_000_000))
+
+
+def hook_output_cap() -> int:
+    """Chars one hook command may return; BRAIN_HOOK_OUTPUT_CAP overrides."""
+    return _positive_int_from_env("BRAIN_HOOK_OUTPUT_CAP", HOOK_OUTPUT_CAP_DEFAULT)
+
+
+def pinned_max_chars(kind: str) -> int:
+    """Per-item cap for a pinned section: 'overview' or 'checkpoint'."""
+    default = PINNED_OVERVIEW_MAX_CHARS if kind == "overview" else PINNED_CHECKPOINT_MAX_CHARS
+    return _positive_int_from_env("BRAIN_PRELOAD_PINNED_MAX_CHARS", default)
+
+
+def clip_marker(omitted_chars: int, hint: str) -> str:
+    """The line appended to any preload item that was cut short."""
+    return f"\n\n_[preload clipped: {omitted_chars} chars omitted — {hint}]_"
+
+
+def clip_text(text: str, max_chars: int, hint: str) -> tuple[str, bool]:
+    """Clip `text` to `max_chars` (marker included), cutting at a line boundary.
+
+    Returns (text, clipped). Never cuts inside a defanged fence marker: the
+    substitution string contains no newline, so a line-boundary cut cannot split it.
+    """
+    if max_chars < 1 or len(text) <= max_chars:
+        return text, False
+    marker = clip_marker(len(text), hint)  # sized with the worst-case count
+    keep = max_chars - len(marker)
+    if keep < 1:
+        keep = 1
+    head = text[:keep]
+    cut = head.rfind("\n")
+    if cut > keep // 2:
+        head = head[:cut]
+    head = head.rstrip()
+    return head + clip_marker(len(text) - len(head), hint), True
 
 
 # The preload carries the rule, not the case history. Every feedback memory follows the
@@ -810,22 +924,157 @@ def session_start_bundle(project: str | None = None, budget_kb: float | None = N
 
     Elastic sections fill in priority order — project-scoped feedback, then user,
     then global feedback — so under a tight budget, global feedback is what gets
-    dropped first. The index,
-    project overview, and latest
-    session checkpoint are always included — they're small and load-bearing. User profile
-    entries and feedback files are added in priority order until the budget is exhausted.
+    dropped first. The index, project overview, and latest session checkpoint are
+    always included (clipped to a per-item cap — see `pinned_max_chars`). User
+    profile entries and feedback files are added in priority order until the budget
+    is exhausted; what was skipped is listed by name in `skipped_items` so a renderer
+    can catalogue it rather than report a bare count.
 
     The default was 32 KB until 2026-07-30, by which point the corpus had outgrown it and
     18 of 22 feedback memories were being dropped from every preload — saved correctly but
     never loaded, so their rules silently stopped applying. `brain doctor` now reports
     BUNDLE_SATURATED when that happens again; raising this default only buys headroom.
+
+    Two-step on purpose: `collect_preload_candidates` reads the corpus once and
+    `assemble_bundle` applies a budget and shape to it, so doctor can size the session
+    and subagent bundles from a single read (F12) instead of reading every file twice.
+    """
+    return assemble_bundle(collect_preload_candidates(project), budget_kb=budget_kb, slim=slim)
+
+
+def collect_preload_candidates(project: str | None = None) -> dict:
+    """Read everything a preload *could* carry, once, in priority order.
+
+    Returns {"root", "project", "pinned": [...], "elastic": [...]} where each entry is
+    {"label", "path", "content", "kind", "clipped", "raw_bytes"}. Pinned items are
+    already clipped to their per-item cap; elastic items already have their Why
+    deferred (when enabled) and carry `deferred_bytes`. Content is neutralized on the
+    way in, not on the way out: the bundle dict is also returned raw over MCP
+    (`brain_session_start`), and the budget must count the bytes that actually ship.
     """
     root = vault_root()
-    if budget_kb is None:
+    defer_why = defer_why_enabled()
+    pinned: list[dict] = []
+    elastic: list[dict] = []
+
+    def rel(file: Path) -> str:
         try:
-            budget_kb = float(os.environ.get("BRAIN_BUNDLE_BUDGET_KB", "72"))
+            return str(file.relative_to(root.parent))
         except ValueError:
-            budget_kb = 72.0
+            return str(file)
+
+    def read(file: Path) -> str | None:
+        try:
+            return neutralize_fence(file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    def add_pinned(label: str, file: Path, kind: str) -> None:
+        content = read(file)
+        if content is None:
+            return
+        raw_bytes = len(content.encode("utf-8"))
+        clipped = False
+        if kind in ("overview", "checkpoint"):
+            hint = (
+                f"read `{rel(file)}` for the rest" if kind == "checkpoint"
+                else f"`brain recall overview --project {project}` for the rest"
+            )
+            content, clipped = clip_text(content, pinned_max_chars(kind), hint)
+        pinned.append({
+            "label": label, "path": rel(file), "content": content, "kind": kind,
+            "clipped": clipped, "raw_bytes": raw_bytes,
+        })
+
+    def add_elastic(label: str, files: list[Path], kind: str) -> None:
+        for f in files:
+            content = read(f)
+            if content is None:
+                continue
+            raw_bytes = len(content.encode("utf-8"))
+            deferred = 0
+            # Elastic sections only — these are the behavioural rules, the ones that
+            # follow the Why/How convention and the ones the budget actually drops.
+            # Pinned sections (index, project overview, latest checkpoint) are narrative
+            # context with no rule structure.
+            if defer_why:
+                trimmed = preload_text(content)
+                if trimmed is not content:
+                    deferred = raw_bytes - len(trimmed.encode("utf-8"))
+                    content = trimmed
+            elastic.append({
+                "label": label, "path": rel(f), "content": content, "kind": kind,
+                "clipped": False, "raw_bytes": raw_bytes, "deferred_bytes": deferred,
+            })
+
+    index_file = root / "_index.md"
+    if index_file.exists():
+        add_pinned("index", index_file, "index")
+
+    if project:
+        proj_dir = project_dir(project, root=root)
+        if proj_dir.exists():
+            overview = proj_dir / "overview.md"
+            if overview.exists():
+                add_pinned(f"project:{project}:overview", overview, "overview")
+            latest = latest_checkpoint(proj_dir / "sessions")
+            if latest is not None:
+                add_pinned(f"project:{project}:latest-session", latest, "checkpoint")
+            proj_feedback = proj_dir / "feedback"
+            if proj_feedback.exists():
+                add_elastic(
+                    f"project:{project}:feedback",
+                    sorted(proj_feedback.rglob("*.md"), key=safe_mtime, reverse=True),
+                    "feedback",
+                )
+
+    user_dir = root / "user"
+    if user_dir.exists():
+        add_elastic("user", sorted(user_dir.glob("*.md")), "user")
+
+    feedback_dir = root / "feedback"
+    if feedback_dir.exists():
+        add_elastic(
+            "feedback",
+            sorted(feedback_dir.rglob("*.md"), key=safe_mtime, reverse=True),
+            "feedback",
+        )
+
+    return {"root": root, "project": project, "pinned": pinned, "elastic": elastic}
+
+
+def latest_checkpoint(sessions_dir: Path) -> Path | None:
+    """The newest non-empty checkpoint in `sessions_dir`, or None.
+
+    Zero-byte files are skipped: `_reserve_checkpoint_path` claims a name with an
+    empty file before the body is written, and a crashed writer (or a sync in
+    flight) can leave one behind as the newest file — a contentless "most recent
+    checkpoint" that would displace the real one.
+    """
+    if not sessions_dir.exists():
+        return None
+    candidates = []
+    for p in sessions_dir.glob("*.md"):
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        if st.st_size == 0:
+            continue
+        candidates.append((st.st_mtime, p))
+    if not candidates:
+        return None
+    # Name breaks an mtime tie: checkpoint names sort by stamp, and two writes in
+    # the same second (PreCompact then SessionEnd) are the ordinary case.
+    return max(candidates, key=lambda t: (t[0], t[1].name))[1]
+
+
+def assemble_bundle(candidates: dict, budget_kb: float | None = None,
+                    slim: bool = False) -> dict:
+    """Apply a byte budget and a shape (full or slim) to collected candidates."""
+    if budget_kb is None or not math.isfinite(budget_kb) or budget_kb <= 0:
+        budget_kb = bundle_budget_kb()
+    budget_kb = min(budget_kb, BUDGET_MAX_KB)
     budget_bytes = int(budget_kb * 1024)
 
     bundle: dict = {
@@ -833,105 +1082,52 @@ def session_start_bundle(project: str | None = None, budget_kb: float | None = N
         "sections": [],
         "budget_limit_kb": round(budget_kb, 2),
     }
-
     sections_by_label: dict[str, dict] = {}
     # The trust fence is part of what the preload costs the model's context, so it is
     # reserved up front instead of appearing after the budget has been declared spent.
     trust_overhead = preload_trust_overhead_bytes()
     consumed_bytes = trust_overhead
-    # `consumed_bytes` is no longer a proxy for "something loaded" now that the fence
-    # is reserved into it, so the never-return-an-empty-bundle guard tracks items.
-    items_added = 0
+    pinned_bytes = 0
+    pinned_clipped: list[str] = []
+    # The never-return-an-empty-bundle guard counts *elastic* items: a pinned item
+    # must never satisfy it, or one oversized checkpoint refuses every user and
+    # feedback entry while the bundle reports itself as non-empty (F5).
+    elastic_added = 0
     deferred_bytes = 0
-    defer_why = defer_why_enabled()
     skipped_counts: dict[str, int] = {}
+    skipped_items: list[dict] = []
 
-    def add_pinned(label: str, file: Path) -> None:
-        nonlocal consumed_bytes, items_added
-        try:
-            content = neutralize_fence(file.read_text(encoding="utf-8"))
-        except Exception:
-            return
-        rel = str(file.relative_to(root.parent))
-        item = {"path": rel, "content": content}
-        section = sections_by_label.get(label)
+    def place(item: dict) -> None:
+        section = sections_by_label.get(item["label"])
         if section is None:
-            section = {"label": label, "items": []}
-            sections_by_label[label] = section
+            section = {"label": item["label"], "items": []}
+            sections_by_label[item["label"]] = section
             bundle["sections"].append(section)
-        section["items"].append(item)
-        consumed_bytes += len(content.encode("utf-8"))
-        items_added += 1
+        section["items"].append({"path": item["path"], "content": item["content"]})
 
-    def add_elastic(label: str, files: list[Path]) -> None:
-        nonlocal consumed_bytes, deferred_bytes, items_added
-        for f in files:
-            try:
-                # Neutralized on the way in, not on the way out: the bundle dict is
-                # also returned raw over MCP (`brain_session_start`), and the budget
-                # must count the bytes that actually ship.
-                content = neutralize_fence(f.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            # Elastic sections only — these are the behavioural rules, the ones that
-            # follow the Why/How convention and the ones the budget actually drops.
-            # Pinned sections (index, project overview, latest checkpoint) are narrative
-            # context with no rule structure, and are small and load-bearing anyway.
-            if defer_why:
-                trimmed = preload_text(content)
-                if trimmed is not content:
-                    deferred_bytes += len(content.encode("utf-8")) - len(trimmed.encode("utf-8"))
-                    content = trimmed
-            size = len(content.encode("utf-8"))
-            if consumed_bytes + size > budget_bytes and items_added > 0:
-                skipped_counts[label] = skipped_counts.get(label, 0) + 1
-                continue
-            rel = str(f.relative_to(root.parent))
-            item = {"path": rel, "content": content}
-            section = sections_by_label.get(label)
-            if section is None:
-                section = {"label": label, "items": []}
-                sections_by_label[label] = section
-                bundle["sections"].append(section)
-            section["items"].append(item)
-            consumed_bytes += size
-            items_added += 1
+    for item in candidates["pinned"]:
+        if slim and item["kind"] in ("overview", "checkpoint"):
+            continue
+        size = len(item["content"].encode("utf-8"))
+        place(item)
+        consumed_bytes += size
+        pinned_bytes += size
+        if item.get("clipped"):
+            pinned_clipped.append(item["path"])
 
-    index_file = root / "_index.md"
-    if index_file.exists():
-        add_pinned("index", index_file)
-
-    if project:
-        proj_dir = project_dir(project, root=root)
-        if proj_dir.exists():
-            if not slim:
-                overview = proj_dir / "overview.md"
-                if overview.exists():
-                    add_pinned(f"project:{project}:overview", overview)
-                sessions_dir = proj_dir / "sessions"
-                if sessions_dir.exists():
-                    latest = sorted(sessions_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
-                    if latest:
-                        add_pinned(f"project:{project}:latest-session", latest[0])
-            proj_feedback = proj_dir / "feedback"
-            if proj_feedback.exists():
-                add_elastic(
-                    f"project:{project}:feedback",
-                    sorted(proj_feedback.rglob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True),
-                )
-
-    user_dir = root / "user"
-    if user_dir.exists():
-        add_elastic("user", sorted(user_dir.glob("*.md")))
-
-    feedback_dir = root / "feedback"
-    if feedback_dir.exists():
-        feedback_files = sorted(
-            feedback_dir.rglob("*.md"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        add_elastic("feedback", feedback_files)
+    for item in candidates["elastic"]:
+        size = len(item["content"].encode("utf-8"))
+        if consumed_bytes + size > budget_bytes and elastic_added > 0:
+            skipped_counts[item["label"]] = skipped_counts.get(item["label"], 0) + 1
+            skipped_items.append({
+                "label": item["label"], "path": item["path"], "kind": item["kind"],
+                "name": memory_display_name(item["path"]),
+            })
+            continue
+        place(item)
+        consumed_bytes += size
+        deferred_bytes += item.get("deferred_bytes", 0)
+        elastic_added += 1
 
     # Carried on the bundle so every consumer renders one convention: the two hooks
     # and brain-prep go through `brain_prep.render`, while the MCP `brain_session_start`
@@ -940,9 +1136,31 @@ def session_start_bundle(project: str | None = None, budget_kb: float | None = N
     bundle["trust_overhead_kb"] = round(trust_overhead / 1024.0, 2)
     bundle["fence"] = {"begin": MEMORY_FENCE_BEGIN, "end": MEMORY_FENCE_END}
     bundle["budget_consumed_kb"] = round(consumed_bytes / 1024.0, 2)
+    bundle["pinned_kb"] = round(pinned_bytes / 1024.0, 2)
+    bundle["pinned_clipped"] = pinned_clipped
     bundle["skipped_sections"] = skipped_counts
+    bundle["skipped_items"] = skipped_items
     bundle["deferred_why_kb"] = round(deferred_bytes / 1024.0, 2)
     return bundle
+
+
+def memory_display_name(rel_path: str) -> str:
+    """`type/stem` for a bundle item path (`Brain/user/profile.md` -> `user/profile`).
+
+    Project-scoped feedback keeps its project: `projects/X/feedback/rule` ->
+    `feedback/rule (project X)`. The stem is what `brain recall <name>` matches.
+    """
+    parts = [p for p in re.split(r"[\\/]+", rel_path) if p]
+    if parts and parts[0] == "Brain":
+        parts = parts[1:]
+    if not parts:
+        return rel_path
+    stem = parts[-1][:-3] if parts[-1].endswith(".md") else parts[-1]
+    if len(parts) >= 4 and parts[0] == "projects":
+        return f"{parts[2]}/{stem} (project {parts[1]})"
+    if len(parts) >= 2:
+        return f"{parts[0]}/{stem}"
+    return stem
 
 
 OVERVIEW_SOURCE_CANDIDATES = ("CLAUDE.md", "plan.md", "ROADMAP.md", "README.md")
@@ -1011,21 +1229,8 @@ def ensure_project_overview_stub(project: str, project_cwd: str | Path | None) -
 
 def is_overview_stub(path: Path) -> bool:
     """True when `path` has `stub: true` in its YAML frontmatter."""
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            head = f.read(2048)
-    except OSError:
-        return False
-    if not head.startswith("---"):
-        return False
-    end = head.find("\n---", 3)
-    if end == -1:
-        return False
-    try:
-        fm = yaml.safe_load(head[3:end]) or {}
-    except yaml.YAMLError:
-        return False
-    return bool(fm.get("stub"))
+    fm = _read_frontmatter_head(path)
+    return bool(fm.get("stub")) if fm else False
 
 
 # Second precision, not minute. The old `%Y-%m-%d-%H%M` made "two checkpoints in the
@@ -1163,11 +1368,19 @@ def is_session_path(path: Path) -> bool:
     return "sessions" in Path(path).parts
 
 
-def read_frontmatter_type(path: Path) -> str | None:
+def _read_frontmatter_head(path: Path) -> dict | None:
+    """The parsed frontmatter mapping from the first 2 KB of `path`, or None.
+
+    None on every failure: unreadable, undecodable (a cp1252 note raises
+    UnicodeDecodeError, a ValueError — not an OSError), unterminated, invalid YAML,
+    or YAML that parses to something other than a mapping (`type: [x]` at the top
+    level gives a list, and `.get` on it raised straight out of the doctor and cost
+    the session its whole preload — F4).
+    """
     try:
         with path.open("r", encoding="utf-8") as f:
             head = f.read(2048)
-    except OSError:
+    except (OSError, ValueError):
         return None
     if not head.startswith("---"):
         return None
@@ -1175,8 +1388,15 @@ def read_frontmatter_type(path: Path) -> str | None:
     if end == -1:
         return None
     try:
-        fm = yaml.safe_load(head[3:end]) or {}
+        fm = yaml.safe_load(head[3:end])
     except yaml.YAMLError:
+        return None
+    return fm if isinstance(fm, dict) else None
+
+
+def read_frontmatter_type(path: Path) -> str | None:
+    fm = _read_frontmatter_head(path)
+    if not fm:
         return None
     val = fm.get("type")
     return val if isinstance(val, str) else None
