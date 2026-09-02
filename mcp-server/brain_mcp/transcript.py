@@ -29,6 +29,7 @@ import sqlite3
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 from . import vault as _vault
 
@@ -119,8 +120,12 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     if not db_path.exists():
         raise CherrydError(f"no such database: {db_path}")
     # Read-only URI: the daemon may be mid-write, and a checkpoint run must
-    # never be the thing that damages the operator's session history.
-    conn = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
+    # never be the thing that damages the operator's session history. The path
+    # is percent-encoded — a `#`, `?` or `%` in it would otherwise truncate the
+    # URI and open some other file (same bug class as embed.index_uri).
+    conn = sqlite3.connect(
+        "file:" + quote(db_path.as_posix(), safe="/:") + "?mode=ro", uri=True
+    )
     conn.row_factory = sqlite3.Row
     try:
         names = {r[0] for r in conn.execute(

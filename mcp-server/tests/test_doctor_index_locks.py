@@ -228,3 +228,53 @@ def test_every_index_connection_sets_a_busy_timeout() -> None:
         f"sqlite3.connect without a busy timeout at {offenders}. A reindex holds the "
         f"write lock longer than sqlite's 5s default, so these fail during one."
     )
+
+
+@pytest.mark.parametrize("check", ["_check_index_stale", "_check_index_recipe"])
+def test_backlog_and_recipe_checks_wait_like_doctor_not_like_a_writer(
+    vault_dir: Path, index_db: Path, check: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The two checks that connect *through embed* must honour doctor's timeout.
+
+    `_check_vector_index` connected with `index_busy_timeout()` while
+    `_check_index_stale` -> `backlog()` and `_check_index_recipe` ->
+    `text_recipe_changed()` opened their own connections with the writer's 30s —
+    so CLAUDE.md's "doctor waits 2s" was true of one check in three, and the hook
+    could still blow its 15s budget behind a reindex. Both now take a `timeout=`
+    and doctor passes its own.
+    """
+    import time
+
+    monkeypatch.setattr(doctor, "index_busy_timeout", lambda: 0.05)
+    holder = sqlite3.connect(index_db, timeout=30)
+    holder.execute("BEGIN EXCLUSIVE")
+    try:
+        start = time.monotonic()
+        findings = getattr(doctor, check)(vault_dir)
+        elapsed = time.monotonic() - start
+    finally:
+        holder.rollback()
+        holder.close()
+
+    assert elapsed < 1.0, f"{check} waited {elapsed:.1f}s on a locked index"
+    codes = [f.code for f in findings]
+    # Deferred, not wrong: a locked index has an *unknown* backlog and recipe.
+    assert "INDEX_FRESH" not in codes, "a locked index was reported as up to date"
+    assert "INDEX_STALE" not in codes
+    assert "INDEX_RECIPE_STALE" not in codes
+    assert "INDEX_CORRUPT" not in codes
+
+
+def test_doctor_passes_its_own_timeout_into_embed() -> None:
+    """Text invariant: every embed call doctor makes that can connect must carry
+    `timeout=index_busy_timeout()`, or the 2s budget is a claim about one check
+    in three again."""
+    text = Path(doctor.__file__).read_text(encoding="utf-8")
+    for fn in ("backlog", "text_recipe_changed"):
+        calls = [m for m in re.finditer(rf"embed\.(?:EmbedIndex\.)?{fn}\(", text)]
+        assert calls, f"doctor no longer calls embed.{fn}(); update this test"
+        for m in calls:
+            call = _balanced_call(text, m.end())
+            assert "index_busy_timeout()" in call, (
+                f"doctor calls embed.{fn}() without its own timeout: ({call})"
+            )

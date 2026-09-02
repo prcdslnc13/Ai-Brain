@@ -25,6 +25,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import quote
 
 from . import vault
 
@@ -191,8 +192,53 @@ def _normalize_key(key: str, root: Path) -> str:
 # failing here — every writer holds the lock only for one chunk's commit.
 SQLITE_BUSY_TIMEOUT_S = 30.0
 
+# Readers wait far less. A query only needs the SHARED lock, which a writer denies
+# for the milliseconds of a chunk commit, so 5s is already generous — and a recall
+# that cannot read the index in that time is better served by the ripgrep fallback
+# than by a 30s stall. (Doctor waits even less; see doctor.index_busy_timeout.)
+SQLITE_READ_TIMEOUT_S = 5.0
+
+
+class IndexBusy(RuntimeError):
+    """A read-only index operation gave up waiting for another process's write lock.
+
+    Distinct from "the index is empty" or "the index is missing", both of which a
+    caller may legitimately treat as zero work: a locked index is one whose state is
+    *unknown*, and reporting it as up to date would be a false OK.
+    """
+
+
+def _is_lock_error(exc: BaseException) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    msg = str(exc).lower()
+    return "locked" in msg or "busy" in msg
+
+
+def index_uri(idx: Path, mode: str = "ro") -> str:
+    """sqlite URI for the index file at `idx`, safe for any vault path.
+
+    The path component is percent-encoded. A raw f-string (`f"file:{idx}?mode=ro"`)
+    is truncated by the first `#` or `?` in the path and misread at the first `%`,
+    and sqlite then opens *another* file — verified on 2026-09-01: a vault under a
+    directory named `uri test#1` opened an empty database and reported "no such
+    table". Every URI to the index must be built here; a test asserts no module
+    interpolates one by hand.
+    """
+    return "file:" + quote(Path(idx).as_posix(), safe="/:") + "?mode=" + mode
+
 
 def _connect() -> sqlite3.Connection:
+    """Writer connection: creates the schema and runs the one-time migrations.
+
+    Returns with **no transaction open**. The `INSERT OR IGNORE` below begins one
+    under sqlite3's legacy transaction control, and until 2026-09-01 nothing
+    committed it, so every connection held sqlite's RESERVED write lock from
+    connect to close: `sync()` held it through its whole `_indexable()` walk and
+    the first chunk's embedding rather than for one commit, and the matrix load
+    of a *read* held it too — so concurrent recalls from the MCP server and the
+    CLI serialised on a 30s timeout for no reason.
+    """
     conn = sqlite3.connect(_index_path(), timeout=SQLITE_BUSY_TIMEOUT_S)
     conn.execute(
         "CREATE TABLE IF NOT EXISTS embeddings ("
@@ -210,7 +256,20 @@ def _connect() -> sqlite3.Connection:
     )
     _stamp_recipe_if_empty(conn)
     _migrate_path_format(conn)
+    conn.commit()
     return conn
+
+
+def _connect_ro(timeout: float = SQLITE_READ_TIMEOUT_S) -> sqlite3.Connection:
+    """Read-only connection to an *existing* index.
+
+    `mode=ro` never takes the RESERVED lock, so a query cannot block a writer and
+    two readers cannot block each other. Raises sqlite3.OperationalError when the
+    index file does not exist — callers decide whether that means "no vectors" or
+    "create it" (only `_connect()` creates).
+    """
+    idx = _index_path()
+    return sqlite3.connect(index_uri(idx), uri=True, timeout=timeout)
 
 
 _SYNC_LOCK = threading.Lock()
@@ -274,16 +333,13 @@ def _text_recipe_id() -> str:
     return f"v{EMBED_TEXT_VERSION}:{_embed_text_budget()}:{EMBED_MODEL}"
 
 
-def stored_text_recipe(conn=None) -> str | None:
+def stored_text_recipe(conn=None, timeout: float = SQLITE_READ_TIMEOUT_S) -> str | None:
     own = conn is None
     if own:
         try:
-            idx = _index_path()
-            if not idx.exists():
+            if not _index_path().exists():
                 return None
-            conn = sqlite3.connect(
-                f"file:{idx}?mode=ro", uri=True, timeout=SQLITE_BUSY_TIMEOUT_S
-            )
+            conn = _connect_ro(timeout)
         except sqlite3.DatabaseError:
             return None
     try:
@@ -303,21 +359,20 @@ def _index_is_empty(conn) -> bool:
         return True
 
 
-def text_recipe_changed(conn=None) -> bool:
+def text_recipe_changed(conn=None, timeout: float = SQLITE_READ_TIMEOUT_S) -> bool:
     """True when a *populated* index was built by a different embed_text() recipe.
 
     An empty index is never "changed": there are no vectors to invalidate, so the
-    answer is no even though it carries no stamp yet.
+    answer is no even though it carries no stamp yet. `timeout` is how long to
+    wait for the lock when opening our own connection — doctor passes its short
+    hook-safe budget; nothing else should need to.
     """
     own = conn is None
     if own:
-        idx = _index_path()
-        if not idx.exists():
+        if not _index_path().exists():
             return False
         try:
-            conn = sqlite3.connect(
-                f"file:{idx}?mode=ro", uri=True, timeout=SQLITE_BUSY_TIMEOUT_S
-            )
+            conn = _connect_ro(timeout)
         except sqlite3.DatabaseError:
             return False
     try:
@@ -847,11 +902,16 @@ class EmbedIndex:
                 conn.close()
 
     @classmethod
-    def backlog(cls) -> int:
+    def backlog(cls, timeout: float = SQLITE_READ_TIMEOUT_S) -> int:
         """Count files whose embedding is missing or stale.
 
         Stat-only — no model load, no embedding — so doctor and the session-start
         hook can call it to decide whether a reindex is worth kicking off.
+
+        Raises IndexBusy when another process holds the write lock past `timeout`:
+        the backlog is then unknown, and 0 would read as "up to date". Any other
+        read failure still returns 0 (a missing or unreadable index is somebody
+        else's finding).
         """
         try:
             root = vault.vault_root()
@@ -862,9 +922,7 @@ class EmbedIndex:
             return len(_indexable(root))
         existing: dict[str, float] = {}
         try:
-            conn = sqlite3.connect(
-                f"file:{idx}?mode=ro", uri=True, timeout=SQLITE_BUSY_TIMEOUT_S
-            )
+            conn = _connect_ro(timeout)
             try:
                 for path, mtime in conn.execute("SELECT path, mtime FROM embeddings"):
                     # Normalize as we read: this connection is read-only and never
@@ -873,7 +931,9 @@ class EmbedIndex:
                     existing[_normalize_key(path, root)] = mtime
             finally:
                 conn.close()
-        except sqlite3.DatabaseError:
+        except sqlite3.DatabaseError as e:
+            if _is_lock_error(e):
+                raise IndexBusy(str(e)) from e
             return 0
         n = 0
         for path, mtime in _indexable(root).items():
@@ -920,10 +980,21 @@ class EmbedIndex:
 
     @classmethod
     def _normalized_matrix(cls, project_filter: str | None):
-        """Load, filter, and cache the normalized vector matrix."""
+        """Load, filter, and cache the normalized vector matrix.
+
+        Read-only: this used to open a writer connection, which (until the commit
+        in `_connect()` landed) held the RESERVED lock for the whole BLOB read and
+        serialised every concurrent recall behind it. A query has no business with
+        the write lock at all; a missing index simply has no vectors.
+        """
         import numpy as np
 
-        conn = _connect()
+        try:
+            conn = _connect_ro()
+        except sqlite3.OperationalError:
+            if not _index_path().exists():
+                return [], None
+            raise
         try:
             row = conn.execute("SELECT COUNT(*), COALESCE(MAX(mtime), 0) FROM embeddings").fetchone()
             # The epoch is what makes this key able to see a vector change that left
