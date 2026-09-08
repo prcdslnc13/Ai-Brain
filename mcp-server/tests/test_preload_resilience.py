@@ -32,6 +32,20 @@ from brain_mcp import doctor, vault
 from conftest import memory
 
 
+def _realpath(p: Path) -> Path:
+    """Normalize a path WITHOUT `Path.resolve()`.
+
+    `Path.resolve(strict=False)` calls `p.stat()` on its own result (to turn a
+    symlink loop back into an exception), so calling it from inside a
+    monkeypatched `Path.stat` recurses until the interpreter gives up. A
+    RecursionError raised inside a patched builtin does not fail one test — it
+    escapes as a pytest INTERNALERROR and takes the entire suite down with it.
+    `os.path.realpath` reaches the filesystem through `os.lstat`/`os.readlink`,
+    which the patch does not intercept, so it is safe from inside one.
+    """
+    return Path(os.path.realpath(p))
+
+
 # ------------------------------------------------------------------ F5: pinned items
 
 def _big_checkpoint(brain: Path, project: str, size: int) -> Path:
@@ -150,10 +164,10 @@ def test_a_file_that_vanishes_mid_sort_does_not_raise(vault_dir: Path, monkeypat
     for i in range(3):
         memory(vault_dir / "feedback" / f"f{i}.md", f"f{i}", "feedback", "rule")
     real_stat = Path.stat
-    doomed = (vault_dir / "feedback" / "f1.md").resolve()
+    doomed = _realpath(vault_dir / "feedback" / "f1.md")
 
     def flaky_stat(self, *a, **kw):
-        if self.resolve() == doomed:
+        if _realpath(self) == doomed:
             raise FileNotFoundError(str(self))
         return real_stat(self, *a, **kw)
 
@@ -256,10 +270,10 @@ def test_frontmatter_readers_tolerate_non_mapping_yaml_and_bad_bytes(vault_dir: 
 def test_stale_checks_survive_a_checkpoint_vanishing(populated_vault: Path,
                                                     monkeypatch: pytest.MonkeyPatch):
     real_stat = Path.stat
-    doomed = (populated_vault / "projects" / "Widget" / "sessions").resolve()
+    doomed = _realpath(populated_vault / "projects" / "Widget" / "sessions")
 
     def flaky_stat(self, *a, **kw):
-        if self.parent.resolve() == doomed:
+        if _realpath(self.parent) == doomed:
             raise FileNotFoundError(str(self))
         return real_stat(self, *a, **kw)
 
