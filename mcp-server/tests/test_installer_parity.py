@@ -192,6 +192,30 @@ def _forwards_own_utf8_parameter(fn: ast.FunctionDef, value: ast.expr) -> bool:
     return False
 
 
+def _is_binary_open(call_name, node):
+    """True for a binary-mode `open()`, which has no encoding to name.
+
+    Passing `encoding=` to a binary open is a ValueError, so the rule below
+    cannot apply to one. Deliberately narrow: only `open`, and only when the
+    mode is a string *literal* containing "b". A computed mode cannot be proven
+    binary, so it stays subject to the rule rather than escaping it.
+
+    The first binary open in the installer was `locked_venv_scripts()`, which
+    probes a venv console script for a write lock before pip is allowed to
+    uninstall the package.
+    """
+    if call_name != "open":
+        return False
+    mode = None
+    if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
+        mode = node.args[1].value
+    else:
+        kw = next((k for k in node.keywords if k.arg == "mode"), None)
+        if kw is not None and isinstance(kw.value, ast.Constant):
+            mode = kw.value.value
+    return isinstance(mode, str) and "b" in mode
+
+
 def test_the_installer_names_the_right_encoding_for_every_file_it_touches():
     """Every file read/write in the installer names UTF-8 explicitly -- except the
     Windows batch launcher, which must NOT be UTF-8.
@@ -208,6 +232,9 @@ def test_the_installer_names_the_right_encoding_for_every_file_it_touches():
     silently. The previous version of this test accepted any `encoding=` kwarg at
     all, which the UTF-8 batch write satisfied.
 
+    Binary-mode opens are exempt -- see `_is_binary_open` -- because passing an
+    encoding to one raises. Nothing else is exempt.
+
     Parsed rather than grepped: a regex for the call stops at the first `)`, so
     `write_text(t.replace(a, b), encoding="utf-8")` reads as unqualified.
     """
@@ -216,6 +243,8 @@ def test_the_installer_names_the_right_encoding_for_every_file_it_touches():
     for fn, node, call_name in _io_calls_by_function(read("brain-setup.py")):
         fn_name = fn.name
         where = f"line {node.lineno}: {call_name}() in {fn_name}"
+        if _is_binary_open(call_name, node):
+            continue
         kw = next((k for k in node.keywords if k.arg == "encoding"), None)
         if kw is None:
             if call_name not in DEFAULT_UTF8_CALLS:
@@ -410,6 +439,50 @@ def test_the_self_test_does_not_inherit_the_users_real_vault():
     run_tests = src[src.index("def run_tests("):src.index("def ensure_brain_layout(")]
     assert 'env.pop("BRAIN_VAULT", None)' in run_tests, (
         "run_tests must drop an inherited BRAIN_VAULT before running the suite"
+    )
+
+
+# ---------------------------------------------- the force-reinstall footgun (2026-09-07)
+#
+# `pip install --force-reinstall` uninstalls brain_mcp BEFORE writing its
+# replacement. On Windows a console script held open by a live MCP server, a
+# background `brain reindex`, or another session's hook makes that write fail
+# after the removal already succeeded -- leaving the venv with no brain_mcp at
+# all, which is strictly worse than never having run setup. Both tests below
+# assert the shape of the fix rather than one reproduction of the bug.
+
+def test_the_installer_checks_for_locked_scripts_before_pip_runs():
+    """The ORDER is the whole fix: refusing first leaves a working Brain."""
+    src = read("brain-setup.py")
+    fn = next(n for n in ast.walk(ast.parse(src))
+              if isinstance(n, ast.FunctionDef) and n.name == "install_brain_mcp")
+    guard_lines, pip_lines = [], []
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Call):
+            continue
+        name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+        if name == "locked_venv_scripts":
+            guard_lines.append(node.lineno)
+        elif name == "run" and "VENV_PIP" in ast.unparse(node):
+            pip_lines.append(node.lineno)
+    assert guard_lines, "install_brain_mcp must call locked_venv_scripts()"
+    assert pip_lines, "install_brain_mcp must invoke pip"
+    assert min(guard_lines) < min(pip_lines), (
+        "the lock preflight must run BEFORE pip; checking afterwards cannot stop "
+        "the venv being left without brain_mcp"
+    )
+
+
+def test_a_failed_pip_install_reports_whether_the_package_survived():
+    """A traceback tells the operator nothing about whether they still have a Brain."""
+    src = read("brain-setup.py")
+    fn_src = src[src.index("def install_brain_mcp("):src.index("def sanity_import(")]
+    assert "except subprocess.CalledProcessError" in fn_src, (
+        "a pip failure must be handled, not surfaced as a traceback"
+    )
+    assert "package_importable()" in fn_src, (
+        "a pip failure must report whether brain_mcp is still importable, which is "
+        "the only thing the operator actually needs to know"
     )
 
 

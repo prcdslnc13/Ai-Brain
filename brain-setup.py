@@ -285,18 +285,89 @@ def ensure_venv(num: int, total: int) -> None:
     subprocess.run([str(VENV_PIP), "install", "--quiet", "--upgrade", "pip"], check=False)
 
 
+LOCKED_SCRIPTS_HINT = """  pip uninstalls brain_mcp before writing the replacement, so installing
+  now would remove the package and then fail to put it back, leaving the
+  venv with no brain_mcp at all.
+
+  Close other Claude Code sessions, stop any running MCP server, and let a
+  background `brain reindex` finish. Then re-run this installer."""
+
+
+def locked_venv_scripts():
+    """Brain console scripts in the venv that another process is holding open.
+
+    This is the exact precondition that breaks the install below. pip uninstalls
+    brain_mcp *before* writing its replacement, so a `brain.exe` held open by a
+    live MCP server, a background `brain reindex`, or another session's hook makes
+    the write fail after the removal already succeeded -- leaving the venv with no
+    brain_mcp at all. That is strictly worse than not having run setup, and it is
+    how a 2026-09-07 machine bring-up lost its package mid-repair.
+
+    Opening for append is a real write-lock probe, not a guess from a process
+    list: it asks the OS the same question pip is about to ask, needs no psutil,
+    and keeps this file stdlib-only. POSIX unlinks and recreates a running
+    executable happily, so there is nothing to probe there.
+    """
+    if not IS_WINDOWS:
+        return []
+    locked = []
+    for exe in sorted(VENV_PY.parent.glob("brain*.exe")):
+        try:
+            with open(exe, "ab"):
+                pass
+        except OSError:
+            locked.append(exe)
+    return locked
+
+
+def package_importable():
+    """Does the venv still have a working brain_mcp? Asked from a foreign cwd."""
+    if not VENV_PY.exists():
+        return False
+    cwd = os.environ.get("TEMP") if IS_WINDOWS else "/tmp"
+    res = subprocess.run(
+        [str(VENV_PY), "-c", "import brain_mcp"],
+        cwd=cwd or str(REPO_DIR), capture_output=True, check=False,
+    )
+    return res.returncode == 0
+
+
 def install_brain_mcp(num: int, total: int) -> None:
     step(num, total, "installing brain-mcp into venv")
+
+    # Refuse BEFORE touching anything. A refused install leaves a working Brain;
+    # a half-done one leaves no Brain. See locked_venv_scripts().
+    locked = locked_venv_scripts()
+    if locked:
+        names = "".join("      " + p.name + "\n" for p in locked)
+        die("these Brain executables in the venv are in use by another process:\n"
+            + names + "\n" + LOCKED_SCRIPTS_HINT, code=5)
+
     # Two-step: `--force-reinstall --no-deps` catches local source edits (the
     # pyproject version doesn't bump on every edit, so pip would otherwise skip).
     # The second plain install pulls mcp/pyyaml/fastembed/numpy on first run and
     # is near-instant on subsequent runs. Collapsing to a single --force-reinstall
     # would re-extract ~300 MB of deps every time.
-    subprocess.run(
-        [str(VENV_PIP), "install", "--quiet", "--force-reinstall", "--no-deps", str(MCP_SERVER_DIR)],
-        check=True,
-    )
-    subprocess.run([str(VENV_PIP), "install", "--quiet", str(MCP_SERVER_DIR)], check=True)
+    try:
+        subprocess.run(
+            [str(VENV_PIP), "install", "--quiet", "--force-reinstall", "--no-deps",
+             str(MCP_SERVER_DIR)],
+            check=True,
+        )
+        subprocess.run([str(VENV_PIP), "install", "--quiet", str(MCP_SERVER_DIR)], check=True)
+    except subprocess.CalledProcessError as exc:
+        # A traceback is the wrong output here: the one thing the operator needs to
+        # know is whether the venv still has a Brain, and pip's own error has already
+        # scrolled past above. The preflight catches the common cause; this covers the
+        # rest (a full disk, a half-built wheel, a lock taken during the install).
+        if package_importable():
+            state = ("brain_mcp is still importable, so the previous install is intact "
+                     "and nothing was lost.")
+        else:
+            state = ("brain_mcp is NOT importable -- the venv no longer has the package. "
+                     "Re-run this installer once nothing is holding the venv open.")
+        die("pip failed (exit " + str(exc.returncode) + ") installing brain-mcp.\n  "
+            + state, code=5)
 
     # The `dev` extra (pytest) is installed SEPARATELY and non-fatally, on purpose.
     # It has to be installed for run_tests() to have anything to run -- until
