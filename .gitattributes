@@ -1,0 +1,17 @@
+# Scoped deliberately: only the files where CRLF is *functionally* fatal.
+#
+# These three carry `#!/usr/bin/env python3` and are documented as directly
+# executable on macOS and Linux. A CRLF shebang makes the kernel look for an
+# interpreter literally named "python3\r", so the script dies with
+# "bad interpreter: No such file or directory" before running a line.
+#
+# Git for Windows ships `core.autocrlf=true` in its system gitconfig, so a fresh
+# Windows clone checks these out with CRLF while `git status` still reports clean
+# (the stored blobs stay LF). That broke `mcp-server/tests/test_line_endings.py`
+# on an untouched tree during a 2026-09-07 machine bring-up.
+#
+# Everything else in the repo is intentionally left to the developer's own git
+# config — this file is not a repo-wide `* text=auto eol=lf` on purpose.
+brain-setup.py          text eol=lf
+brain-uninstall.py      text eol=lf
+brain_settings_merge.py text eol=lf
