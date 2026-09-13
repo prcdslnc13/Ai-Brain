@@ -297,6 +297,7 @@ async def call_tool(name: str, arguments: dict | None) -> list[TextContent]:
                 content=args["content"],
                 project=args.get("project"),
             )
+            vault.record_save_event("save", "mcp", result.path)
             payload: dict = {"saved": str(result.path), "overwrote": result.overwrote}
             if result.overwrote:
                 payload["previous_version"] = (
@@ -317,6 +318,7 @@ async def call_tool(name: str, arguments: dict | None) -> list[TextContent]:
             return _ok({"forgot": str(path)})
         if name == "brain_checkpoint":
             path = vault.write_checkpoint(args["project"], args["summary"])
+            vault.record_save_event("checkpoint", "mcp", path)
             return _ok({"checkpoint": str(path)})
         if name == "brain_stats":
             return _ok(vault.stats())

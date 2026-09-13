@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import itertools
+import json
 import math
 import os
 import platform
@@ -11,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
@@ -1548,6 +1550,103 @@ def write_checkpoint(project: str, summary: str) -> Path:
             pass
         raise
     return path
+
+# ---------- save events: the record the Stop hook reads instead of parsing commands ----------
+#
+# Every model-facing save surface (the `brain save` / `brain checkpoint` CLI and
+# the brain_save / brain_checkpoint MCP tools) appends one line here after the
+# write lands. `hooks/stop.py` answers "did a save happen this turn?" by reading
+# this file — an event at or after the turn's first user message, for this
+# session — rather than by regex-matching the model's shell commands. That regex
+# was patched four times for the same predicate (env prefixes, `.cmd` wrappers,
+# quoting, and finally the `brain-agent.py` launcher, which it never learned:
+# from 2026-09-01 to 2026-09-13 every save through the standard surface was
+# logged `sav=N` and the gate blocked turns that had saved). Reading the
+# record of what happened removes the class; the command's shape is irrelevant.
+#
+# `.state/` is a hidden directory, so Obsidian Sync never propagates it — the
+# file is machine-local, which is what the hook needs (it runs on the machine
+# the save ran on). It is not a pending-saves backlog and carries no
+# instructions; nothing acts on it except the audit column and the gate.
+
+SAVE_EVENTS_REL = Path(".state") / "save-events.jsonl"
+SAVE_EVENTS_MAX_LINES = 400
+SAVE_EVENTS_KEEP_LINES = 200
+# Claude Code exports this into the Bash tool's environment; the Stop hook gets
+# the same value as `session_id` in its payload. Absent (an MCP server spawned
+# without it, pi, a terminal), the event is recorded with no session and
+# matches any session's turn — a false pass of a nag gate, never a false block.
+SESSION_ID_ENV = "CLAUDE_CODE_SESSION_ID"
+
+
+def save_events_path() -> Path:
+    return vault_root() / SAVE_EVENTS_REL
+
+
+def record_save_event(kind: str, surface: str, path: Path | None = None) -> None:
+    """Note that a save or checkpoint just landed through a model-facing surface.
+
+    Best-effort by design: the memory is already on disk when this runs, and a
+    bookkeeping failure must not turn a successful save into an error. Any
+    problem is reported on stderr and swallowed.
+    """
+    event = {
+        "ts": time.time(),
+        "kind": kind,
+        "surface": surface,
+        "session": os.environ.get(SESSION_ID_ENV) or None,
+        "machine": machine_name(),
+        "path": str(path) if path is not None else None,
+    }
+    try:
+        events = save_events_path()
+        events.parent.mkdir(parents=True, exist_ok=True)
+        with events.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(event, sort_keys=True) + "\n")
+        _rotate_save_events(events)
+    except Exception as e:  # noqa: BLE001 — never fail the save over bookkeeping
+        sys.stderr.write(f"brain: could not record save event ({e}); "
+                         f"the Stop hook may not see this save\n")
+
+
+def _rotate_save_events(events: Path) -> None:
+    try:
+        data = events.read_bytes()
+    except OSError:
+        return
+    if data.count(b"\n") <= SAVE_EVENTS_MAX_LINES:
+        return
+    kept = b"".join(data.splitlines(keepends=True)[-SAVE_EVENTS_KEEP_LINES:])
+    _atomic_write(events, kept.decode("utf-8", errors="replace"))
+
+
+def count_save_events(*, since: float, session_id: str | None = None) -> int:
+    """How many saves landed at or after `since` (epoch seconds) for this session.
+
+    An event recorded with no session matches any session; `session_id=None`
+    matches any event. A missing or unreadable file, or a corrupt line, counts
+    as nothing — the caller's fallback is the structured MCP tool_use check,
+    never a guess.
+    """
+    try:
+        raw = save_events_path().read_text(encoding="utf-8")
+    except (OSError, RuntimeError):
+        return 0
+    count = 0
+    for line in raw.splitlines():
+        try:
+            ev = json.loads(line)
+            ts = float(ev["ts"])
+        except (ValueError, TypeError, KeyError):
+            continue
+        if ts < since:
+            continue
+        ev_session = ev.get("session")
+        if session_id and ev_session and ev_session != session_id:
+            continue
+        count += 1
+    return count
+
 
 EXCLUDE_DIRS = frozenset({"archive", "_setup", ".index"})
 # Bookkeeping files that live at the Brain/ root and are not memories: the Stop-hook
