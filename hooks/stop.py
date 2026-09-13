@@ -16,9 +16,18 @@ Two jobs, in order:
      timestamp account project [sig=Y|N sav=Y|N nud=Y|N pro=Y|N too=Y|N sys=Y|N re=Y|N] — snippet
    Columns:
      sig — did the user's last message match a save-signal pattern?
-     sav — did a brain save happen this turn? Counts both the MCP tools
-           (brain_save/brain_checkpoint) and a Bash/PowerShell invocation of
-           the `brain save` / `brain checkpoint` CLI.
+     sav — did a brain save happen this turn? Read from the save-event record
+           (`vault.count_save_events`): every model-facing save surface — the
+           `brain save` / `brain checkpoint` CLI however it is invoked, and the
+           brain_save / brain_checkpoint MCP tools — appends a line to
+           Brain/.state/save-events.jsonl when the write lands, and an event at
+           or after this turn's user message, for this session, is a save. A
+           brain_save/brain_checkpoint tool_use block in the transcript also
+           counts (structured, no parsing). The hook does NOT inspect shell
+           commands: the regex that used to was patched four times for the
+           same predicate and still missed the `brain-agent.py` launcher every
+           install has emitted since 2026-09-01, so every real save logged
+           sav=N and the gate blocked turns that had saved (2026-09-13).
      nud — was the UserPromptSubmit nudge enabled (and would it have fired)?
      pro — did the assistant's final message contain a save-promise?
      too — was a brain save interface available this session (MCP server
@@ -50,10 +59,12 @@ Two jobs, in order:
    `brain_doctor._check_save_gap` and `_check_promise_gap` read the tail of
    activity.md to surface long-run gaps.
 
-No LLM calls. No marker files. No pending-saves backlog. `stop_hook_active` in
-the payload signals we were re-entered after a previous block — skip the gate
-in that case to avoid an infinite loop (the audit column still fires, tagged
-re=Y, so brain_doctor can see the outcome).
+No LLM calls. No pending-saves backlog — the save-event file is a record of
+saves that already happened, written by the saver, and nothing here acts on it
+beyond the audit column and the gate. `stop_hook_active` in the payload signals
+we were re-entered after a previous block — skip the gate in that case to avoid
+an infinite loop (the audit column still fires, tagged re=Y, so brain_doctor
+can see the outcome).
 
 The transcript is read from the END, not the start: the hook has a 5 s budget
 (templates/settings.hooks*.json) and a session transcript grows without bound
@@ -68,6 +79,7 @@ import json
 import os
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from _common import (
@@ -91,91 +103,18 @@ except Exception:  # pragma: no cover — venv broken; the audit still runs, unt
     def is_system_turn(text: str) -> bool:  # type: ignore[misc]
         return False
 
+try:
+    from brain_mcp.vault import count_save_events
+except Exception:  # pragma: no cover — venv broken: nothing could have saved either
+    def count_save_events(*, since: float, session_id: str | None = None) -> int:  # type: ignore[misc]
+        return 0
+
 BRAIN_SAVE_TOOL_NAMES = {
     "brain_save",
     "brain_checkpoint",
     "mcp__brain__brain_save",
     "mcp__brain__brain_checkpoint",
 }
-
-# Shell tools whose commands can invoke the `brain` CLI. Since the CLI became
-# the primary interface (MCP registration is opt-in), a save can be fulfilled
-# by running `<...>brain save ...` / `<...>brain checkpoint ...` through
-# Bash/PowerShell instead of calling an MCP tool.
-SHELL_TOOL_NAMES = {"Bash", "PowerShell"}
-
-# ---- CLI save detection -----------------------------------------------------
-#
-# A save "counts" only when the brain executable sits at a *command position*:
-# the start of the string, after a newline or a shell separator (`;`, `&&`,
-# `||`, `|`, `&`), inside `$(…)` or backticks, or after a `(`/`{` group opener
-# — optionally preceded by `VAR=value` env-prefix assignments, which is how the
-# POSIX templates spell it (`BRAIN_VAULT=… …/bin/brain checkpoint X`). Before
-# matching, every quoted span and every heredoc body is blanked, so the phrase
-# cannot count from inside an argument. Until 2026-09-01 the old regex accepted
-# any whitespace as a command boundary and only rejected a quote *immediately*
-# before the word, so `git commit -m "Fix brain checkpoint naming"` and a
-# heredoc body that mentioned `brain save` both satisfied the gate with no
-# save having happened.
-
-# A quoted span whose whole content is a path to the brain executable — the
-# Windows wrapper lives under a home dir that may contain a space, so
-# `"C:\Users\Joe Bloggs\.claude\brain.cmd" save …` is a real invocation. Such
-# spans are replaced by a bare `brain` token; every other quoted span is blanked.
-_QUOTED_EXE_RE = re.compile(r"^(?:[A-Za-z]:)?[^\n]*?brain(?:\.exe|\.cmd)?$", re.IGNORECASE)
-_QUOTED_SPAN_RE = re.compile(r'"(?:[^"\\\n]|\\.)*"|\'[^\'\n]*\'')
-# `<<EOF`, `<<-EOF`, `<<'EOF'`, `<<"EOF"`: the body runs from the end of that
-# line to the terminator line. Bash-style; PowerShell has no heredoc syntax
-# (its here-strings @'…'@ are handled as quoted spans, since the regex above
-# blanks from the opening quote to the next matching one).
-_HEREDOC_OPEN_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
-
-_CLI_SAVE_RE = re.compile(
-    r"""(?:^|[\n;&|(`{]|\$\()\s*                      # command position
-        (?:\w+=\S*\s+)*                                  # env-prefix assignments
-        (?:[A-Za-z]:)?[\w~./\\-]*brain(?:\.exe|\.cmd)?   # the executable
-        \s+(?:save|checkpoint)\b""",
-    re.IGNORECASE | re.VERBOSE,
-)
-
-
-def _blank_heredoc_bodies(command: str) -> str:
-    lines = command.split("\n")
-    out: list[str] = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        out.append(line)
-        m = _HEREDOC_OPEN_RE.search(line)
-        i += 1
-        if not m:
-            continue
-        terminator = m.group(2)
-        while i < len(lines):
-            body = lines[i]
-            i += 1
-            if body.strip() == terminator:
-                out.append(body)
-                break
-            out.append("")
-    return "\n".join(out)
-
-
-def _blank_quoted_spans(command: str) -> str:
-    def repl(m: re.Match) -> str:
-        inner = m.group(0)[1:-1]
-        if _QUOTED_EXE_RE.match(inner):
-            return "brain"
-        return '""'
-    return _QUOTED_SPAN_RE.sub(repl, command)
-
-
-def is_cli_save_command(command: str) -> bool:
-    if not command:
-        return False
-    cleaned = _blank_quoted_spans(_blank_heredoc_bodies(command))
-    return bool(_CLI_SAVE_RE.search(cleaned))
-
 
 # ---- transcript --------------------------------------------------------------
 
@@ -235,16 +174,32 @@ def _loads(raw: bytes) -> dict | None:
     return obj if isinstance(obj, dict) else None
 
 
-def _analyze_last_turn(transcript_path: str | None) -> tuple[str, str, int]:
-    """Return (last_user_text, assistant_text_since, brain_tool_calls_since).
+def _parse_timestamp(value) -> float | None:
+    """Claude Code stamps every transcript entry with an ISO-8601 UTC time
+    (`2026-09-13T21:52:01.131Z`). Epoch seconds, or None when absent/odd."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def _analyze_last_turn(transcript_path: str | None) -> tuple[str, str, int, float | None]:
+    """Return (last_user_text, assistant_text_since, brain_tool_calls_since, turn_start).
 
     A "turn" is everything after the most recent user message that carries
     text (a tool_result-only user entry is not a turn boundary):
       - assistant_text = concatenated text from every assistant message in the
         turn (there may be multiple if tool calls interleaved)
       - brain_tool_calls = count of tool_use blocks whose name is in
-        BRAIN_SAVE_TOOL_NAMES, plus shell tool_uses whose command invokes the
-        brain CLI's save/checkpoint subcommands.
+        BRAIN_SAVE_TOOL_NAMES (the MCP tools; structured, no parsing)
+      - turn_start = that user message's timestamp as epoch seconds, or None
+        when the entry carries none. Saves made through the CLI are found by
+        `count_save_events(since=turn_start, …)`, not by reading commands.
 
     Walks the transcript backwards and stops at that user message; only the
     lines after it are ever parsed. An unreadable file is reported on stderr
@@ -252,12 +207,13 @@ def _analyze_last_turn(transcript_path: str | None) -> tuple[str, str, int]:
     silently evaluated a truncated, stale turn instead.
     """
     if not transcript_path:
-        return "", "", 0
+        return "", "", 0, None
     p = Path(transcript_path)
     if not p.exists():
-        return "", "", 0
+        return "", "", 0, None
 
     last_user_text = ""
+    turn_start: float | None = None
     tail: list[bytes] = []  # lines after the last user turn, newest first
     try:
         for raw in _iter_lines_backwards(p):
@@ -270,11 +226,12 @@ def _analyze_last_turn(transcript_path: str | None) -> tuple[str, str, int]:
                     text = _message_text(obj.get("message") or obj)
                     if text.strip():
                         last_user_text = text.strip()
+                        turn_start = _parse_timestamp(obj.get("timestamp"))
                         break
             tail.append(raw)
     except OSError as e:
         sys.stderr.write(f"brain stop: cannot read transcript {p}: {e}\n")
-        return "", "", 0
+        return "", "", 0, None
 
     assistant_texts: list[str] = []
     brain_tool_count = 0
@@ -296,18 +253,26 @@ def _analyze_last_turn(transcript_path: str | None) -> tuple[str, str, int]:
                     if t:
                         assistant_texts.append(t)
                 elif ctype == "tool_use":
-                    name = c.get("name", "")
-                    if name in BRAIN_SAVE_TOOL_NAMES:
+                    if c.get("name", "") in BRAIN_SAVE_TOOL_NAMES:
                         brain_tool_count += 1
-                    elif name in SHELL_TOOL_NAMES:
-                        cmd = (c.get("input") or {}).get("command", "")
-                        if is_cli_save_command(cmd):
-                            brain_tool_count += 1
         elif isinstance(content, str):
             assistant_texts.append(content)
 
     assistant_text = "\n".join(assistant_texts).strip()
-    return last_user_text, assistant_text, brain_tool_count
+    return last_user_text, assistant_text, brain_tool_count, turn_start
+
+
+def saved_this_turn(brain_tool_count: int, turn_start: float | None,
+                    session_id: str | None) -> bool:
+    """A brain_save/brain_checkpoint tool_use in the turn, or a save event
+    recorded at or after the turn began for this session. With no turn start
+    (an entry with no timestamp) only the structured tool_use count applies —
+    a guess from "recent" events could credit the previous turn's save."""
+    if brain_tool_count > 0:
+        return True
+    if turn_start is None:
+        return False
+    return count_save_events(since=turn_start, session_id=session_id) > 0
 
 
 # ---- audit -------------------------------------------------------------------
@@ -377,9 +342,9 @@ def main() -> None:
     transcript = payload.get("transcript_path")
     stop_active = bool(payload.get("stop_hook_active"))
 
-    last_user, assistant_text, brain_tool_count = _analyze_last_turn(transcript)
+    last_user, assistant_text, brain_tool_count, turn_start = _analyze_last_turn(transcript)
     signal = is_save_signal(last_user)
-    saved = brain_tool_count > 0
+    saved = saved_this_turn(brain_tool_count, turn_start, payload.get("session_id"))
     promised = is_save_promise(assistant_text)
     nudged = signal and nudge_enabled()
 

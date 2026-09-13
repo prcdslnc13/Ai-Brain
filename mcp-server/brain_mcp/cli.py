@@ -128,6 +128,7 @@ def _cmd_save(args: argparse.Namespace) -> int:
     result = vault.save_memory(
         mtype=args.type, name=args.name, content=content, project=args.project
     )
+    vault.record_save_event("save", "cli", result.path)
     if result.unchanged:
         print(f"unchanged: {result.path} (already holds this content)")
         return 0
@@ -169,6 +170,7 @@ def _cmd_checkpoint(args: argparse.Namespace) -> int:
         raise SystemExit("error: checkpoint needs a project (or --from-cherryd DB)")
     summary = _read_body(args, args.summary)
     path = vault.write_checkpoint(args.project, summary)
+    vault.record_save_event("checkpoint", "cli", path)
     print(f"checkpoint: {path}")
     return 0
 

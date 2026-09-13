@@ -23,15 +23,18 @@ import pytest
 import _common
 import _savesig
 import stop
-from brain_mcp import doctor, transcript
+from brain_mcp import doctor, transcript, vault
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 # ------------------------------------------------------------------ helpers
 
-def _user(text: str) -> dict:
-    return {"type": "user", "message": {"role": "user", "content": text}}
+def _user(text: str, ts: str | None = None) -> dict:
+    entry = {"type": "user", "message": {"role": "user", "content": text}}
+    if ts:
+        entry["timestamp"] = ts
+    return entry
 
 
 def _tool_result(size: int) -> dict:
@@ -78,14 +81,14 @@ def test_last_turn_cost_is_bounded_by_the_turn_not_the_session(tmp_path: Path) -
         entries.append(_snapshot(per_turn // 2))
         entries.append(_assistant("old promise: I'll save this to brain", ("brain_save", {})))
     entries.append(_user("final question"))
-    entries.append(_assistant("thinking", ("Bash", {"command": "brain save user t --content x"})))
+    entries.append(_assistant("thinking", ("brain_save", {})))
     entries.append(_tool_result(1000))
     entries.append(_assistant("done, saving this to brain now"))
     path = _write_jsonl(tmp_path / "big.jsonl", entries)
     assert path.stat().st_size > 50_000_000
 
     t0 = time.perf_counter()
-    last_user, assistant_text, saves = stop._analyze_last_turn(str(path))
+    last_user, assistant_text, saves, _ = stop._analyze_last_turn(str(path))
     elapsed = time.perf_counter() - t0
 
     assert elapsed < 1.0, f"took {elapsed:.2f}s on a {path.stat().st_size >> 20} MB transcript"
@@ -104,7 +107,7 @@ def test_tool_result_entries_are_not_turn_boundaries(tmp_path: Path) -> None:
         _tool_result(10),
         _assistant("c"),
     ])
-    last_user, assistant_text, _ = stop._analyze_last_turn(str(path))
+    last_user, assistant_text, _, _ = stop._analyze_last_turn(str(path))
     assert last_user == "second"
     assert assistant_text == "b\nc"
 
@@ -113,55 +116,18 @@ def test_pretty_printed_and_blank_lines_survive(tmp_path: Path) -> None:
     text = json.dumps(_user("hi"), indent=2).replace("\n", " ") + "\n\n" + json.dumps(_assistant("yo")) + "\n"
     path = tmp_path / "t.jsonl"
     path.write_text(text, encoding="utf-8")
-    assert stop._analyze_last_turn(str(path)) == ("hi", "yo", 0)
+    assert stop._analyze_last_turn(str(path)) == ("hi", "yo", 0, None)
 
 
 def test_last_line_without_trailing_newline_is_read(tmp_path: Path) -> None:
     path = tmp_path / "t.jsonl"
     path.write_text(json.dumps(_user("q")) + "\n" + json.dumps(_assistant("final")), encoding="utf-8")
-    assert stop._analyze_last_turn(str(path)) == ("q", "final", 0)
+    assert stop._analyze_last_turn(str(path)) == ("q", "final", 0, None)
 
 
 def test_missing_or_absent_transcript_is_an_empty_turn(tmp_path: Path) -> None:
-    assert stop._analyze_last_turn(None) == ("", "", 0)
-    assert stop._analyze_last_turn(str(tmp_path / "nope.jsonl")) == ("", "", 0)
-
-
-# --------------------------------------------------- F17: CLI save detection
-
-CLI_CASES = [
-    # real invocations
-    ('C:/Users/spani/.claude-f42/brain.cmd save feedback "title"', True),
-    ('"C:/Users/Joe B/.claude/brain.cmd" checkpoint X <<\'EOF\'\nsummary\nEOF', True),
-    ("BRAIN_VAULT=~/Vaults/Ai-Brain ~/src/Ai-Brain/mcp-server/.venv/bin/brain checkpoint Foo <<'EOF'\nbody\nEOF", True),
-    ("C:\\Users\\spani\\.claude-f42\\brain.cmd checkpoint Ai-Brain <<'EOF'\nstuff\nEOF", True),
-    ('cd /x && brain save user "t" --content "x"', True),
-    ('git commit -m "brain save fix" && brain save feedback t --content x', True),
-    ("brain save feedback \"quoted title with brain checkpoint\" <<'EOF'\nbody says brain save\nEOF", True),
-    ("x=$(brain checkpoint P --summary s)", True),
-    ("`brain save user t --content x`", True),
-    (r"& 'C:\Users\x\brain.cmd' save user t", True),
-    ("brain.exe save user t", True),
-    ("ls\nbrain save user t --content x", True),
-    # the phrase inside an argument, a heredoc body, or a non-command position
-    ('git commit -m "Fix brain checkpoint naming"', False),
-    ("git commit -m 'brain save: tighten regex'", False),
-    ("cat <<'EOF'\nrun brain save later\nEOF", False),
-    ("cat <<EOF\nbrain checkpoint X\nEOF", False),
-    ("echo brain save", False),
-    ("python -c \"import os; print('brain save')\"", False),
-    ('ls; echo "brain save"; ls', False),
-    ("git log --grep 'brain checkpoint'", False),
-    # other subcommands and other executables
-    ("brain recall foo", False),
-    ("brain-prep save", False),
-    ("", False),
-]
-
-
-@pytest.mark.parametrize("command,expected", CLI_CASES, ids=[c[:40] for c, _ in CLI_CASES])
-def test_is_cli_save_command(command: str, expected: bool) -> None:
-    assert stop.is_cli_save_command(command) is expected
+    assert stop._analyze_last_turn(None) == ("", "", 0, None)
+    assert stop._analyze_last_turn(str(tmp_path / "nope.jsonl")) == ("", "", 0, None)
 
 
 # ------------------------------------------------------ F17: promise regex
@@ -227,22 +193,28 @@ def test_gate_block_then_reentry_writes_a_tagged_row(
 ) -> None:
     project = tmp_path / "Widget"
     project.mkdir()
+    session = "11111111-2222-3333-4444-555555555555"
+    turn_ts = "2026-09-13T21:52:01.131Z"
     transcript_path = _write_jsonl(tmp_path / "t.jsonl", [
-        _user("please remember this"),
+        _user("please remember this", ts=turn_ts),
         _assistant("I'll save this to brain."),
     ])
-    payload = {"cwd": str(project), "transcript_path": str(transcript_path)}
+    payload = {"cwd": str(project), "transcript_path": str(transcript_path), "session_id": session}
 
     out = _run_stop(payload, monkeypatch, capsys)
     assert json.loads(out)["decision"] == "block"
     first = _rows(vault_dir)[-1]
     assert "pro=Y" in first and "sav=N" in first and "re=N" in first
 
-    # Claude Code re-enters after the model fulfils the promise.
+    # Claude Code re-enters after the model fulfils the promise through the CLI:
+    # the save records an event (as the Bash tool's child, it carries the
+    # session id); the transcript itself shows only a Bash tool_use.
+    monkeypatch.setenv(vault.SESSION_ID_ENV, session)
+    vault.record_save_event("save", "cli", vault_dir / "user" / "t.md")
     _write_jsonl(transcript_path, [
-        _user("please remember this"),
+        _user("please remember this", ts=turn_ts),
         _assistant("I'll save this to brain."),
-        _assistant(None, ("Bash", {"command": "brain save user t --content x"})),
+        _assistant(None, ("Bash", {"command": "<python> <config>/brain-agent.py save user t --content x"})),
         _assistant("Saved."),
     ])
     out = _run_stop({**payload, "stop_hook_active": True}, monkeypatch, capsys)
