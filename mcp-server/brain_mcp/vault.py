@@ -342,6 +342,24 @@ def _atomic_write(path: Path, text: str) -> None:
         except OSError:
             pass
 
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """`_atomic_write` for content that is already bytes -- no newline translation.
+
+    Use this whenever the content came off disk (a rotation, a re-encode): text
+    mode would translate its line endings a second time on Windows.
+    """
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{next(_tmp_counter)}.tmp")
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+
 def _fm_str(value, default: str) -> str:
     """Coerce a frontmatter scalar to str, falling back to `default` when absent.
 
@@ -1601,7 +1619,11 @@ def record_save_event(kind: str, surface: str, path: Path | None = None) -> None
     try:
         events = save_events_path()
         events.parent.mkdir(parents=True, exist_ok=True)
-        with events.open("a", encoding="utf-8") as f:
+        # newline="\n": keep the file LF-only on every platform. Text mode's
+        # default would write CRLF on Windows, and a rotation that re-wrote those
+        # bytes through text mode again produced CR CR LF -- every line followed
+        # by a phantom empty one (found 2026-09-14 by the installer self-test).
+        with events.open("a", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(event, sort_keys=True) + "\n")
         _rotate_save_events(events)
     except Exception as e:  # noqa: BLE001 — never fail the save over bookkeeping
@@ -1610,14 +1632,23 @@ def record_save_event(kind: str, surface: str, path: Path | None = None) -> None
 
 
 def _rotate_save_events(events: Path) -> None:
+    """Keep the newest SAVE_EVENTS_KEEP_LINES once the file passes SAVE_EVENTS_MAX_LINES.
+
+    Bytes in, bytes out, one LF per line. Bytes read from disk must never be
+    re-written through a text-mode file: on Windows that translates an existing
+    CRLF into CR CR LF, and `splitlines()` then sees two lines where there was
+    one. A file written before the writer pinned LF may still carry CRLF, so the
+    line ending is normalised here rather than trusted.
+    """
     try:
         data = events.read_bytes()
     except OSError:
         return
     if data.count(b"\n") <= SAVE_EVENTS_MAX_LINES:
         return
-    kept = b"".join(data.splitlines(keepends=True)[-SAVE_EVENTS_KEEP_LINES:])
-    _atomic_write(events, kept.decode("utf-8", errors="replace"))
+    lines = [ln.rstrip(b"\r\n") for ln in data.splitlines()]
+    lines = [ln for ln in lines if ln][-SAVE_EVENTS_KEEP_LINES:]
+    _atomic_write_bytes(events, b"".join(ln + b"\n" for ln in lines))
 
 
 def count_save_events(*, since: float, session_id: str | None = None) -> int:

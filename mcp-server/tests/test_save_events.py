@@ -203,3 +203,30 @@ def test_the_event_file_is_rotated(vault_dir: Path) -> None:
     assert len(lines) == vault.SAVE_EVENTS_KEEP_LINES
     assert json.loads(lines[-1])["surface"] == "cli"
     assert not list((vault_dir / ".state").glob("*.tmp")), "rotation temp file left behind"
+
+
+def test_rotation_survives_crlf_lines_and_leaves_lf(vault_dir: Path) -> None:
+    """Bytes read from disk must not be re-written through text mode.
+
+    On Windows the writer used to emit CRLF (text-mode default) and the rotation
+    pushed those bytes back through a text-mode write, turning every CRLF into
+    CR CR LF -- `splitlines()` then reported 400 lines, half of them empty, and the
+    installer self-test went red on every Windows checkout (2026-09-14). Seed the
+    file with CRLF explicitly so the same case is exercised on every platform.
+    """
+    path = vault_dir / vault.SAVE_EVENTS_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    crlf = b"".join(
+        json.dumps({"ts": float(i), "kind": "save", "surface": "cli", "session": SESSION}).encode()
+        + b"\r\n"
+        for i in range(vault.SAVE_EVENTS_MAX_LINES)
+    )
+    path.write_bytes(crlf)
+    vault.record_save_event("save", "cli")
+    data = path.read_bytes()
+    assert b"\r" not in data, "rotation must normalise to LF, never add carriage returns"
+    lines = data.decode("utf-8").splitlines()
+    assert len(lines) == vault.SAVE_EVENTS_KEEP_LINES
+    assert all(json.loads(ln)["kind"] == "save" for ln in lines), "every kept line is one event"
+    assert json.loads(lines[-1])["surface"] == "cli"
+    assert vault.count_save_events(since=0) == vault.SAVE_EVENTS_KEEP_LINES, "the hook reads every kept line"
