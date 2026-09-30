@@ -82,7 +82,18 @@ def _project_with_aging_checkpoints(brain: Path, project: str = "demo") -> Path:
     return proj
 
 
-def _compact(brain: Path, proj: Path, dry_run: bool = False, today: date | None = None):
+def _current_checkpoint(proj: Path) -> Path:
+    """Today's checkpoint for `proj`: what a project still being worked on has."""
+    return _aged_checkpoint(proj / "sessions", _stamp(0, "2359"), proj.name)
+
+
+def _compact(brain: Path, proj: Path, dry_run: bool = False, today: date | None = None,
+             live: bool = True):
+    """Compact `proj`. `live` first gives it a current checkpoint: compact always
+    keeps a project's newest checkpoint in place, so without one the newest of the
+    aged fixtures would be the file kept and the test would not exercise rollup."""
+    if live and (proj / "sessions").exists():
+        _current_checkpoint(proj)
     return compact._compact_project(proj, brain / "archive", dry_run, today=today)
 
 
@@ -287,8 +298,53 @@ def test_nothing_aged_is_left_at_the_top_level(vault_dir: Path) -> None:
 
     _compact(vault_dir, proj)
 
-    assert list(sessions.glob("*.md")) == []
+    assert [q.name for q in sessions.glob("*.md")] == [f"{_stamp(0, '2359')}.md"], (
+        "only the live project's current checkpoint stays"
+    )
     assert len(_rollups(proj)) == 3, "one rollup per distinct day"
+
+
+def test_a_dormant_projects_newest_checkpoint_stays_loadable(vault_dir: Path) -> None:
+    """A project untouched for weeks keeps its last checkpoint at the top level.
+
+    Rolling every aged checkpoint away left `latest_checkpoint` with nothing, so the
+    preload lost the project's "latest session" and STALE_UNCOMMITTED lost its
+    baseline -- in exactly the come-back-later case both exist for.
+    """
+    proj = vault_dir / "projects" / "demo"
+    sessions = proj / "sessions"
+    _aged_checkpoint(sessions, _stamp(20, "1000"), "demo")
+    newest = _aged_checkpoint(sessions, _stamp(12, "1000"), "demo")
+
+    counts = _compact(vault_dir, proj, live=False)
+
+    assert counts["raw_to_daily"] == 1
+    assert [q.name for q in sessions.glob("*.md")] == [newest.name]
+    assert vault.latest_checkpoint(sessions) == newest
+
+
+def test_the_kept_checkpoint_is_newest_by_name_not_mtime(vault_dir: Path) -> None:
+    """Sync can leave the newest-named file with the oldest mtime; the name decides."""
+    proj = vault_dir / "projects" / "demo"
+    sessions = proj / "sessions"
+    _aged_checkpoint(sessions, _stamp(20, "1000"), "demo", age_days=1)
+    newest = _aged_checkpoint(sessions, _stamp(12, "1000"), "demo", age_days=40)
+
+    _compact(vault_dir, proj, live=False)
+
+    assert [q.name for q in sessions.glob("*.md")] == [newest.name]
+
+
+def test_an_empty_reservation_is_not_the_kept_checkpoint(vault_dir: Path) -> None:
+    """A zero-byte name claimed by a crashed writer must not displace the real one."""
+    proj = vault_dir / "projects" / "demo"
+    sessions = proj / "sessions"
+    real = _aged_checkpoint(sessions, _stamp(12, "1000"), "demo")
+    (sessions / f"{_stamp(10, '1000')}.md").write_bytes(b"")
+
+    _compact(vault_dir, proj, live=False)
+
+    assert real.exists(), "the newest real checkpoint stays"
 
 
 def test_recent_checkpoints_are_never_touched(vault_dir: Path) -> None:
