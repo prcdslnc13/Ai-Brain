@@ -469,7 +469,9 @@ incident.
   emphasis-strip regexes are bounded; `re=Y` rows supersede the row before them;
   `transcript.SYSTEM_TURN_PREFIXES` is the one list of system-turn markers.
 - **The pi extension clears `BRAIN_AGENT_SURFACE` per spawn** (`execFile`, `shell:false`,
-  explicit env), never in `process.env`. `BRAIN_PI_CMD` must be the venv executable.
+  explicit env), never in `process.env`, and only for its own spawns: the `brain_*` tools
+  run under the gate (`toolEnv`) and build argv with `toolArgv` (`--name=value`, positionals
+  after `--`). `BRAIN_PI_CMD` must be the venv executable.
 - **A save that replaces a memory archives the previous version** under
   `Brain/archive/versions/` (`VERSION_KEEP`=5, monotonic names) and reports it; a byte-identical
   re-save writes nothing; `slugify` transliterates via NFKD and hashes when no ASCII survives;

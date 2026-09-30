@@ -855,6 +855,17 @@ explicit env. `BRAIN_PI_CMD` must be the venv executable (Node ≥ 20.12 refuses
 under `shell:false`), and `resolvePrepCmd` only looks for a sibling `brain-prep` when
 `brainCmd` is absolute.
 
+"Our own spawns" first meant *every* spawn, the model-facing `brain_*` tools included
+(2026-09-29). Those build argv from model-supplied strings with no `--`, so a
+`brain_checkpoint` `project` of `"--from-pi=<path>"` parsed as the option — the positional
+is optional — and imported an arbitrary pi session or cherryd log with the gate off. The
+tools now run under `toolEnv` (gate set) and build argv through `toolArgv`: option values
+glued on as `--name=value` (a separate value starting with `-` is otherwise an argparse
+error, which also broke titles like `-foo`), positionals after `--`, and no `--` at all when
+there are no positionals, because `brain list --` is itself an argparse error. Either layer
+alone stops the import; `test_the_pi_tools_run_on_the_agent_surface` and
+`test_the_pi_tool_argv_shape_keeps_model_strings_as_data` guard both.
+
 ### A save that replaces a memory archives what it replaced — and a slug is not a title (2026-09-01, F10/F11)
 
 **A save that replaces a memory archives what it replaced — and a slug is not a title
