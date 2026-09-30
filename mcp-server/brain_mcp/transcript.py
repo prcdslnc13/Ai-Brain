@@ -51,6 +51,12 @@ SYSTEM_TURN_PREFIXES = (
     "<local-command-",    # <local-command-stdout>, <local-command-caveat>
     "Base directory for this skill:",
     "<system-reminder>",
+    # A subagent's or peer session's hand-back, delivered as a user entry. Missing
+    # until 2026-09-29, so every such report that quoted a phrase like "I want"
+    # was audited as a user save-signal and the SAVE_GAP banner fired on it.
+    "Another Claude session sent a message:",
+    "<agent-message",
+    "<bash-",             # ! bash mode: <bash-input>, <bash-stdout>, <bash-stderr>
 )
 
 # A system reminder can be *prepended* to a genuine prompt in the same user entry
