@@ -429,4 +429,8 @@ def test_global_claude_md_teaches_parts_catalogue_and_the_spill_stopgap():
     text = (TEMPLATES / "global-CLAUDE.md").read_text(encoding="utf-8")
     assert "persisted-output" in text, "the stopgap for harnesses that still spill"
     assert "Saved but not loaded" in text, "the catalogue convention"
-    assert "part I of N" in text
+    # The real heading, not a paraphrase: the template once said "Brain preload,
+    # part I of N" while every part opened with brain_prep.TITLE. Whitespace is
+    # folded because the template wraps the heading across lines.
+    heading = brain_prep.TITLE.lstrip("# ")
+    assert f"{heading} — part I of N" in " ".join(text.split())

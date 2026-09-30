@@ -9,7 +9,8 @@ allowed-tools: Bash(__BRAIN_CMD__ recall:*), Bash(__BRAIN_CMD__ save:*), Bash(__
 
 The Brain is an Obsidian vault of memory files, driven through the `brain` CLI.
 Every command below is run with the Bash tool. The full invocation prefix on
-this machine (env + absolute path, substituted by setup) is:
+this machine (the venv's Python plus the generated launcher, substituted by
+setup) is:
 
 ```
 __BRAIN_CMD__

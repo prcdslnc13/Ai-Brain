@@ -34,8 +34,6 @@ SAVE_SIGNAL_PATTERNS = (
     r"\bnever\b.*\bdo\b",
     r"\bstop doing\b",
     r"\bgoing forward\b",
-    r"\bi want\b",
-    r"\bi'?m looking for\b",
     r"\bthe right\b.*\b(is|way|cadence|approach)\b",
 )
 

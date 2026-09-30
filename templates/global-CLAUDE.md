@@ -22,10 +22,10 @@ Do **not** write to memory by editing vault files directly, and do **not** use t
 
 The SessionStart hook automatically preloads the Brain bundle (index, user profile, all feedback,
 project overview, latest session checkpoint) into your context at the top of every session. You do
-not need to load it yourself unless that preload is missing. It arrives **in parts** ("Brain
-preload, part I of N"), one per hook entry, in no guaranteed order; each part is fenced and safe
-alone. The last part may end with a **"Saved but not loaded"** list — memories that exist but did
-not fit; `brain recall <name>` any that bears on the task.
+not need to load it yourself unless that preload is missing. It arrives **in parts** ("Long-term
+memory (loaded from Brain vault) — part I of N"), one per hook entry, in no guaranteed order;
+each part is fenced and safe alone. The last part may end with a **"Saved but not loaded"**
+list — memories that exist but did not fit; `brain recall <name>` any that bears on the task.
 
 **If a Brain preload part arrives as a `<persisted-output>` notice** ("Output too large … saved
 to: <path>"), read that file in full before your first response — it holds the user profile and
@@ -49,9 +49,8 @@ it blocks turn-end and feeds the reason back to you — you must then fulfill th
 explicitly recant. Preferred pattern: don't promise — run the save first, then mention it in past
 tense (*"Saved as feedback."*).
 
-The triggering incident (2026-04-22, MM-ToolDecoder): the model said it was recording verification
-steps to brain, never did, the window died, and ~70 minutes of work context were lost. The gate
-exists so that cannot happen silently again.
+The gate exists because a promised save that never ran once cost about 70 minutes of work context
+when the window closed.
 
 ## Session-start health banner: act on it
 
@@ -138,9 +137,10 @@ User-initiated signals:
 - A stated preference: *"I prefer X"*, *"I always do Y"*, *"I hate Z"*, *"my default is X"*.
 - A correction: *"don't do that"*, *"stop"*, *"that's wrong because…"*, *"no, use X instead"*.
 - Validation of a non-obvious choice: *"yes exactly"*, *"perfect"*, *"that was the right call"*, or
-  quiet acceptance of an unusual approach.
+  the user going along, without pushback, with an unusual approach you called out as a choice.
 - A durable rule: *"from now on…"*, *"next time…"*, *"never…"*, *"always…"*, *"going forward…"*,
-  *"the right cadence is…"*, *"I want…"*, *"I'm looking for…"*.
+  *"the right cadence is…"*. A request about the task at hand (*"I want this fixed"*) is not a
+  durable rule.
 - A deadline, stakeholder, incident, or constraint that won't be in the code.
 - An external system named as the source of truth for something.
 - An explanation of *why* something is done a certain way, where the reason isn't in the code.
@@ -159,6 +159,10 @@ myself."* The cost of a missed save is high; a slightly redundant save is cheap.
 Keep memory bodies tight: the rule or fact, plus the `**Why:**` and `**How to apply:**` lines — a
 few sentences each, not an essay. A memory is a pointer for a future session, not a report; when
 the details live in a file, commit, or doc, reference them instead of copying them in.
+
+Before saving, recall the topic. If a memory already covers it, save under that memory's title
+to update it (the previous version is archived) rather than adding a near-copy; a memory that
+turns out to be wrong gets `brain forget`.
 
 ## When to recall (proactive triggers)
 
@@ -179,21 +183,23 @@ Recall is cheap and capped — call it **before** acting, not after:
 
 ## When to checkpoint
 
-Checkpoint **frequently** — the user loses sessions to accidentally closed windows, and the
-automated PreCompact/SessionEnd hooks only produce a structural extract. Your `brain checkpoint`
-is the primary mechanism, written while context is fresh. Treat it as incremental save, not a
-final save:
-
-- After each git commit — though in a rapid sequence of commits within one unit of work, a
-  single checkpoint covering the unit is enough.
-- After any change to a plan, roadmap, or design document — direction changes are invisible in
-  `git log` and the most valuable thing to capture.
-- After creating or substantially modifying files.
-- After completing a distinct unit of work, even mid-session — don't batch.
-- When the user signals the end (*"thanks"*, *"that's all"*, *"good night"*) or is about to switch
-  projects.
+The user loses sessions to accidentally closed windows, and the automated PreCompact/SessionEnd
+hooks only produce a structural extract, so your `brain checkpoint`, written while context is
+fresh, is what carries a session forward. Checkpoint whenever losing the session right now would
+lose something git does not hold: a decision, a change of direction, a dead end, or work that is
+unfinished or uncommitted. In practice that is after a unit of work (a commit, or a run of commits
+for one change), after any change to a plan, roadmap, or design document — direction changes are
+invisible in `git log` — and when the user signals the end (*"thanks"*, *"that's all"*, *"good
+night"*) or is about to switch projects. One checkpoint per unit of work is enough.
 
 Summary format: what was attempted, what worked, what failed, decisions made, open threads.
+Record only what this session's tool results show, and mark anything not yet verified as
+unverified — the next session will act on a checkpoint as fact.
+
+## Subagents
+
+If you are running as a subagent, don't save or checkpoint. Put anything worth remembering in
+your report; the main session decides what to save. Recall is still yours to use.
 
 ## Confidence and verification
 
