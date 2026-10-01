@@ -152,3 +152,35 @@ def test_rg_output_is_decoded_as_utf8_not_the_locale(
 
     monkeypatch.setattr(vault.subprocess, "run", run)
     assert vault._ripgrep_search("zanzibar", vault_dir) == {hit: 1}
+
+
+# ------------------------------------------------------------- what counts as a hit
+
+
+@pytest.mark.parametrize("have_rg", [True, False])
+def test_lexical_hits_use_the_shared_memory_predicate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, have_rg: bool
+) -> None:
+    """Lexical hits are filtered by `is_memory_path`, the one answer to "is this a memory".
+
+    The filter here used to be a private copy. It tested every component of the
+    *absolute* path, so a vault kept under any folder named `archive` lost every
+    lexical hit, and it let `_`-prefixed files through that `brain list` and the
+    vector index both exclude.
+    """
+    root = tmp_path / "archive" / "vault" / "Brain"
+    real = memory(root / "user" / "editor.md", "editor", "user", "zanzibar editor")
+    scratch = memory(root / "user" / "_draft.md", "draft", "user", "zanzibar draft")
+    log = root / "activity.md"
+    log.write_text("zanzibar in the audit log\n", encoding="utf-8")
+    rollup = memory(root / "archive" / "old.md", "old", "user", "zanzibar archived")
+
+    if have_rg:
+        monkeypatch.setattr(vault.shutil, "which", lambda name: "/fake/bin/rg")
+        out = "".join(f"{p}:1\n" for p in (real, scratch, log, rollup))
+        monkeypatch.setattr(vault.subprocess, "run", lambda argv, **kw:
+                            subprocess.CompletedProcess(argv, 0, stdout=out, stderr=""))
+    else:
+        monkeypatch.setattr(vault.shutil, "which", lambda name: None)
+
+    assert set(vault._ripgrep_search("zanzibar", root)) == {real}

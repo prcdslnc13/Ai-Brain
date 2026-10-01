@@ -130,7 +130,7 @@ def test_rejected_names_create_nothing_anywhere(vault_dir: Path, name: str) -> N
     before = _tree(sandbox)
 
     for call in (
-        lambda: vault.write_memory("project", "n", "body", project=name),
+        lambda: vault.save_memory("project", "n", "body", project=name),
         lambda: vault.write_checkpoint(name, "body"),
         lambda: vault.ensure_project_overview_stub(name, None),
         lambda: vault.list_memories(mtype="project", project=name),
