@@ -1,8 +1,9 @@
 # Gotchas that will bite you — the case histories
 
-This is the incident record behind the rules in `CLAUDE.md` § *Rules that will bite you*.
-Each rule there names a heading here. `CLAUDE.md` carries the rule and how to apply it;
-this file carries what happened, what was measured, and why the fix has the shape it has.
+This is the incident record behind the rules in `.claude/rules/*.md` and the three in
+`CLAUDE.md` § *Rules that will bite you*. Each rule names a heading here. The rule files carry
+the rule and how to apply it, and load when Claude reads a file they guard; this file carries
+what happened, what was measured, and why the fix has the shape it has.
 Read the entry here before changing anything a rule guards — the rule is the summary,
 and every one of these was paid for with a real incident.
 

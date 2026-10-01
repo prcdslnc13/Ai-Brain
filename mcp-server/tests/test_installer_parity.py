@@ -538,7 +538,8 @@ def _runnable_mentions(doc: str, script: str) -> list[str]:
 
 _BSLASH = chr(92)
 
-USER_DOCS = ["README.md", "WINDOWS-SETUP.md", "LMSTUDIO-SETUP.md", "PI-SETUP.md", "CLAUDE.md"]
+USER_DOCS = ["README.md", "WINDOWS-SETUP.md", "LMSTUDIO-SETUP.md", "PI-SETUP.md", "CLAUDE.md",
+             "docs/ARCHITECTURE.md"]
 
 
 @pytest.mark.parametrize("script", DELETED_SCRIPTS)
