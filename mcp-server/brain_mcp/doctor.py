@@ -615,7 +615,7 @@ def _check_stale_uncommitted(
     try:
         result = subprocess.run(
             ["git", "-C", str(cwd_path), "log", "-1", "--format=%ct"],
-            capture_output=True, text=True, timeout=3,
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=3,
         )
         if result.returncode == 0 and result.stdout.strip():
             try:
@@ -631,7 +631,7 @@ def _check_stale_uncommitted(
     try:
         result = subprocess.run(
             ["git", "-C", str(cwd_path), "status", "--porcelain"],
-            capture_output=True, text=True, timeout=3,
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=3,
         )
         if result.returncode == 0 and result.stdout.strip():
             newest = 0.0
