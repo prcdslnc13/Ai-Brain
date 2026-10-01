@@ -1032,13 +1032,22 @@ class EmbedIndex:
 
         Returns the number of rows upserted. Raises EmbedUnavailable if the embedder
         cannot load. Serialized by a process-wide lock so the background startup
-        warmup and a foreground recall don't both embed the same stale files.
+        warmup and a foreground recall don't both embed the same stale files; a
+        foreground pass that finds the lock taken returns 0 rather than waiting.
         """
-        with _SYNC_LOCK:
-            if budget_seconds is None:
-                budget_seconds = cls._budget_seconds()
-            deadline = None if budget_seconds <= 0 else time.monotonic() + budget_seconds
-            foreground = deadline is not None
+        if budget_seconds is None:
+            budget_seconds = cls._budget_seconds()
+        foreground = budget_seconds > 0
+        # A foreground pass never waits for the lock. The MCP server's startup warmup
+        # holds it for an unbounded pass (minutes on a recipe rebuild), and a recall
+        # that queued behind it froze every tool call: call_tool runs on the event
+        # loop. Skipping costs nothing a recall needs -- it searches what is already
+        # indexed plus the lexical leg -- which is the same bargain the reindex-lock
+        # check below already makes for another process's unbounded pass.
+        if not _SYNC_LOCK.acquire(blocking=not foreground):
+            return 0
+        try:
+            deadline = time.monotonic() + budget_seconds if foreground else None
 
             # A reindex is already draining the whole backlog; a foreground pass would
             # only contend with it for the write lock and duplicate its work. The
@@ -1193,6 +1202,8 @@ class EmbedIndex:
                 return done
             finally:
                 conn.close()
+        finally:
+            _SYNC_LOCK.release()
 
     @classmethod
     def backlog(cls, timeout: float = SQLITE_READ_TIMEOUT_S) -> int:
