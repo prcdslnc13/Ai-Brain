@@ -88,7 +88,7 @@ def machine_name() -> str:
         try:
             raw = subprocess.run(
                 ["scutil", "--get", "LocalHostName"],
-                capture_output=True, text=True, timeout=5,
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5,
             ).stdout.strip()
         except (OSError, subprocess.SubprocessError):
             raw = ""
@@ -730,7 +730,7 @@ def _ripgrep_search(query: str, root: Path) -> dict[Path, int]:
             # undefined, and the except below threw away every lexical hit.
             out = subprocess.run(
                 _ripgrep_argv(rg, query, root),
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace",
                 check=False,
             )
             for line in out.stdout.splitlines():

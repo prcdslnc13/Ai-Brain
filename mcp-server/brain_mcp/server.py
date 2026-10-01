@@ -6,6 +6,7 @@ Exposes the Ai-Brain vault as a small, typed tool surface that any MCP-capable c
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -271,8 +272,33 @@ def _err(msg: str) -> list[TextContent]:
     return [TextContent(type="text", text=json.dumps({"error": msg}))]
 
 
+# One tool call at a time, as before. The vault and embedding code were written for
+# one caller per process (module-level caches, a lazily built embedder), and the
+# move below is about keeping the event loop free, not about running tools in
+# parallel. A threading lock, not an asyncio one: an asyncio.Lock binds to the
+# first loop that contends for it, and tests drive this module from many loops.
+_TOOL_LOCK = threading.Lock()
+
+
+def _call_tool_locked(name: str, arguments: dict | None) -> list[TextContent]:
+    with _TOOL_LOCK:
+        return _call_tool_sync(name, arguments)
+
+
 @server.call_tool()
 async def call_tool(name: str, arguments: dict | None) -> list[TextContent]:
+    """Run the tool in a worker thread so the stdio loop keeps serving.
+
+    Every tool is synchronous file and sqlite work, and a recall can spend up to
+    `BRAIN_SYNC_MAX_SECONDS` (5 s) embedding a backlog slice. Run on the loop, that
+    froze the whole server for the duration: no ping answered, no cancellation
+    read, no `tools/list` for a client that asked meanwhile. The SDK already
+    dispatches each request as its own task, so only the blocking had to move.
+    """
+    return await asyncio.to_thread(_call_tool_locked, name, arguments)
+
+
+def _call_tool_sync(name: str, arguments: dict | None) -> list[TextContent]:
     args = arguments or {}
     try:
         if name == "brain_session_start":
@@ -363,7 +389,34 @@ def _background_embed_warmup() -> None:
         print(f"brain embed background warmup: {e}", file=sys.stderr)
 
 
+def _preload_native_modules() -> None:
+    """Import the native-extension modules before the stdio reader starts.
+
+    Tools run in worker threads (see `call_tool`) while the transport's reader
+    thread sits in a blocking read on stdin. On Windows, loading numpy's extension
+    DLL in one thread while another has a read pending on the stdin pipe blocks
+    until that read completes, and an MCP client waiting on a tool result sends
+    nothing more, so the first recall hung indefinitely (reproduced 2026-10-01).
+    The old on-the-loop handler never hit it, because a blocked loop never issued
+    the next read. Imported here, once, before any read is pending, it costs
+    about a second at startup. `embed` goes first so its module-top cache and
+    timeout pins precede the fastembed import, as they must.
+    """
+    try:
+        import numpy  # noqa: F401
+    except Exception as e:
+        print(f"brain preload: numpy: {e}", file=sys.stderr)
+    if os.environ.get("BRAIN_EMBED", "1") == "0":
+        return
+    try:
+        from . import embed  # noqa: F401
+        import fastembed  # noqa: F401
+    except Exception as e:
+        print(f"brain preload: fastembed: {e}", file=sys.stderr)
+
+
 async def run() -> None:
+    _preload_native_modules()
     threading.Thread(target=_background_embed_warmup, daemon=True).start()
     async with stdio_server() as (read, write):
         await server.run(read, write, server.create_initialization_options())

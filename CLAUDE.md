@@ -483,6 +483,12 @@ incident.
   emphasis-strip regexes are bounded; `re=Y` rows supersede the row before them;
   `transcript.SYSTEM_TURN_PREFIXES` is the one list of system-turn markers, and `sig` is
   computed on `user_authored_text()`, never the raw entry.
+- **MCP tools run in a worker thread, one at a time, and nothing in a tool may wait on
+  stdin.** `call_tool` hands `_call_tool_sync` to `asyncio.to_thread` under
+  `_TOOL_LOCK`; `run()` calls `_preload_native_modules()` before `stdio_server`; every
+  `subprocess` call in `brain_mcp` passes `stdin=` (`test_mcp_tool_threading.py`). On
+  Windows a DLL load or an stdin-inheriting spawn in a tool thread hangs behind the
+  reader's pending read.
 - **The pi extension clears `BRAIN_AGENT_SURFACE` per spawn** (`execFile`, `shell:false`,
   explicit env), never in `process.env`, and only for its own spawns: the `brain_*` tools
   run under the gate (`toolEnv`) and build argv with `toolArgv` (`--name=value`, positionals
