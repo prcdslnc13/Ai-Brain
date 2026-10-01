@@ -38,7 +38,7 @@ from . import vault as _vault
 # rather than typed by the user: background-task notifications, skill/command
 # expansions, local-command output, and system reminders. THE list -- both
 # consumers read it from here. `hooks/stop.py` tags such turns `sys=Y` in the
-# activity audit (a skill body matches save-signal phrases like "I want", so
+# activity audit (a skill body matches save-signal phrases like "remember", so
 # `sig` measured on it says nothing about the user), and `parse_claude_transcript`
 # keeps them out of a checkpoint's "What the user asked for". Until 2026-09-01
 # each consumer kept its own list and they disagreed: the checkpoint renderer
