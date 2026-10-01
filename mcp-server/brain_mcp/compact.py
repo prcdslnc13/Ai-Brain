@@ -102,6 +102,27 @@ def _day_of(path: Path) -> date | None:
     return _date_from_name(path) or _mtime_date(path)
 
 
+def _newest_by_name(sessions: Path) -> Path | None:
+    """The top-level checkpoint with the latest stamp in its name, ignoring empty files.
+
+    Names lead with `YYYY-MM-DD-HHMM[SS]`, so they sort by stamp; the day breaks ties
+    first so a name with no date (filed by `_day_of`'s fallback) still has a place.
+    Zero-byte files are skipped for the reason `vault.latest_checkpoint` skips them:
+    a reserved-but-unwritten checkpoint must not displace the real one.
+    """
+    candidates = []
+    for p in sessions.glob("*.md"):
+        try:
+            if not p.is_file() or p.stat().st_size == 0:
+                continue
+        except OSError:
+            continue
+        day = _day_of(p)
+        if day is not None:
+            candidates.append((day, p.name, p))
+    return max(candidates)[2] if candidates else None
+
+
 def _iso_week_key(day: date) -> str:
     iso = day.isocalendar()
     return f"{iso[0]}-W{iso[1]:02d}"
@@ -329,9 +350,17 @@ def _compact_project(project_dir: Path, archive_root: Path, dry_run: bool,
         sessions / "weekly", project, "weekly", dry_run)
 
     # Raw -> daily. A day's period ends at the start of the next day.
+    #
+    # Except the project's newest checkpoint, which stays at the top level however
+    # old it is. It is the "latest session" the preload loads and the baseline
+    # STALE_UNCOMMITTED compares on-disk changes against; rolling it away left a
+    # project untouched for a week with neither, which is exactly the "a session
+    # died and I came back later" case both exist for. One file per project is
+    # still bounded. Newest by name, like every other decision here.
+    keep = _newest_by_name(sessions)
     by_day: dict[date, list[Path]] = defaultdict(list)
     for p in sessions.glob("*.md"):
-        if not p.is_file():
+        if not p.is_file() or p == keep:
             continue
         day = _day_of(p)
         if day is not None and _aged(day + timedelta(days=1), today, DAILY_AGE_MIN):

@@ -489,7 +489,8 @@ incident.
   `is_memory_path` accepts.
 - **brain-compact buckets and ages by the date in the filename, never mtime**, merges by
   `<!-- brain-compact source: … -->` sections, reclaims fully-absorbed sources, and merges into
-  existing archives. Test fixtures use today-relative stamps.
+  existing archives. It never rolls up a project's newest checkpoint (by name). Test fixtures use
+  today-relative stamps.
 
 ## Testing
 

@@ -907,6 +907,13 @@ existing archived weekly instead of `shutil.move`-ing over it. Test fixtures use
 today-relative stamps: a literal January date ages past every threshold the moment the
 year rolls on.
 
+It also never rolls up a project's **newest** checkpoint (2026-09-29). Rolling every aged raw
+file into `daily/` left a project untouched for a week with nothing in `sessions/*.md`, so
+`latest_checkpoint` returned None: the preload lost the project's "latest session" and
+`STALE_UNCOMMITTED` lost its baseline, in exactly the come-back-later case both exist for.
+`_newest_by_name` keeps that one file, chosen by the stamp in its name like every other
+decision here, skipping zero-byte reservations. One file per project stays bounded.
+
 ### Install turns Claude Code's auto memory off, and ownership lives in a sidecar (2026-09-29)
 
 **Install turns Claude Code's auto memory off, and ownership lives in a sidecar.** Claude
