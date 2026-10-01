@@ -105,16 +105,19 @@ def recall_payload(
 
     for m in matches[:top_k]:
         body, clipped = _clip(vault.neutralize_fence(m.body), per_body)
-        rel = str(m.path.relative_to(vault.vault_root().parent))
+        # The path (a filename anything that syncs into the vault chooses) and the
+        # name and machine (frontmatter) are writer-controlled like the body, so
+        # they are defanged here too, where they enter the payload JSON consumers see.
+        rel = vault.neutralize_fence(str(m.path.relative_to(vault.vault_root().parent)))
         if consumed + len(body) > total_budget and results:
             overflow_paths.append(rel)
             continue
         consumed += len(body)
         results.append({
             "path": rel,
-            "name": m.name,
+            "name": vault.neutralize_fence(m.name),
             "type": m.type,
-            "machine": m.machine,
+            "machine": vault.neutralize_fence(m.machine) if m.machine else m.machine,
             "body": body,
             "body_truncated": clipped,
         })
@@ -173,14 +176,15 @@ def render_recall(payload: dict) -> str:
         bodies.append(f"### {r['path']}  [{tag}]{suffix}")
         bodies.append(r["body"])
 
-    lines.append(vault.fence("\n".join(bodies)))
-
+    # Inside the fence: these are vault filenames, writer-controlled text like the
+    # bodies, and they used to be printed after the closing marker, undefanged.
     if payload["overflow_paths"]:
-        lines.append("")
-        lines.append(
+        bodies.append("")
+        bodies.append(
             "Payload cap reached; bodies omitted for: "
             + ", ".join(payload["overflow_paths"])
         )
+    lines.append(vault.fence("\n".join(bodies)))
     return "\n".join(lines)
 
 
