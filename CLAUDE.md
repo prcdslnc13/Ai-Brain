@@ -186,7 +186,9 @@ The moving parts fit together as follows:
   direction) is deliberately shared across the install/uninstall boundary — a narrower predicate
   in the uninstaller strands orphan hooks, a wider one deletes a third-party hook.
   `_assert_block_is_ownable()` fails the install if a template command isn't detectable as ours,
-  because such a command could never be pruned and would duplicate on every run.
+  because such a command could never be pruned and would duplicate on every run. It also sets
+  `autoMemoryEnabled: false` and records what the key held before in `.brain-auto-memory.json`
+  beside `settings.json`; `prune` restores that value only while the key still reads `false`.
 
 - **`brain-setup.py`** — **THE installer, on every platform** (ROADMAP 3G retired
   `setup-mac.sh`, `setup-linux.sh` and `setup-windows.ps1` on 2026-08-25; do not add a
@@ -404,6 +406,11 @@ incident.
   foreign cwds.
 - **User-scoped MCP servers are registered with `claude mcp add --scope user`**, never by
   dropping a `.mcp.json`.
+- **Install turns Claude Code's auto memory off, and ownership lives in a sidecar.**
+  `brain_settings_merge.disable_auto_memory` writes `autoMemoryEnabled: false`;
+  `.brain-auto-memory.json` holds the pre-install state, is written only after `settings.json`
+  lands and never over an existing one; uninstall restores it only if the key still reads
+  `false`. A user's own `false` gets no marker and is never claimed.
 - **Hooks set `BRAIN_VAULT` in the command string itself** — env prefix on POSIX,
   `brain-launch.cmd` on Windows. Preserve the platform's pattern.
 - **Never walk up from `__file__` to find the vault.** Read `BRAIN_VAULT`.

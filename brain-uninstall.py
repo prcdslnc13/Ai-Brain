@@ -227,6 +227,8 @@ def prune_settings_hooks(claude_dir: Path) -> None:
         return
     word = "entry" if report["removed"] == 1 else "entries"
     info(f"       ✓ removed {report['removed']} Brain-owned {word}")
+    if report["auto_memory"]:
+        info(f"       ✓ Claude Code auto memory setting {report['auto_memory']}")
     if report["backup"]:
         info(f"       backup of previous settings.json: {report['backup']}")
 

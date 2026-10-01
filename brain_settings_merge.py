@@ -433,6 +433,50 @@ def prune_permission_rules(settings: dict) -> int:
     return removed
 
 
+AUTO_MEMORY_KEY = "autoMemoryEnabled"
+# Sidecar next to settings.json recording what the key held before install turned
+# it off. settings.json itself cannot carry an ownership marker, and without one
+# uninstall could not tell our `false` from a user's own.
+AUTO_MEMORY_MARKER = ".brain-auto-memory.json"
+
+
+def auto_memory_marker_path(settings_path: Path) -> Path:
+    return settings_path.with_name(AUTO_MEMORY_MARKER)
+
+
+def disable_auto_memory(settings: dict) -> dict | None:
+    """Turn off Claude Code's built-in auto memory; return the prior state if changed.
+
+    Auto memory is on by default, and its system-prompt section tells the model to
+    save user/feedback/project/reference notes under `<config>/projects/*/memory/` --
+    the Brain's own taxonomy, machine-local, invisible to every other agent, and in
+    direct contradiction of the global CLAUDE.md. The system prompt outranks CLAUDE.md
+    (which arrives as a user message), so two memory systems compete in every session.
+    Returns None when the key was already `false`, else `{"present": bool, "value": v}`.
+    """
+    present = AUTO_MEMORY_KEY in settings
+    previous = settings.get(AUTO_MEMORY_KEY)
+    if present and previous is False:
+        return None
+    settings[AUTO_MEMORY_KEY] = False
+    return {"present": present, "value": previous}
+
+
+def restore_auto_memory(settings: dict, prior: object) -> bool:
+    """Uninstall counterpart: put back what install replaced, if it is still ours.
+
+    Only a key that still reads `false` is touched -- if the user has turned auto
+    memory back on since, that is their choice and it stays.
+    """
+    if not isinstance(prior, dict) or settings.get(AUTO_MEMORY_KEY) is not False:
+        return False
+    if prior.get("present"):
+        settings[AUTO_MEMORY_KEY] = prior.get("value")
+    else:
+        settings.pop(AUTO_MEMORY_KEY, None)
+    return True
+
+
 def render_hooks_template(
     template_text: str,
     *,
@@ -534,25 +578,55 @@ def merge(
     append_brain_hooks(settings, block)
     prune_permission_rules(settings)
     merge_permission_rule(settings, brain_cmd)
+    prior = disable_auto_memory(settings)
 
     wrote, backup = save_settings(settings_path, settings)
+    # The marker is written only after settings.json landed, and never over an
+    # existing one: a re-install after the user flipped the key back must keep the
+    # state from before the *first* install, which is what uninstall restores.
+    marker = auto_memory_marker_path(settings_path)
+    if prior is not None and not marker.exists():
+        atomic_write_text(marker, json.dumps(prior) + "\n")
     return {
         "pruned": removed,
         "events": sorted(block),
         "wrote": wrote,
         "backup": str(backup) if backup else "",
+        "auto_memory": "disabled" if prior is not None else "already off",
     }
 
 
 def prune(settings_path: Path, *, brain_hooks: str = "", brain_launch: str = "") -> dict:
-    """Uninstall path: remove Brain-owned hooks and the allow rule, save."""
+    """Uninstall path: remove Brain-owned hooks and the allow rule, restore auto memory, save."""
     settings = load_settings(settings_path)
     removed = prune_brain_hooks(settings, brain_hooks, brain_launch)
     if isinstance(settings.get("hooks"), dict) and not settings["hooks"]:
         settings.pop("hooks", None)
     removed += prune_permission_rules(settings)
+
+    marker = auto_memory_marker_path(settings_path)
+    auto_memory = ""
+    if marker.exists():
+        try:
+            prior = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            prior = None
+        if prior is None:
+            auto_memory = "left as is (ownership marker unreadable)"
+        elif restore_auto_memory(settings, prior):
+            auto_memory = "restored to its pre-install value"
+        else:
+            auto_memory = "left as is (changed since install)"
+
     wrote, backup = save_settings(settings_path, settings)
-    return {"removed": removed, "wrote": wrote, "backup": str(backup) if backup else ""}
+    if marker.exists():
+        marker.unlink()
+    return {
+        "removed": removed,
+        "wrote": wrote,
+        "backup": str(backup) if backup else "",
+        "auto_memory": auto_memory,
+    }
 
 
 # ---------------------------------------------------------------------- CLI --
@@ -612,6 +686,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         word = "entry" if report["removed"] == 1 else "entries"
         print(f"       [ok] removed {report['removed']} Brain-owned {word}")
+        if report["auto_memory"]:
+            print(f"       [ok] Claude Code auto memory setting {report['auto_memory']}")
         if report["backup"]:
             print(f"       backup: {report['backup']}")
         return 0
@@ -637,6 +713,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if report["wrote"]:
         print(f"       [ok] hooks merged ({len(report['events'])} events)")
+        if report["auto_memory"] == "disabled":
+            print("       [ok] Claude Code auto memory disabled (the Brain replaces it)")
         if report["backup"]:
             print(f"       backup: {report['backup']}")
     else:

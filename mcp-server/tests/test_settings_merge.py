@@ -662,3 +662,83 @@ def test_an_unownable_template_is_rejected(tmp_path):
     ]}}), encoding="utf-8")
     with pytest.raises(sm.SettingsError, match="duplicate"):
         sm.merge(tmp_path / "settings.json", template, brain_cmd=BRAIN_CMD)
+
+
+# ------------------------------------------------------------- auto memory --
+#
+# Claude Code's built-in auto memory competes with the Brain: its system-prompt
+# section directs saves into machine-local `<config>/projects/*/memory/`. Install
+# turns it off; uninstall puts back exactly what install replaced, and nothing a
+# user chose themselves.
+
+def _auto_memory(settings_path: Path) -> object:
+    return json.loads(settings_path.read_text(encoding="utf-8")).get(sm.AUTO_MEMORY_KEY, "<absent>")
+
+
+def test_install_disables_auto_memory_and_uninstall_removes_the_key(tmp_path):
+    settings_path = write_json(tmp_path / "settings.json", third_party_settings())
+    report = posix_merge(settings_path)
+    assert report["auto_memory"] == "disabled"
+    assert _auto_memory(settings_path) is False
+    assert sm.auto_memory_marker_path(settings_path).exists()
+
+    report = sm.prune(settings_path, brain_hooks=BRAIN_HOOKS)
+    assert report["auto_memory"].startswith("restored")
+    assert _auto_memory(settings_path) == "<absent>"
+    assert not sm.auto_memory_marker_path(settings_path).exists()
+
+
+def test_an_explicit_true_is_restored_on_uninstall(tmp_path):
+    settings_path = write_json(tmp_path / "settings.json", {sm.AUTO_MEMORY_KEY: True})
+    posix_merge(settings_path)
+    assert _auto_memory(settings_path) is False
+    sm.prune(settings_path, brain_hooks=BRAIN_HOOKS)
+    assert _auto_memory(settings_path) is True
+
+
+def test_a_users_own_false_is_not_claimed(tmp_path):
+    """Already off before install: no marker, so uninstall must not turn it on."""
+    settings_path = write_json(tmp_path / "settings.json", {sm.AUTO_MEMORY_KEY: False})
+    report = posix_merge(settings_path)
+    assert report["auto_memory"] == "already off"
+    assert not sm.auto_memory_marker_path(settings_path).exists()
+    report = sm.prune(settings_path, brain_hooks=BRAIN_HOOKS)
+    assert report["auto_memory"] == ""
+    assert _auto_memory(settings_path) is False
+
+
+def test_turning_it_back_on_after_install_survives_uninstall(tmp_path):
+    settings_path = write_json(tmp_path / "settings.json", {})
+    posix_merge(settings_path)
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+    data[sm.AUTO_MEMORY_KEY] = True
+    write_json(settings_path, data)
+
+    report = sm.prune(settings_path, brain_hooks=BRAIN_HOOKS)
+    assert report["auto_memory"].startswith("left as is")
+    assert _auto_memory(settings_path) is True
+    assert not sm.auto_memory_marker_path(settings_path).exists()
+
+
+def test_a_reinstall_keeps_the_state_from_before_the_first_install(tmp_path):
+    """Install over absent, user flips it on, reinstall flips it off again: the
+    marker must still say "absent", because that is what the user had before us."""
+    settings_path = write_json(tmp_path / "settings.json", {})
+    posix_merge(settings_path)
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+    data[sm.AUTO_MEMORY_KEY] = True
+    write_json(settings_path, data)
+    posix_merge(settings_path)
+    assert _auto_memory(settings_path) is False
+
+    sm.prune(settings_path, brain_hooks=BRAIN_HOOKS)
+    assert _auto_memory(settings_path) == "<absent>"
+
+
+def test_an_unreadable_marker_leaves_the_setting_alone(tmp_path):
+    settings_path = write_json(tmp_path / "settings.json", {})
+    posix_merge(settings_path)
+    sm.auto_memory_marker_path(settings_path).write_text("{not json", encoding="utf-8")
+    report = sm.prune(settings_path, brain_hooks=BRAIN_HOOKS)
+    assert "unreadable" in report["auto_memory"]
+    assert _auto_memory(settings_path) is False

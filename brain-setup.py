@@ -707,6 +707,8 @@ def merge_settings_json(claude_dir: Path, vault_root: Path, cmd: str) -> tuple[b
         warn(f"could not write {settings_path}: {exc} (original left unchanged)")
         return False, f"could not write {settings_path}: {exc}"
 
+    if report["auto_memory"] == "disabled":
+        info("       Claude Code auto memory disabled (the Brain replaces it; uninstall restores it)")
     if report["backup"]:
         info(f"       backup of previous settings.json: {report['backup']}")
     return True, ""
