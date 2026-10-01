@@ -1822,6 +1822,19 @@ def stats() -> dict:
 
 
 def forget_memory(rel_or_abs_path: str) -> Path:
+    return forget_memory_archived(rel_or_abs_path)[0]
+
+
+def forget_memory_archived(rel_or_abs_path: str) -> tuple[Path, Path]:
+    """Delete a memory, keeping a copy; return (deleted path, archived copy).
+
+    `forget` sits on the pre-approved agent surface, so a prompt-injected model can
+    run it without a prompt -- and until 2026-10-01 it simply unlinked, while a save
+    that replaced a memory archived what it replaced. Now both go through
+    `_archive_previous_version`: the copy lands in `archive/versions/` (out of the
+    index, recall and both preloads, carried by Obsidian Sync), newest VERSION_KEEP
+    kept.
+    """
     root = vault_root()
     p = Path(rel_or_abs_path)
     if not p.is_absolute():
@@ -1860,6 +1873,11 @@ def forget_memory(rel_or_abs_path: str) -> Path:
             f"refusing to delete {p}: not a memory or session checkpoint "
             f"(only .md files under Brain/ that `brain list` would show can be forgotten)"
         )
+    target = root / rel
+    # Read like save_memory reads what it replaces, so _atomic_write reproduces the
+    # same file; errors="replace" so one undecodable note can still be forgotten.
+    previous = target.read_text(encoding="utf-8", errors="replace")
+    version = _archive_previous_version(target, previous, root)
     p.unlink()
     _try_embed_delete(p)
-    return p
+    return p, version
