@@ -131,7 +131,8 @@ def append_activity(line: str) -> None:
                          f"(check BRAIN_VAULT, or wait for the vault to sync)\n")
         return
     activity = brain / "activity.md"
-    with activity.open("a", encoding="utf-8") as f:
+    # LF on every OS: rows from a Windows and a Mac session share this one file.
+    with activity.open("a", encoding="utf-8", newline="\n") as f:
         f.write(line.rstrip() + "\n")
     _rotate_activity(activity)
 

@@ -333,7 +333,10 @@ def _atomic_write(path: Path, text: str) -> None:
     """
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{next(_tmp_counter)}.tmp")
     try:
-        tmp.write_text(text, encoding="utf-8")
+        # newline="\n": text mode on Windows otherwise writes every "\n" as CRLF, so
+        # the same memory had different bytes depending on which machine last saved
+        # it (41 of 50 strixlappy-stamped notes were CRLF on 2026-10-01).
+        tmp.write_text(text, encoding="utf-8", newline="\n")
         os.replace(tmp, path)
     finally:
         try:
