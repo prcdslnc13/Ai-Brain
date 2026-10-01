@@ -1020,3 +1020,42 @@ The fix gives each surface a name of its own:
 
 `tests/test_mcp_session_budget.py` covers the MCP precedence, the lower-only argument, bad
 values, `slim`, and the advertised schema.
+
+### MCP tools run in a worker thread, one at a time, and nothing in a tool may wait on stdin (2026-10-01)
+
+`call_tool` ran every tool directly on the stdio server's event loop. All of them are
+synchronous file and sqlite work, and a recall can spend its whole 5 s sync budget
+embedding a backlog slice. For that time the server answered nothing: no ping, no
+cancellation, no `tools/list`. The SDK already runs each request as its own task, so the
+fix looked like one line, `await asyncio.to_thread(...)`.
+
+That line hung the first recall indefinitely on Windows. With the loop free, the
+transport's reader thread issues its next blocking read on stdin at once. A tool thread
+then loaded numpy's extension DLL, and the load blocked until that read completed. An MCP
+client waiting on a tool result sends nothing more, so it never completed. A stack dump
+showed the tool thread inside `numpy/_core/multiarray.py`'s extension load, and the
+reader thread in `anyio`'s worker. Starting a subprocess that inherits the server's stdin
+hung the same way. The old handler never hit either, because a blocked loop never issued
+the next read.
+
+The rules that make the threaded handler safe:
+
+- **`run()` calls `_preload_native_modules()` before `stdio_server`.** It imports numpy,
+  and fastembed when embedding is on, after `embed`, whose module-top pins must come
+  first. That took 0.16-0.83 s at startup on strixlappy.
+- **Every `subprocess` call in `brain_mcp` passes `stdin=`**, `DEVNULL` for all of them
+  today. A child must not share the protocol pipe anyway. The background reindex already
+  did; ripgrep, the doctor's two git calls and macOS `scutil` did not.
+- **`_TOOL_LOCK` keeps tool calls serial.** The vault and embedding code have module
+  caches and a lazily built embedder, and were written for one caller per process. It is
+  a threading lock because an asyncio one binds to the first loop that contends for it.
+
+At stdin EOF the server exits and drops any call still in flight. Main did the same for
+whichever call was in flight at EOF, so a heredoc smoke test that sends `tools/call`
+lines may lose the last answers. Use `tools/list`, which still runs on the loop, or hold
+stdin open.
+
+`tests/test_mcp_tool_threading.py` asserts that the loop stays responsive during a slow
+tool, that calls are serialized, and that the preload runs before stdio. It also scans
+the package's AST for any `subprocess` call without `stdin=`. A pipe-level reproduction
+needs Windows, so it asserts the properties instead.
