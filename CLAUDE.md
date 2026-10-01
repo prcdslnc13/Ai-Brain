@@ -490,7 +490,7 @@ incident.
   `Brain/archive/versions/` (`VERSION_KEEP`=5, monotonic names) and reports it; a byte-identical
   re-save writes nothing; `slugify` transliterates via NFKD and hashes when no ASCII survives;
   caller frontmatter is honoured only as a mapping; `forget_memory` requires a `.md` that
-  `is_memory_path` accepts.
+  `is_memory_path` accepts, and archives it to `archive/versions/` the same way before deleting.
 - **brain-compact buckets and ages by the date in the filename, never mtime**, merges by
   `<!-- brain-compact source: … -->` sections, reclaims fully-absorbed sources, and merges into
   existing archives. It never rolls up a project's newest checkpoint (by name). Test fixtures use

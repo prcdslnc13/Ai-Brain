@@ -154,8 +154,9 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
 
 def _cmd_forget(args: argparse.Namespace) -> int:
-    path = vault.forget_memory(args.path)
+    path, version = vault.forget_memory_archived(args.path)
     print(f"forgot: {path}")
+    print(f"archived copy: {version}")
     return 0
 
 
