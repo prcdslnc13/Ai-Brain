@@ -370,7 +370,8 @@ incident.
   changes.
 - **A `project` value is a directory basename and nothing else.** `vault.validate_project_name()`
   is the predicate (a blacklist, not a whitelist), `vault.project_dir()` the only path builder,
-  `vault.projects_root()` the only enumerator. `project_basename()` returns None and never raises;
+  `vault.projects_root()` the only enumerator. Hooks take the directory from `_common.project_dir()`
+  (`CLAUDE_PROJECT_DIR` first; the payload's `cwd` follows `cd`). `project_basename()` returns None and never raises;
   doctor downgrades to `PROJECT_NAME_INVALID`; the CLI exits 2; the MCP server returns an error
   result. A test fails on any direct join under `"projects"`.
 - **Checkpoint filenames are claimed with `O_EXCL`** (`_reserve_checkpoint_path`), to the second,

@@ -21,7 +21,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from _common import emit, project_basename, read_payload
+from _common import emit, project_basename, project_dir, read_payload
 
 FATAL_VAULT_CODES = ("BRAIN_VAULT_UNSET", "BRAIN_VAULT_MISSING", "BRAIN_DIR_MISSING")
 
@@ -80,7 +80,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     payload = read_payload()
     project = project_basename(payload)
-    project_cwd = payload.get("cwd")
+    project_cwd = project_dir(payload)
     first = args.part is None or args.part == 1
 
     # Import failure is its own failure: nothing downstream can run, so say so and

@@ -201,15 +201,34 @@ def test_project_basename_sanitizes_rather_than_raising(tmp_path: Path) -> None:
     assert vault.project_basename(Path(tmp_path.anchor).as_posix()) is None
 
 
-def test_hook_project_basename_delegates(tmp_path: Path) -> None:
+def test_hook_project_basename_delegates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The hooks kept their own `Path(cwd).name`; it is the value that reaches
     write_checkpoint, so it must obey the same rule."""
     import _common
 
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
     good = tmp_path / "Widget"
     good.mkdir()
     assert _common.project_basename({"cwd": str(good)}) == "Widget"
     assert _common.project_basename({}) is None
+
+
+def test_the_launch_dir_beats_a_cwd_that_wandered(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The payload's `cwd` follows `cd` and worktree entry; CLAUDE_PROJECT_DIR stays at
+    the launch dir. A session started in Widget that cd'd into Widget/hooks, or into a
+    worktree under Widget/.claude/worktrees/x, is still project Widget."""
+    import _common
+
+    root = tmp_path / "Widget"
+    for sub in ("hooks", ".claude/worktrees/x"):
+        (root / sub).mkdir(parents=True)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(root))
+    for wandered in (root / "hooks", root / ".claude" / "worktrees" / "x"):
+        assert _common.project_basename({"cwd": str(wandered)}) == "Widget"
+        assert _common.project_dir({"cwd": str(wandered)}) == str(root)
+
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR")
+    assert _common.project_basename({"cwd": str(root / "hooks")}) == "hooks", "fallback is the payload cwd"
 
 
 # ------------------------------------------------------------ frontend surfaces
