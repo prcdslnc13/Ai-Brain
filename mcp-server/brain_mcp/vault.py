@@ -721,9 +721,14 @@ def _ripgrep_search(query: str, root: Path) -> dict[Path, int]:
     matches: dict[Path, int] = {}
     if rg:
         try:
+            # ripgrep writes UTF-8. `text=True` alone decodes with the locale's
+            # code page -- cp1252 on Windows -- which garbled a non-ASCII project
+            # path (the hit was then dropped) or raised on bytes cp1252 leaves
+            # undefined, and the except below threw away every lexical hit.
             out = subprocess.run(
                 _ripgrep_argv(rg, query, root),
-                capture_output=True, text=True, check=False,
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                check=False,
             )
             for line in out.stdout.splitlines():
                 line = line.strip()

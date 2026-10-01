@@ -126,3 +126,29 @@ def test_python_fallback_counts_the_literal_substring_case_insensitively(
 
     hits = vault._ripgrep_search(query, vault_dir)
     assert hits == {hit: 2}, hits
+
+
+@pytest.mark.parametrize("dirname", ["Проект", "Ёлка", "café-notes"])
+def test_rg_output_is_decoded_as_utf8_not_the_locale(
+    dirname: str, vault_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ripgrep writes UTF-8; `text=True` alone decodes with the locale code page.
+
+    On Windows that is cp1252: a non-ASCII project path came back garbled (so the
+    hit was dropped), and bytes cp1252 leaves undefined (0x81, 0x8D, 0x8F, 0x90,
+    0x9D -- "Ё" is D0 81) raised, which the blanket except turned into "no lexical
+    hits at all". The stub decodes exactly as subprocess would, as cp1252 when no
+    encoding is passed, so the bug reproduces on any OS.
+    """
+    hit = vault_dir / "projects" / dirname / "note.md"
+    memory(hit, "n", "project", "zanzibar marker")
+    raw = f"{hit}:1\n".encode("utf-8")
+    monkeypatch.setattr(vault.shutil, "which", lambda name: "/fake/bin/rg")
+
+    def run(argv, **kwargs):
+        assert kwargs.get("text"), "the parser expects str output"
+        stdout = raw.decode(kwargs.get("encoding") or "cp1252", kwargs.get("errors") or "strict")
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(vault.subprocess, "run", run)
+    assert vault._ripgrep_search("zanzibar", vault_dir) == {hit: 1}
