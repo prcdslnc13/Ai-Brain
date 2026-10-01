@@ -1235,6 +1235,11 @@ def collect_preload_candidates(project: str | None = None) -> dict:
 
     def add_elastic(label: str, files: list[Path], kind: str) -> None:
         for f in files:
+            # The one predicate for "is this a memory". The feedback walks are rglob,
+            # so without it a `feedback/archive/` copy or an `_draft.md` preloaded --
+            # spending the budget on text `brain list` and recall both refuse to show.
+            if not is_memory_path(f, root):
+                continue
             content = read(f)
             if content is None:
                 continue

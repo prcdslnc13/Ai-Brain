@@ -82,3 +82,21 @@ def test_render_list_does_not_surface_bookkeeping(populated_vault: Path) -> None
     out = render.render_list(render.list_payload())
     assert "activity.md" not in out
     assert "unknown" not in out, "bookkeeping files were the source of the 'unknown' type bucket"
+
+
+def test_the_preload_carries_only_memories(vault_dir: Path) -> None:
+    """The bundle's feedback walks are rglob and used no predicate, so an archived
+    copy or an `_`-prefixed draft under feedback/ preloaded and spent the budget on
+    text `brain list` and recall both refuse to show."""
+    from conftest import memory
+
+    memory(vault_dir / "feedback" / "real-rule.md", "real rule", "feedback", "do the thing")
+    memory(vault_dir / "feedback" / "_draft.md", "draft", "feedback", "half-written rule")
+    memory(vault_dir / "feedback" / "archive" / "old-rule.md", "old", "feedback", "superseded rule")
+    memory(vault_dir / "projects" / "Widget" / "feedback" / "_scratch.md", "s", "feedback", "scratch")
+
+    bundle = vault.collect_preload_candidates("Widget")
+    paths = [item["path"].replace("\\", "/") for item in bundle["elastic"]]
+
+    assert any(p.endswith("feedback/real-rule.md") for p in paths)
+    assert not any(p.endswith(("_draft.md", "archive/old-rule.md", "_scratch.md")) for p in paths), paths
