@@ -442,6 +442,11 @@ incident.
   catalogued by name. No `--part` means the whole bundle.
 - **Global feedback fills before user memories** (project feedback → global feedback → user).
   If the corpus outgrows the parts, compact `user/`; don't reorder again.
+- **Each preload surface has its own budget knob; never size a local model from Claude
+  Code's `settings.json`.** Hooks read `BRAIN_BUNDLE_BUDGET_KB` (72); `brain_session_start`
+  reads `vault.mcp_budget_kb()` (`BRAIN_MCP_BUDGET_KB`, falling back to the shared name) and
+  its `budget_kb` argument only lowers it; pi reads `BRAIN_PI_BUDGET_KB` (12) first;
+  cherryd has `CHERRYD_BRAIN_BUDGET_KB`.
 - **`doctor.check()` isolates every check; a check failure is never a vault failure.**
   `_run_check` turns a raise into `CHECK_FAILED`; `_read_frontmatter_head` returns None for
   anything not a UTF-8 mapping; sort keys and `max()` use `vault.safe_mtime` (a test fails on

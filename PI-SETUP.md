@@ -130,7 +130,7 @@ place the rest of this repo reads its configuration from:
 |---|---|---|
 | `BRAIN_VAULT` | `~/Vaults/Ai-Brain` if it exists | Vault path |
 | `BRAIN_PI_CMD` | venv `brain` in the package | Path to the `brain` **venv executable** (`…/.venv/bin/brain` or `…\.venv\Scripts\brain.exe`). Not Claude Code's generated `brain.cmd` wrapper: the extension spawns without a shell, and Node ≥ 20.12 refuses `.cmd`/`.bat` files that way (EINVAL). |
-| `BRAIN_BUNDLE_BUDGET_KB` | `12` | Preload budget (≈3k tokens; 6 KB ≈ 1.5k, 16 KB ≈ 4k) |
+| `BRAIN_PI_BUDGET_KB` | `12` | Preload budget (≈3k tokens; 6 KB ≈ 1.5k, 16 KB ≈ 4k). Falls back to `BRAIN_BUNDLE_BUDGET_KB` when unset, but prefer this name: the shared one also sizes Claude Code's 72 KB preload, so a single value can't suit both |
 | `BRAIN_PI_SLIM` | on | `0` preloads the full bundle (project overview + last checkpoint) |
 | `BRAIN_PI_PRELOAD` | on | `0` skips the preload |
 | `BRAIN_PI_CHECKPOINT` | on | `0` skips automatic checkpoints |

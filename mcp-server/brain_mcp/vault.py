@@ -920,6 +920,20 @@ def bundle_budget_kb() -> float:
     return _budget_kb_from_env("BRAIN_BUNDLE_BUDGET_KB", BUNDLE_BUDGET_DEFAULT_KB)
 
 
+def mcp_budget_kb() -> float:
+    """The ceiling for `brain_session_start`, the MCP server's preload.
+
+    Its own knob because its readers are local models in LM Studio and the like,
+    whose windows are a fraction of Claude Code's. One shared name meant the only
+    way to shrink their bundle was a setting that also starved every Claude Code
+    session: on 2026-10-01 a 48 KB `BRAIN_BUNDLE_BUDGET_KB`, set in a Claude Code
+    `settings.json` to protect local models, was skipping ten memories from Opus
+    sessions and never reached LM Studio at all. Unset falls back to
+    `BRAIN_BUNDLE_BUDGET_KB` so an existing MCP config keeps its meaning.
+    """
+    return _budget_kb_from_env("BRAIN_MCP_BUDGET_KB", bundle_budget_kb())
+
+
 def safe_mtime(p: Path) -> float:
     """`st_mtime`, or 0.0 when the file is gone.
 
