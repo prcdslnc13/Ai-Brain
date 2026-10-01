@@ -383,7 +383,8 @@ incident.
   real empty `.md`, unlinked on a failed write. `_atomic_write` temp names carry pid + counter and
   never end in `.md`.
 - **Frontmatter is built with `vault._frontmatter()` and written with `vault._atomic_write()`**,
-  never f-strings + `write_text`. The CLI forces UTF-8 on stdio; `--project` filtering uses
+  never f-strings + `write_text`. Every text write into the vault pins `newline="\n"`; text mode
+  on Windows writes CRLF otherwise (`test_vault_line_endings.py`). The CLI forces UTF-8 on stdio; `--project` filtering uses
   `vault.path_in_project()`. Doctor flags `MALFORMED_FRONTMATTER`.
 - **The preload carries the rule; `**Why:**` is deferred to recall.** `vault.preload_text()`
   replaces it with a marker in elastic sections only — lossless, nothing on disk changes,
