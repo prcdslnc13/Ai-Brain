@@ -7,9 +7,12 @@ import os
 # at one. The SessionStart hook spawns several brain processes at once, and on a
 # commit-starved box (strixlappy, 2026-09-14) that failed the hook with
 # "OpenBLAS error: Memory allocation still failed after 10 retries". Must be set
-# before the first numpy/onnxruntime import; setdefault leaves a user override alone.
+# before the first numpy/onnxruntime import. A user's own value is left alone; an
+# empty one is not an override (OpenBLAS reads it as "use the default"), so it is
+# replaced like an absent one.
 for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
-    os.environ.setdefault(_var, "1")
+    if not os.environ.get(_var, "").strip():
+        os.environ[_var] = "1"
 del _var
 
 __version__ = "0.1.0"
