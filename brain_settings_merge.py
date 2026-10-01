@@ -433,6 +433,47 @@ def prune_permission_rules(settings: dict) -> int:
     return removed
 
 
+INSTALLS_FILE = ".brain-installs.json"
+
+
+def _installs_path(repo_dir: Path) -> Path:
+    return Path(repo_dir) / INSTALLS_FILE
+
+
+def recorded_installs(repo_dir: Path) -> list[Path]:
+    """Config dirs setup has installed into, as recorded at the repo root.
+
+    The venv is shared by every config dir, so uninstall must find all of them before
+    deleting it -- and a config dir can be any path, not just `~/.claude*`. A missing
+    or unreadable record is an empty list: it only ever adds candidates to check.
+    """
+    try:
+        data = json.loads(_installs_path(repo_dir).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    dirs = data.get("config_dirs") if isinstance(data, dict) else None
+    return [Path(d) for d in dirs if isinstance(d, str)] if isinstance(dirs, list) else []
+
+
+def _write_installs(repo_dir: Path, dirs: list[Path]) -> None:
+    unique = sorted({str(d) for d in dirs})
+    atomic_write_text(_installs_path(repo_dir), json.dumps({"config_dirs": unique}, indent=2) + "\n")
+
+
+def record_install(repo_dir: Path, claude_dir: Path) -> None:
+    dirs = recorded_installs(repo_dir)
+    if str(claude_dir) not in {str(d) for d in dirs}:
+        _write_installs(repo_dir, dirs + [Path(claude_dir)])
+
+
+def forget_installs(repo_dir: Path, claude_dirs: list[Path]) -> None:
+    gone = {str(d) for d in claude_dirs}
+    dirs = recorded_installs(repo_dir)
+    kept = [d for d in dirs if str(d) not in gone]
+    if len(kept) != len(dirs):
+        _write_installs(repo_dir, kept)
+
+
 def render_hooks_template(
     template_text: str,
     *,
