@@ -616,7 +616,7 @@ def embed_text(path: Path) -> str:
         parts = [mem.name or Path(path).stem]
         body = (mem.body or "").strip()
         desc = (mem.description or "").strip()
-        # write_memory derives description from the body's first line, so for most
+        # save_memory derives description from the body's first line, so for most
         # memories it is already a prefix of the body — repeating it would burn budget
         # on a duplicate rather than buying any signal.
         if desc and not body.startswith(desc[:80]):
@@ -681,6 +681,19 @@ def _indexable(root: Path) -> dict[str, float]:
             continue
         out[_index_key(p, root)] = mtime
     return out
+
+
+def _mtime_changed(current: float, recorded: float) -> bool:
+    """Whether a file's mtime differs from the one its vector was embedded at.
+
+    Differs, not "is newer". Obsidian Sync carries the writing machine's mtime, so
+    a note edited on a box whose clock runs behind lands *older* than the row this
+    machine recorded; restoring a note from `archive/versions/` does the same. A
+    newer-only test never re-embedded either one, and recall kept ranking the file
+    by its previous text with nothing reporting it stale. Shared by sync() and
+    backlog() for the reason `_indexable` is.
+    """
+    return abs(current - recorded) > 1e-6
 
 
 # A reindex outlives the hook that starts it, so the guard against concurrent
@@ -1116,7 +1129,7 @@ class EmbedIndex:
                 pending: list[tuple[str, float]] = []
                 for key, mtime in current.items():
                     prior = existing.get(key)
-                    stale_row = prior is None or mtime > prior[0] + 1e-6
+                    stale_row = prior is None or _mtime_changed(mtime, prior[0])
                     # A rebuild replaces the rows still carrying the superseded
                     # recipe, however fresh their mtime — and *only* those. Rows a
                     # previous, interrupted pass already re-embedded carry the
@@ -1242,7 +1255,7 @@ class EmbedIndex:
         n = 0
         for path, mtime in _indexable(root).items():
             prior = existing.get(path)
-            if prior is None or mtime > prior + 1e-6:
+            if prior is None or _mtime_changed(mtime, prior):
                 n += 1
         return n
 

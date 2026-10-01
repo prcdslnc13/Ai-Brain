@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import sys
 import threading
@@ -48,7 +49,23 @@ async def list_tools() -> list[Tool]:
                     "project": {
                         "type": "string",
                         "description": "basename of the project directory (e.g. 'MyProject'). Optional.",
-                    }
+                    },
+                    "budget_kb": {
+                        "type": "number",
+                        "description": (
+                            "Cap the bundle at this many kilobytes (roughly 400 tokens per KB "
+                            "once wrapped in this tool's JSON). "
+                            "Pass a smaller value when your context window is small. Optional; "
+                            "it can lower the server's configured budget but never raise it."
+                        ),
+                    },
+                    "slim": {
+                        "type": "boolean",
+                        "description": (
+                            "Leave out the project overview and the latest session checkpoint. "
+                            "Optional, default false."
+                        ),
+                    },
                 },
             },
             annotations=_READ_ONLY,
@@ -305,7 +322,22 @@ def _call_tool_sync(name: str, arguments: dict | None) -> list[TextContent]:
             # Item contents arrive already defanged, and the bundle carries
             # `trust_notice` + `fence` so a client assembling its own prompt renders
             # the same boundary the hooks do (ROADMAP 3F).
-            return _ok(vault.session_start_bundle(args.get("project")))
+            #
+            # The operator's budget is a ceiling: a model may ask for less (its own
+            # window is the one thing it knows), never for more than the config
+            # sized for it.
+            budget_kb = vault.mcp_budget_kb()
+            if args.get("budget_kb") is not None:
+                try:
+                    requested = float(args["budget_kb"])
+                except (TypeError, ValueError):
+                    return _err("budget_kb must be a number of kilobytes")
+                if not math.isfinite(requested) or requested <= 0:
+                    return _err("budget_kb must be a positive number of kilobytes")
+                budget_kb = min(budget_kb, requested)
+            return _ok(vault.session_start_bundle(
+                args.get("project"), budget_kb=budget_kb,
+                slim=bool(args.get("slim", False))))
         if name == "brain_recall":
             payload = render.recall_payload(
                 query=args["query"],

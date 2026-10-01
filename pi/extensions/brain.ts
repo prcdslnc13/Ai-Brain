@@ -19,7 +19,8 @@
  *
  *   BRAIN_VAULT                 vault path (falls back to ~/Vaults/Ai-Brain)
  *   BRAIN_PI_CMD / BRAIN_CMD    path to the `brain` executable
- *   BRAIN_BUNDLE_BUDGET_KB      preload budget, default 12 (a 32k-window model)
+ *   BRAIN_PI_BUDGET_KB          preload budget, default 12 (a 32k-window model);
+ *                               BRAIN_BUNDLE_BUDGET_KB is read when it is unset
  *   BRAIN_PI_PRELOAD=0          skip the session preload
  *   BRAIN_PI_SLIM=0             preload the full bundle, not the slim one
  *   BRAIN_PI_CHECKPOINT=0       skip automatic checkpoints
@@ -211,7 +212,10 @@ export default function brainExtension(pi: ExtensionAPI) {
 	// 60s, not 20: the first recall on a machine builds the embedding index for
 	// the whole vault, and a killed build is worse than a slow one.
 	const timeoutMs = envNumber("BRAIN_PI_TIMEOUT_MS", 60_000);
-	const budgetKb = envNumber("BRAIN_BUNDLE_BUDGET_KB", 12);
+	// Its own name first: BRAIN_BUNDLE_BUDGET_KB also sizes Claude Code's 72 KB
+	// preload, so one value set for both starves one of them. The shared name
+	// is still read so an existing setup keeps working.
+	const budgetKb = envNumber("BRAIN_PI_BUDGET_KB", envNumber("BRAIN_BUNDLE_BUDGET_KB", 12));
 	const checkpointEvery = envNumber("BRAIN_PI_CHECKPOINT_EVERY", 3);
 	const guidance = loadGuidance();
 
