@@ -678,13 +678,22 @@ def test_recursive_memory_enumerations_route_through_the_predicate() -> None:
     for one has to answer the same question -- which is precisely the question that
     had three different answers before `is_memory_path` unified them.
     """
+    # vault.py joined the scan on 2026-10-01, when the preload's feedback walk was
+    # found bypassing the predicate. Two functions are deliberate exceptions:
+    #   _ripgrep_search filters rg's output on path *parts* (EXCLUDE_DIRS,
+    #     EXCLUDE_FILES); is_memory_path's relative_to() against rg-printed paths
+    #     can fail on Windows path forms and would drop every hit.
+    #   stats counts through iter_indexable_md, which routes; its own glob is the
+    #     non-recursive sessions listing.
+    exempt = {("vault.py", "_ripgrep_search"), ("vault.py", "stats")}
     offenders = []
-    for fn in _functions_with_markdown_enumeration(Path(doctor.__file__)):
-        body = ast.dump(fn)
-        recursive = "'rglob'" in body
-        routed = "is_memory_path" in body or "is_session_path" in body
-        if recursive and not routed:
-            offenders.append(fn.name)
+    for source in (Path(doctor.__file__), Path(vault.__file__)):
+        for fn in _functions_with_markdown_enumeration(source):
+            body = ast.dump(fn)
+            recursive = "'rglob'" in body
+            routed = "is_memory_path" in body or "is_session_path" in body
+            if recursive and not routed and (source.name, fn.name) not in exempt:
+                offenders.append(f"{source.name}:{fn.name}")
     assert not offenders, (
         f"{offenders} rglob '*.md' without vault.is_memory_path/is_session_path; "
         f"that is how doctor came to flag 61 machine-written rollups"
