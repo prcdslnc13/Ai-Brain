@@ -1169,8 +1169,8 @@ def session_start_bundle(project: str | None = None, budget_kb: float | None = N
     still loads the project's scoped feedback — behavioral rules apply to delegated
     work just as much as to the main session.
 
-    Elastic sections fill in priority order — project-scoped feedback, then user,
-    then global feedback — so under a tight budget, global feedback is what gets
+    Elastic sections fill in priority order — project-scoped feedback, then global
+    feedback, then user — so under a tight budget, user context is what gets
     dropped first. The index, project overview, and latest session checkpoint are
     always included (clipped to a per-item cap — see `pinned_max_chars`). User
     profile entries and feedback files are added in priority order until the budget

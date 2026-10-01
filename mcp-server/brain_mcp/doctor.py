@@ -55,7 +55,7 @@ def _check_brain_vault() -> list[Finding]:
         return [Finding(
             "error", "BRAIN_VAULT_UNSET",
             "BRAIN_VAULT environment variable is not set.",
-            "Re-run setup-mac.sh or setup-windows.ps1 with the vault path, "
+            "Re-run brain-setup.py with the vault path, "
             "or export BRAIN_VAULT before launching Claude Code.",
         )]
     path = Path(raw).expanduser()
@@ -376,7 +376,7 @@ def _check_editable_install() -> list[Finding]:
         return [Finding(
             "error", "BRAIN_MCP_IMPORT_FAILED",
             f"brain_mcp import failed: {e}",
-            "Re-run setup-mac.sh or setup-windows.ps1 to reinstall into the venv.",
+            "Re-run brain-setup.py to reinstall into the venv.",
         )]
     mod_file = Path(brain_mcp.__file__).resolve()
     if "site-packages" not in mod_file.parts:
@@ -384,7 +384,7 @@ def _check_editable_install() -> list[Finding]:
             "warn", "EDITABLE_INSTALL",
             f"brain_mcp appears installed editable ({mod_file}).",
             "CLAUDE.md forbids pip install -e . — hooks break from foreign cwds. "
-            "Re-run setup-mac.sh with a plain reinstall.",
+            "Re-run brain-setup.py, which reinstalls it non-editable.",
         )]
     return [Finding("ok", "INSTALL_OK", f"brain_mcp at {mod_file.parent}")]
 
@@ -401,7 +401,7 @@ def _check_fastembed() -> list[Finding]:
         return [Finding(
             "warn", "FASTEMBED_MISSING",
             "fastembed not importable; recall will use ripgrep only.",
-            "Reinstall the MCP server venv (setup-mac.sh / setup-windows.ps1).",
+            "Reinstall the MCP server venv (re-run brain-setup.py).",
         )]
     return [Finding("ok", "FASTEMBED_OK", "fastembed importable")]
 

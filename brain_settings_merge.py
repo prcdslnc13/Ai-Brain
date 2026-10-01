@@ -2,13 +2,12 @@
 """The one settings.json merge/prune algorithm, shared by every installer.
 
 WHY THIS FILE EXISTS
-    The Brain has four install paths (`brain-setup.py`, `setup-mac.sh`,
-    `setup-linux.sh`, `setup-windows.ps1`) and four matching uninstall paths.
-    Until 2026-08-25 each carried its own hand-maintained copy of the hook-merge
-    logic - three of them as embedded Python heredocs. Every bug cluster in this
-    repo's history is "a fix landed at one of N sites", and this was the widest
-    N. Now all eight route through this module: the Python installers import it,
-    the shell/PowerShell ones invoke it as a script.
+    The Brain once had four install paths and four uninstall paths, each with its
+    own hand-maintained copy of the hook-merge logic -- three of them as embedded
+    Python heredocs. Every bug cluster in this repo's history is "a fix landed at
+    one of N sites", and this was the widest N. The shell and PowerShell scripts
+    are retired (ROADMAP 3G); `brain-setup.py` and `brain-uninstall.py` both import
+    this module, and its `merge`/`prune` CLI still works without the venv.
 
     Stdlib only, and deliberately runnable by a bare system python3 - the
     uninstallers run it after the venv may already be gone.

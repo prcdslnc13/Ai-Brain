@@ -22,14 +22,14 @@ Knobs: BRAIN_SUBAGENT_PRELOAD=0 disables the injection entirely;
 BRAIN_SUBAGENT_BUDGET_KB (default vault.SUBAGENT_BUDGET_DEFAULT_KB, 56) caps the
 bundle via the budget_kb parameter of vault.session_start_bundle.
 
-The default was 12 KB until 2026-07-30, which was self-defeating: the bundle fills
-with `user/` before it reaches `feedback/`, so a 12 KB cap delivered 11 user entries
+The default was 12 KB until 2026-07-30, which was self-defeating: the bundle then
+filled `user/` before it reached `feedback/`, so a 12 KB cap delivered 11 user entries
 and **zero** feedback — the behavioral rules this hook exists to propagate. 44 KB fit
 the whole of user + feedback with headroom at the time — but the corpus grows, and by
 2026-08-06 it had re-saturated (3 feedback rules silently dropped from every subagent).
 `brain doctor` now sizes the bundle at this budget too (SUBAGENT_BUNDLE_SATURATED), so
-the drop is at least visible. If you lower the budget, lower it knowing feedback is
-what gets dropped first. The default lives in `vault.SUBAGENT_BUDGET_DEFAULT_KB` so the
+the drop is at least visible. Since 2026-09-01 feedback fills before user, so a
+lowered budget drops user context first. The default lives in `vault.SUBAGENT_BUDGET_DEFAULT_KB` so the
 hook and doctor can never disagree about it.
 """
 

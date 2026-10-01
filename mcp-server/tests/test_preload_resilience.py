@@ -327,3 +327,19 @@ def test_hook_banner_names_the_installer_that_exists():
     text = session_start._import_failure_banner("x", RuntimeError("y"))
     assert "brain-setup.py" in text
     assert "setup-mac" not in text and "setup-windows" not in text
+
+
+def test_no_runtime_message_names_a_retired_installer():
+    """The class, not the one banner above: doctor's repair hints kept telling users
+    to run setup-mac.sh / setup-windows.ps1 for a month after ROADMAP 3G deleted
+    them, at exactly the moment something was broken. Nothing the package or the
+    hooks can print may name them."""
+    repo = Path(__file__).resolve().parents[2]
+    retired = ("setup-mac", "setup-linux", "setup-windows")
+    offenders = [
+        f"{py.relative_to(repo)}: {name}"
+        for py in [*(repo / "mcp-server" / "brain_mcp").glob("*.py"), *(repo / "hooks").glob("*.py")]
+        for name in retired
+        if name in py.read_text(encoding="utf-8")
+    ]
+    assert not offenders, offenders

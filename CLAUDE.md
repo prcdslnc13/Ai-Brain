@@ -77,8 +77,9 @@ The moving parts fit together as follows:
     reported only as a small "skipped N feedback" note in the banner. On 2026-07-30 the default
     (then 32 KB) was dropping 18 of 22 feedback memories from every session: saved correctly,
     never loaded, so the rules they encoded silently stopped applying and read as the model
-    ignoring past corrections. Default is now 72 KB, `BUNDLE_SATURATED` warns whenever anything
-    is skipped, and `OVERSIZED_MEMORIES` (info) flags bodies over
+    ignoring past corrections. Default is now 72 KB (more than `PRELOAD_PARTS` hook parts can
+    carry, so the per-part cap usually binds first and `PRELOAD_OVERFLOW` names what did not
+    fit), `BUNDLE_SATURATED` warns whenever anything is skipped, and `OVERSIZED_MEMORIES` (info) flags bodies over
     `doctor.MEMORY_BODY_SOFT_LIMIT` so the corpus gets compacted rather than the budget raised
     forever. The subagent path has its own, much smaller `BRAIN_SUBAGENT_BUDGET_KB` —
     doctor sizes that bundle too (`SUBAGENT_BUNDLE_SATURATED`), because on 2026-08-06 the
@@ -88,12 +89,12 @@ The moving parts fit together as follows:
     overview/checkpoint) into every subagent via the SubagentStart event. Claude 5-era models
     delegate heavily, and the SessionStart preload reaches only the main session — without this,
     delegated work runs without the user's behavioral rules. The budget is
-    `vault.SUBAGENT_BUDGET_DEFAULT_KB` (56 KB; measured 50.9 KB consumed on 2026-08-24, i.e.
-    **91% full** — this has silently saturated twice already, so treat a new feedback memory as
-    something that can push the corpus over). `BRAIN_SUBAGENT_BUDGET_KB` tunes it, but note the bundle fills with
-    `user/` *before* `feedback/`, so lowering it drops the behavioral rules first: the old 12 KB
-    default delivered 11 user entries and zero feedback, defeating the hook's entire purpose
-    (found 2026-07-30). `BRAIN_SUBAGENT_PRELOAD=0` disables. Verified
+    `vault.SUBAGENT_BUDGET_DEFAULT_KB` (56 KB). It has silently saturated more than once, so
+    treat a new feedback memory as something that can push the corpus over; `brain doctor`
+    reports the current fill (`SUBAGENT_BUNDLE_SATURATED`, `PRELOAD_OVERFLOW`).
+    `BRAIN_SUBAGENT_BUDGET_KB` tunes it. The bundle fills feedback before `user/`, so lowering
+    it drops user context first; until 2026-09-01 it was the other way round, and the old 12 KB
+    default delivered 11 user entries and zero feedback (found 2026-07-30). `BRAIN_SUBAGENT_PRELOAD=0` disables. Verified
     2026-07-28: SubagentStart fires and injects on Claude Code 2.1.220, hook config picked up
     mid-session, payload carries `agent_id`/`agent_type`.
   - `pre_compact.py` / `session_end.py` — share `_checkpoint.py`, a thin wrapper over
@@ -206,7 +207,7 @@ The moving parts fit together as follows:
   The model-facing command is the same on every platform: `"<venv python>" "<config-dir>/brain-agent.py"`,
   a generated stdlib-only launcher that sets `BRAIN_VAULT` and `BRAIN_AGENT_SURFACE=1` in
   `os.environ` and calls `brain_mcp.cli.main()` — never a `.cmd` and never an env-prefix (see
-  the F2 gotcha). On Windows it additionally generates `<config-dir>rain-launch.cmd` for the
+  the F2 gotcha). On Windows it additionally generates `<config-dir>\brain-launch.cmd` for the
   HOOK commands in `settings.json` (`<launch.cmd> <hook-name> [args]`, fixed text from the
   template, never model-chosen) and merges `templates/settings.hooks.win.json` instead of
   `settings.hooks.json`. Hooks and server/CLI code are identical across platforms.
