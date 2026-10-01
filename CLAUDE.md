@@ -186,7 +186,9 @@ The moving parts fit together as follows:
   direction) is deliberately shared across the install/uninstall boundary — a narrower predicate
   in the uninstaller strands orphan hooks, a wider one deletes a third-party hook.
   `_assert_block_is_ownable()` fails the install if a template command isn't detectable as ours,
-  because such a command could never be pruned and would duplicate on every run.
+  because such a command could never be pruned and would duplicate on every run. It also sets
+  `autoMemoryEnabled: false` and records what the key held before in `.brain-auto-memory.json`
+  beside `settings.json`; `prune` restores that value only while the key still reads `false`.
 
 - **`brain-setup.py`** — **THE installer, on every platform** (ROADMAP 3G retired
   `setup-mac.sh`, `setup-linux.sh` and `setup-windows.ps1` on 2026-08-25; do not add a
@@ -234,8 +236,9 @@ The moving parts fit together as follows:
   still lands, because a red test should not cost the user their Brain — but it **exits 4**, the
   same contract a refused `settings.json` already has, so a scripted install cannot report
   success over a broken checkout. Those two pull in opposite directions and both are required.
-  (3) `run_tests()` drops any inherited `BRAIN_VAULT`, so the suite runs against `conftest`'s
-  throwaway vault and setup can never write into the user's real memories. `--skip-tests`
+  (3) `run_tests()` drops every inherited `BRAIN_*` variable and `CLAUDE_PROJECT_DIR`, so the
+  suite runs against `conftest`'s throwaway vault and setup can never write into the user's real
+  memories, nor fail over a green checkout because of a user's tuning knob. `--skip-tests`
   bypasses the step.
 
   The other three installers do **not** do this yet — a deliberate, known gap, not an
@@ -335,7 +338,8 @@ incident.
 - **Recall's index sync is time-boxed; never make it unbounded again.** `EmbedIndex.sync()`
   embeds newest-first in `SYNC_CHUNK` batches, committing per chunk, until
   `BRAIN_SYNC_MAX_SECONDS` (5s); only `brain reindex` and the MCP warmup pass `budget_seconds=0`.
-  A foreground sync returns at once while the reindex lock is held; writers use a 30s sqlite busy
+  A foreground sync returns at once while the reindex lock is held, and takes `_SYNC_LOCK` without
+  waiting (the MCP warmup holds it for minutes); writers use a 30s sqlite busy
   timeout, readers must not (doctor waits `index_busy_timeout()`, 2s, inside a 15s hook). A locked
   index is `INDEX_BUSY`, never `INDEX_CORRUPT`. Foreground syncs skip session checkpoints;
   `_indexable()` is the one predicate for what gets a vector. Embedding cost flattens past ~1500
@@ -369,7 +373,8 @@ incident.
   changes.
 - **A `project` value is a directory basename and nothing else.** `vault.validate_project_name()`
   is the predicate (a blacklist, not a whitelist), `vault.project_dir()` the only path builder,
-  `vault.projects_root()` the only enumerator. `project_basename()` returns None and never raises;
+  `vault.projects_root()` the only enumerator. Hooks take the directory from `_common.project_dir()`
+  (`CLAUDE_PROJECT_DIR` first; the payload's `cwd` follows `cd`). `project_basename()` returns None and never raises;
   doctor downgrades to `PROJECT_NAME_INVALID`; the CLI exits 2; the MCP server returns an error
   result. A test fails on any direct join under `"projects"`.
 - **Checkpoint filenames are claimed with `O_EXCL`** (`_reserve_checkpoint_path`), to the second,
@@ -405,6 +410,11 @@ incident.
   foreign cwds.
 - **User-scoped MCP servers are registered with `claude mcp add --scope user`**, never by
   dropping a `.mcp.json`.
+- **Install turns Claude Code's auto memory off, and ownership lives in a sidecar.**
+  `brain_settings_merge.disable_auto_memory` writes `autoMemoryEnabled: false`;
+  `.brain-auto-memory.json` holds the pre-install state, is written only after `settings.json`
+  lands and never over an existing one; uninstall restores it only if the key still reads
+  `false`. A user's own `false` gets no marker and is never claimed.
 - **Hooks set `BRAIN_VAULT` in the command string itself** — env prefix on POSIX,
   `brain-launch.cmd` on Windows. Preserve the platform's pattern.
 - **Never walk up from `__file__` to find the vault.** Read `BRAIN_VAULT`.
@@ -469,9 +479,12 @@ incident.
   `brain_save`/`brain_checkpoint` tool_use blocks. `test_save_events.py` fails the build if
   `stop.py` looks at a `"Bash"` command again. Promise patterns require a Brain noun;
   emphasis-strip regexes are bounded; `re=Y` rows supersede the row before them;
-  `transcript.SYSTEM_TURN_PREFIXES` is the one list of system-turn markers.
+  `transcript.SYSTEM_TURN_PREFIXES` is the one list of system-turn markers, and `sig` is
+  computed on `user_authored_text()`, never the raw entry.
 - **The pi extension clears `BRAIN_AGENT_SURFACE` per spawn** (`execFile`, `shell:false`,
-  explicit env), never in `process.env`. `BRAIN_PI_CMD` must be the venv executable.
+  explicit env), never in `process.env`, and only for its own spawns: the `brain_*` tools
+  run under the gate (`toolEnv`) and build argv with `toolArgv` (`--name=value`, positionals
+  after `--`). `BRAIN_PI_CMD` must be the venv executable.
 - **A save that replaces a memory archives the previous version** under
   `Brain/archive/versions/` (`VERSION_KEEP`=5, monotonic names) and reports it; a byte-identical
   re-save writes nothing; `slugify` transliterates via NFKD and hashes when no ASCII survives;
@@ -479,7 +492,8 @@ incident.
   `is_memory_path` accepts.
 - **brain-compact buckets and ages by the date in the filename, never mtime**, merges by
   `<!-- brain-compact source: … -->` sections, reclaims fully-absorbed sources, and merges into
-  existing archives. Test fixtures use today-relative stamps.
+  existing archives. It never rolls up a project's newest checkpoint (by name). Test fixtures use
+  today-relative stamps.
 
 ## Testing
 
@@ -510,7 +524,9 @@ The suite runs against the **source tree**, not the installed copy — `pythonpa
 `[tool.pytest.ini_options]` puts `mcp-server/` and `hooks/` first. That is load-bearing: the
 package is installed non-editable, so without it a run would silently grade whatever was last
 `pip install`ed. Tests never touch the real vault; `conftest.py`'s `vault_dir` fixture builds a
-throwaway one and points `BRAIN_VAULT` at it.
+throwaway one and points `BRAIN_VAULT` at it, and an autouse fixture clears every inherited
+`BRAIN_*` variable (and `CLAUDE_PROJECT_DIR`) first, so a run from a Claude Code session, whose
+`settings.json` `env` block reaches the shell, grades the code and not the user's knobs.
 
 What the suite is *for*: this repo duplicates every concern across parallel sites — four
 installers, two frontends, two hook templates — and every bug cluster so far has been a fix

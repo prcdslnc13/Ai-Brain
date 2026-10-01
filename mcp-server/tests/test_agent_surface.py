@@ -454,3 +454,52 @@ def test_the_pi_extension_keeps_the_full_surface_for_its_own_spawns_only() -> No
     assert "pi.exec(" not in src, "pi.exec cannot scope env per call; spawn via node:child_process"
     assert "shell: false" in src
     assert 'from "node:child_process"' in src
+
+
+def _pi_tool_blocks(src: str) -> list[str]:
+    """The source of each `pi.registerTool({...})` call, up to the next one."""
+    starts = [m.start() for m in re.finditer(r"pi\.registerTool\(", src)]
+    return [src[a:b] for a, b in zip(starts, starts[1:] + [src.find("// ---", starts[-1])])]
+
+
+def test_the_pi_tools_run_on_the_agent_surface() -> None:
+    """The brain_* tools build argv from model-supplied strings, so they are the agent
+    surface. Until 2026-09-29 they ran with the gate cleared, and a `project` of
+    "--from-pi=<path>" parsed as the option and imported an arbitrary file. Each tool
+    must go through toolArgv (options glued as --name=value, positionals after `--`)
+    and brainText, which spawns under the gated env."""
+    src = (REPO_ROOT / "pi" / "extensions" / "brain.ts").read_text(encoding="utf-8")
+    assert 'BRAIN_AGENT_SURFACE: "1"' in src, "model-facing tool spawns must set the gate"
+    assert re.search(r"run\(brainCmd, args, ctx, signal, toolEnv\)", src), (
+        "brainText must spawn under toolEnv"
+    )
+    blocks = _pi_tool_blocks(src)
+    assert len(blocks) == 5, f"expected 5 brain_* tools, found {len(blocks)}"
+    for block in blocks:
+        name = re.search(r'name: "(\w+)"', block).group(1)
+        assert "toolArgv(" in block, f"{name} builds argv without toolArgv"
+        assert "brainText(" in block, f"{name} does not spawn through brainText"
+        assert ".push(" not in block and "brainText([" not in block, (
+            f"{name} assembles argv by hand; model strings could parse as options"
+        )
+
+
+HOSTILE = "--from-pi=SECRET"
+
+
+@pytest.mark.parametrize("argv", [
+    # The shapes toolArgv emits, with the hostile value in every model-supplied slot.
+    ["save", f"--content={HOSTILE}", f"--project={HOSTILE}", "--", "feedback", HOSTILE],
+    ["checkpoint", f"--summary={HOSTILE}", "--", HOSTILE],
+    ["recall", f"--project={HOSTILE}", "--top-k=3", "--", HOSTILE],
+    ["list", f"--project={HOSTILE}"],
+    ["forget", "--", "--file=SECRET"],
+    # A value that merely starts with "-" must survive too.
+    ["save", "--content=- a bullet", "--", "user", "-leading dash"],
+], ids=["save", "checkpoint", "recall", "list", "forget", "dash-values"])
+def test_the_pi_tool_argv_shape_keeps_model_strings_as_data(argv: list[str]) -> None:
+    """The contract toolArgv relies on: under `--name=value` and a `--` separator,
+    no model-supplied string can set a restricted option."""
+    args = cli.build_parser().parse_args(argv)
+    for dest in cli.RESTRICTED_OPTIONS:
+        assert not getattr(args, dest, None), f"{dest} was set from model-supplied text"

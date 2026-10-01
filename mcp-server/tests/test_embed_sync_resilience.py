@@ -17,6 +17,8 @@ from __future__ import annotations
 import os
 import sqlite3
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -239,3 +241,55 @@ def test_spawn_still_runs_when_the_log_cannot_be_opened(
     assert embed.spawn_background_reindex() is True
     assert captured["stdout"] is subprocess.DEVNULL
     assert captured["stderr"] is subprocess.DEVNULL
+
+
+# ---------- a foreground pass never queues behind another one ----------
+#
+# The MCP server's startup warmup holds _SYNC_LOCK for an unbounded pass. A recall
+# that blocked on it froze the server (call_tool runs on the event loop) for as long
+# as the warmup ran -- minutes on a recipe rebuild.
+
+def test_a_foreground_sync_skips_while_another_pass_holds_the_lock(
+    vault_dir: Path, stub_embedder: _StubEmbedder
+) -> None:
+    memory(vault_dir / "user" / "a.md", "a", "user", "alpha memory")
+    embed._SYNC_LOCK.acquire()
+    try:
+        t0 = time.monotonic()
+        assert embed.EmbedIndex.sync(budget_seconds=5) == 0
+        assert time.monotonic() - t0 < 1.0, "a foreground pass must not wait"
+    finally:
+        embed._SYNC_LOCK.release()
+    assert embed.EmbedIndex.sync(budget_seconds=5) == 1, "once free, it does the work"
+
+
+def test_an_unbounded_sync_still_waits_its_turn(
+    vault_dir: Path, stub_embedder: _StubEmbedder
+) -> None:
+    memory(vault_dir / "user" / "a.md", "a", "user", "alpha memory")
+    result: dict[str, int] = {}
+    embed._SYNC_LOCK.acquire()
+    try:
+        t = threading.Thread(target=lambda: result.setdefault("n", embed.EmbedIndex.sync(budget_seconds=0)))
+        t.start()
+        t.join(0.3)
+        assert t.is_alive(), "an unbounded pass must queue, not skip"
+    finally:
+        embed._SYNC_LOCK.release()
+    t.join(10)
+    assert result.get("n") == 1
+
+
+def test_recall_answers_while_the_warmup_holds_the_lock(
+    vault_dir: Path, stub_embedder: _StubEmbedder
+) -> None:
+    """The user-visible half: a search during warmup returns promptly, lexically."""
+    memory(vault_dir / "user" / "a.md", "a", "user", "zanzibar alpha memory")
+    embed._SYNC_LOCK.acquire()
+    try:
+        t0 = time.monotonic()
+        hits = vault.search_memories("zanzibar")
+        assert time.monotonic() - t0 < 2.0
+    finally:
+        embed._SYNC_LOCK.release()
+    assert any(h.path.name == "a.md" for h in hits)

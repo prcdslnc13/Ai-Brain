@@ -242,17 +242,22 @@ export default function brainExtension(pi: ExtensionAPI) {
 	// hand needs the vault too — exporting BRAIN_VAULT process-wide is the intent.
 	process.env.BRAIN_VAULT = vault;
 
-	// This extension is the operator, not the model: its checkpoints go through
-	// `brain checkpoint --from-pi <session.jsonl>`, which the agent-surface gate
-	// refuses under BRAIN_AGENT_SURFACE=1. The venv binary never sets the flag,
-	// but a user's environment might, so our own spawns clear it — in *their*
-	// environment only. It must NOT be assigned to process.env: that would clear
-	// the gate for every command the model runs through the shell tool, which
-	// is exactly the pre-approved, unattended surface the gate exists to bound.
-	// Clearing it for our spawns is safe because the arguments are ours, not the
-	// model's: the tools below expose recall/save/list/forget/checkpoint bodies,
-	// never a caller-supplied path to read.
-	const spawnEnv: NodeJS.ProcessEnv = { ...process.env, BRAIN_VAULT: vault, BRAIN_AGENT_SURFACE: "0" };
+	// Two environments, split by who chose the arguments.
+	//
+	// operatorEnv clears the agent-surface gate. The extension's own spawns need
+	// that — its checkpoints go through `brain checkpoint --from-pi
+	// <session.jsonl>`, which the gate refuses — and their arguments are ours.
+	// It must NOT be assigned to process.env: that would clear the gate for
+	// every command the model runs through the shell tool.
+	//
+	// toolEnv sets the gate. The brain_* tools below build argv from
+	// model-supplied strings, so they are the agent surface: until 2026-09-29
+	// they ran under operatorEnv, and a `project` of "--from-pi=<path>" parsed
+	// as the option and imported an arbitrary session file. Argv hardening
+	// (toolArgv) stops that; the gate means a future slip in it still cannot
+	// reach a path-reading option.
+	const operatorEnv: NodeJS.ProcessEnv = { ...process.env, BRAIN_VAULT: vault, BRAIN_AGENT_SURFACE: "0" };
+	const toolEnv: NodeJS.ProcessEnv = { ...process.env, BRAIN_VAULT: vault, BRAIN_AGENT_SURFACE: "1" };
 
 	interface RunResult {
 		ok: boolean;
@@ -267,11 +272,12 @@ export default function brainExtension(pi: ExtensionAPI) {
 		args: string[],
 		ctx: ExtensionContext,
 		signal?: AbortSignal,
+		env: NodeJS.ProcessEnv = operatorEnv,
 	): Promise<RunResult> {
 		try {
 			const res = await spawnCapture(cmd, args, {
 				cwd: ctx.cwd,
-				env: spawnEnv,
+				env,
 				timeout: timeoutMs,
 				signal,
 			});
@@ -303,13 +309,34 @@ export default function brainExtension(pi: ExtensionAPI) {
 
 	// ---------------------------------------------------------------- tools
 
+	/**
+	 * Build argv for a tool call so no model-supplied string can be parsed as an
+	 * option. Option values are glued on as `--name=value` (a separate value
+	 * starting with "-" is otherwise rejected by argparse), and positionals follow
+	 * `--`, so "--from-pi=<path>" as a title or project is just text.
+	 */
+	function toolArgv(
+		sub: string,
+		options: Record<string, string | number | boolean | undefined>,
+		positionals: string[],
+	): string[] {
+		const argv = [sub];
+		for (const [name, value] of Object.entries(options)) {
+			if (value === undefined || value === false || value === "") continue;
+			argv.push(value === true ? `--${name}` : `--${name}=${value}`);
+		}
+		// A bare trailing "--" is an argparse error on a subcommand with no
+		// positionals (list), so only add it when there is something to protect.
+		return positionals.length > 0 ? [...argv, "--", ...positionals] : argv;
+	}
+
 	async function brainText(
 		args: string[],
 		ctx: ExtensionContext,
 		signal: AbortSignal | undefined,
 		emptyText: string,
 	) {
-		const res = await run(brainCmd, args, ctx, signal);
+		const res = await run(brainCmd, args, ctx, signal, toolEnv);
 		let text: string;
 		if (res.ok) {
 			text = res.stdout.trim() || emptyText;
@@ -344,12 +371,14 @@ export default function brainExtension(pi: ExtensionAPI) {
 			include_sessions: Type.Optional(Type.Boolean({ description: "Include session checkpoints" })),
 		}),
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			const args = ["recall", params.query];
-			if (params.type) args.push("--type", params.type);
-			if (params.project) args.push("--project", params.project);
-			if (params.top_k) args.push("--top-k", String(params.top_k));
-			if (params.full_body) args.push("--full-body");
-			if (params.include_sessions) args.push("--include-sessions");
+			const args = toolArgv("recall", {
+				type: params.type,
+				project: params.project,
+				// argparse wants an int; a schema Number can arrive as 2.5.
+				"top-k": params.top_k ? Math.max(1, Math.trunc(params.top_k)) : undefined,
+				"full-body": params.full_body,
+				"include-sessions": params.include_sessions,
+			}, [params.query]);
 			return brainText(args, ctx, signal, "no memories matched");
 		},
 	});
@@ -374,9 +403,8 @@ export default function brainExtension(pi: ExtensionAPI) {
 			project: Type.Optional(Type.String({ description: "Project basename (required for type=project)" })),
 		}),
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			const args = ["save", params.type, params.title, "--content", params.body];
-			if (params.project) args.push("--project", params.project);
-			else if (params.type === "project") args.push("--project", projectOf(ctx));
+			const project = params.project || (params.type === "project" ? projectOf(ctx) : undefined);
+			const args = toolArgv("save", { content: params.body, project }, [params.type, params.title]);
 			return brainText(args, ctx, signal, "saved");
 		},
 	});
@@ -397,7 +425,7 @@ export default function brainExtension(pi: ExtensionAPI) {
 		}),
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const project = params.project || projectOf(ctx);
-			return brainText(["checkpoint", project, "--summary", params.summary], ctx, signal, "checkpoint written");
+			return brainText(toolArgv("checkpoint", { summary: params.summary }, [project]), ctx, signal, "checkpoint written");
 		},
 	});
 
@@ -415,10 +443,11 @@ export default function brainExtension(pi: ExtensionAPI) {
 			include_sessions: Type.Optional(Type.Boolean()),
 		}),
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			const args = ["list"];
-			if (params.type) args.push("--type", params.type);
-			if (params.project) args.push("--project", params.project);
-			if (params.include_sessions) args.push("--include-sessions");
+			const args = toolArgv("list", {
+				type: params.type,
+				project: params.project,
+				"include-sessions": params.include_sessions,
+			}, []);
 			return brainText(args, ctx, signal, "no memories");
 		},
 	});
@@ -435,7 +464,7 @@ export default function brainExtension(pi: ExtensionAPI) {
 			path: Type.String({ description: "Path from a prior brain_recall or brain_list result" }),
 		}),
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			return brainText(["forget", params.path], ctx, signal, "forgotten");
+			return brainText(toolArgv("forget", {}, [params.path]), ctx, signal, "forgotten");
 		},
 	});
 
