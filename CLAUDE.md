@@ -231,9 +231,9 @@ The moving parts fit together as follows:
   is installed **separately and non-fatally** — a machine with the real dependencies cached but
   not pytest must not lose its memory system over a testing convenience; a missing pytest
   degrades to a reported skip. (2) A failing suite **does not abort the install** — the wiring
-  still lands, because a red test should not cost the user their Brain — but it **exits 4**, the
-  same contract a refused `settings.json` already has, so a scripted install cannot report
-  success over a broken checkout. Those two pull in opposite directions and both are required.
+  still lands, because a red test should not cost the user their Brain — but it **exits 4**
+  (a refused `settings.json` exits 1, a failed `--with-mcp` registration 5), so a scripted
+  install cannot report success over a broken checkout. Those two pull in opposite directions and both are required.
   (3) `run_tests()` drops any inherited `BRAIN_VAULT`, so the suite runs against `conftest`'s
   throwaway vault and setup can never write into the user's real memories. `--skip-tests`
   bypasses the step.

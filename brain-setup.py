@@ -1065,6 +1065,10 @@ def main() -> None:
         sys.exit(1)
     if not tests_ok:
         sys.exit(4)
+    # --with-mcp asked for the brain_* tools; a dir that did not get them is a
+    # failed request, not a success with a footnote (it exited 0 until 2026-10-01).
+    if failures:
+        sys.exit(5)
 
 
 if __name__ == "__main__":

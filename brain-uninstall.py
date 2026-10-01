@@ -242,16 +242,35 @@ def remove_managed_claude_md(claude_dir: Path) -> None:
             info("       ✓ removed (marker present)")
         except OSError as e:
             info(f"       [warn] could not remove {claude_md}: {e}")
+            return
+        _restore_user_backup(claude_md)
     else:
         info("       [warn] CLAUDE.md has no managed-by marker — leaving it in place.")
         info(f"         (If you want it gone, delete it manually: {claude_md})")
 
 
-def remove_brain_skill(claude_dir: Path) -> None:
-    """Remove skills/brain, but only a copy we installed, and only if it really went.
+def _restore_user_backup(path: Path) -> None:
+    """Put back the user's own file that install backed up before replacing it."""
+    backup = brain_settings_merge.newest_user_backup(path)
+    if backup is None:
+        return
+    try:
+        brain_settings_merge.atomic_write_bytes(path, backup.read_bytes())
+    except OSError as e:
+        info(f"       [warn] could not restore {path.name} from {backup.name}: {e}")
+        return
+    info(f"       ✓ restored your previous {path.name} from {backup.name} (backup kept)")
 
-    The old version rmtree'd unconditionally (a user's own skill named `brain` was
-    fair game) and printed "removed" even when rmtree had silently refused.
+
+def remove_brain_skill(claude_dir: Path) -> None:
+    """Remove the brain skill we installed, and only that.
+
+    Install writes exactly one file here, SKILL.md. The old version rmtree'd the
+    whole directory -- first unconditionally (a user's own skill named `brain` was
+    fair game), then behind the marker check, which still took the user's backed-up
+    SKILL.md and anything else they kept in the directory with it. Now only our
+    SKILL.md goes, the user's backup is restored if there is one, and the directory
+    is removed only if nothing else is left in it.
     """
     skill_dir = claude_dir / "skills" / "brain"
     if not skill_dir.exists():
@@ -263,12 +282,17 @@ def remove_brain_skill(claude_dir: Path) -> None:
         info(f"         (If you want it gone, delete it manually: {skill_dir})")
         return
     try:
-        shutil.rmtree(skill_dir)
+        skill_md.unlink()
     except OSError as e:
-        info(f"       [warn] could not fully remove {skill_dir}: {e}")
-    # Report what is true on disk, not what rmtree was asked to do.
-    if skill_dir.exists():
-        info(f"       [warn] {skill_dir} is still present — remove it by hand.")
+        info(f"       [warn] could not remove {skill_md}: {e}")
+        return
+    _restore_user_backup(skill_md)
+    if skill_md.exists():
+        return  # the user's own skill is back; the directory is theirs
+    try:
+        skill_dir.rmdir()
+    except OSError:
+        info(f"       ✓ removed SKILL.md; left {skill_dir} in place (it holds other files)")
         return
     info("       ✓ removed")
     # If skills/ is now empty, tidy it up too. Don't error if it's not.
