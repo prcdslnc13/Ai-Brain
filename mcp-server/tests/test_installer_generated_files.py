@@ -255,11 +255,14 @@ def test_uninstall_does_not_claim_a_removal_that_did_not_happen(uninstall, setup
     def refuse(path, *args, **kwargs):
         raise PermissionError(13, "in use", str(path))
 
-    monkeypatch.setattr(uninstall.shutil, "rmtree", refuse)
+    # The skill is removed file by file now (only the SKILL.md install wrote), so a
+    # locked file surfaces as a failed unlink rather than a failed rmtree.
+    monkeypatch.setattr(Path, "unlink", refuse)
     uninstall.remove_brain_skill(cfg)
+    monkeypatch.undo()
     out = capsys.readouterr().out
     assert (cfg / "skills" / "brain" / "SKILL.md").is_file()
-    assert "still present" in out and "✓ removed" not in out
+    assert "could not remove" in out and "✓ removed" not in out
 
 
 # ------------------------------------------------------ F2 upgrade + uninstall --

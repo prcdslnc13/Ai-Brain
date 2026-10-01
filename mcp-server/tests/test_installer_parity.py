@@ -567,3 +567,11 @@ def test_the_roadmap_records_the_retirement():
     than none, and 3G is where the reasoning (and the 3.9.6 bootstrap check) lives."""
     roadmap = read("ROADMAP.md")
     assert "Retire the platform-specific installers" in roadmap
+
+
+def test_a_failed_mcp_registration_exits_nonzero():
+    """--with-mcp asked for the brain_* tools; a config dir that did not get them
+    printed a failure and exited 0, so a scripted install reported success."""
+    src = read("brain-setup.py")
+    tail = src[src.index("if settings_failures:\n        sys.exit(1)"):]
+    assert "sys.exit(5)" in tail and "if failures:" in tail

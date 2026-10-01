@@ -189,7 +189,11 @@ def atomic_write_text(path: Path, text: str, encoding: str = "utf-8") -> None:
     UnicodeEncodeError and leaves no temp file behind. No newline translation:
     callers spell their own line endings (LF for text, CRLF for batch).
     """
-    data = text.encode(encoding)
+    atomic_write_bytes(path, text.encode(encoding))
+
+
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    """`atomic_write_text` for content that is already bytes (a restored backup)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
     try:
@@ -281,6 +285,22 @@ def backup_file(path: Path) -> Path:
     backup = backup_path_for(path)
     backup.write_bytes(path.read_bytes())
     return backup
+
+
+def newest_user_backup(path: Path) -> Path | None:
+    """The most recent backup `write_managed_text` took of a user-written `path`.
+
+    Uninstall's counterpart to that backup: install replaced the user's own file and
+    kept a copy, so uninstall puts the newest copy back rather than leaving the
+    user with no file and an orphaned `.brain-backup-*` they may never notice.
+    Stamps sort lexically (`-N` collision suffixes sort after the bare stamp), and a
+    backup that carries our marker is not the user's, so it is skipped.
+    """
+    candidates = [
+        p for p in path.parent.glob(path.name + BACKUP_SUFFIX + "*")
+        if p.is_file() and not has_managed_marker(p)
+    ]
+    return max(candidates, key=lambda p: p.name) if candidates else None
 
 
 def write_managed_text(path: Path, text: str, encoding: str = "utf-8") -> Path | None:

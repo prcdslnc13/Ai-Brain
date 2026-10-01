@@ -234,13 +234,13 @@ The moving parts fit together as follows:
   is installed **separately and non-fatally** — a machine with the real dependencies cached but
   not pytest must not lose its memory system over a testing convenience; a missing pytest
   degrades to a reported skip. (2) A failing suite **does not abort the install** — the wiring
-  still lands, because a red test should not cost the user their Brain — but it **exits 4**, the
-  same contract a refused `settings.json` already has, so a scripted install cannot report
-  success over a broken checkout. Those two pull in opposite directions and both are required.
-  (3) `run_tests()` drops every inherited `BRAIN_*` variable and `CLAUDE_PROJECT_DIR`, so the
-  suite runs against `conftest`'s throwaway vault and setup can never write into the user's real
-  memories, nor fail over a green checkout because of a user's tuning knob. `--skip-tests`
-  bypasses the step.
+  still lands, because a red test should not cost the user their Brain — but it **exits 4**
+  (a refused `settings.json` exits 1, a failed `--with-mcp` registration 5), so a scripted
+  install cannot report success over a broken checkout. Those two pull in opposite directions
+  and both are required. (3) `run_tests()` drops every inherited `BRAIN_*` variable and
+  `CLAUDE_PROJECT_DIR`, so the suite runs against `conftest`'s throwaway vault and setup can
+  never write into the user's real memories, nor fail over a green checkout because of a user's
+  tuning knob. `--skip-tests` bypasses the step.
 
   The other three installers do **not** do this yet — a deliberate, known gap, not an
   oversight. If you port it, extend the parametrize in `test_installer_parity.py` rather than
