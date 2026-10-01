@@ -877,6 +877,9 @@ def install_one(claude_dir: Path, vault_root: Path, with_mcp: bool) -> dict:
     info("")
     info(f"━━━ installing into {claude_dir} ━━━")
     claude_dir.mkdir(parents=True, exist_ok=True)
+    # Recorded first, before any wiring lands: a half-finished install still points
+    # at the shared venv, and uninstall must know to look here before deleting it.
+    brain_settings_merge.record_install(REPO_DIR, claude_dir)
     ensure_brain_layout(vault_root)
 
     cmd = brain_cmd_token(claude_dir, vault_root)

@@ -254,7 +254,9 @@ The moving parts fit together as follows:
   uninstall must stay symmetric: until 2026-08-24 the allow rule was written by the installers
   and removed by none of them, leaving a standing unprompted Bash approval for a deleted path.
   Uninstall keeps its own (safer) policy on unparseable settings: leave it alone and report,
-  never fail.
+  never fail. The shared venv is deleted only when no other config dir references it; the candidates
+  are `~/.claude*`, `$CLAUDE_CONFIG_DIR`, and every dir setup recorded in the gitignored
+  `.brain-installs.json` at the repo root, because a config dir can be any path.
 
 - **`brain-compact`** (`brain_mcp/compact.py`) — rolls old session checkpoints into
   `sessions/daily/` (7-30 days), then `sessions/weekly/` (30-365), then
