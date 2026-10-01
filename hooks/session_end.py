@@ -13,7 +13,10 @@ def main() -> None:
     payload = read_payload()
     project = project_basename(payload)
     transcript = payload.get("transcript_path")
-    reason = payload.get("matcher_value", "other")
+    # Claude Code sends `reason` ("clear" | "resume" | "logout" | "prompt_input_exit"
+    # | "other"). This read a nonexistent `matcher_value`, so every checkpoint said
+    # "other" (until 2026-10-01).
+    reason = payload.get("reason") or "other"
     try:
         write_session_checkpoint(transcript, project, source=f"session-end:{reason}")
     except Exception as e:

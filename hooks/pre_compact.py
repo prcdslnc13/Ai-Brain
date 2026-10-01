@@ -13,9 +13,11 @@ def main() -> None:
     payload = read_payload()
     project = project_basename(payload)
     transcript = payload.get("transcript_path")
-    matcher = payload.get("matcher_value", "auto")
+    # Claude Code sends `trigger` ("manual" | "auto"). This read a `matcher_value`
+    # key no payload has ever carried, so every checkpoint said "auto" (until 2026-10-01).
+    trigger = payload.get("trigger") or "auto"
     try:
-        write_session_checkpoint(transcript, project, source=f"pre-compact:{matcher}")
+        write_session_checkpoint(transcript, project, source=f"pre-compact:{trigger}")
     except Exception as e:
         sys.stderr.write(f"brain pre_compact: {e}\n")
     sys.exit(0)  # never block compaction
