@@ -855,6 +855,17 @@ explicit env. `BRAIN_PI_CMD` must be the venv executable (Node ≥ 20.12 refuses
 under `shell:false`), and `resolvePrepCmd` only looks for a sibling `brain-prep` when
 `brainCmd` is absolute.
 
+"Our own spawns" first meant *every* spawn, the model-facing `brain_*` tools included
+(2026-09-29). Those build argv from model-supplied strings with no `--`, so a
+`brain_checkpoint` `project` of `"--from-pi=<path>"` parsed as the option — the positional
+is optional — and imported an arbitrary pi session or cherryd log with the gate off. The
+tools now run under `toolEnv` (gate set) and build argv through `toolArgv`: option values
+glued on as `--name=value` (a separate value starting with `-` is otherwise an argparse
+error, which also broke titles like `-foo`), positionals after `--`, and no `--` at all when
+there are no positionals, because `brain list --` is itself an argparse error. Either layer
+alone stops the import; `test_the_pi_tools_run_on_the_agent_surface` and
+`test_the_pi_tool_argv_shape_keeps_model_strings_as_data` guard both.
+
 ### A save that replaces a memory archives what it replaced — and a slug is not a title (2026-09-01, F10/F11)
 
 **A save that replaces a memory archives what it replaced — and a slug is not a title
@@ -902,6 +913,27 @@ file into `daily/` left a project untouched for a week with nothing in `sessions
 `STALE_UNCOMMITTED` lost its baseline, in exactly the come-back-later case both exist for.
 `_newest_by_name` keeps that one file, chosen by the stamp in its name like every other
 decision here, skipping zero-byte reservations. One file per project stays bounded.
+
+### Install turns Claude Code's auto memory off, and ownership lives in a sidecar (2026-09-29)
+
+**Install turns Claude Code's auto memory off, and ownership lives in a sidecar.** Claude
+Code's built-in auto memory is on by default, and its system-prompt section tells the model to
+save `user`/`feedback`/`project`/`reference` notes under `<config>/projects/<slug>/memory/` with
+a `MEMORY.md` index — the Brain's own taxonomy, stored machine-local and per repository,
+invisible to pi, LMStudio and the other machines, and in direct contradiction of the global
+CLAUDE.md ("those directories are obsolete and ignored"). The system prompt outranks CLAUDE.md,
+which Claude Code delivers as a user message, so every session carried two competing memory
+instructions. Seen in a live `.claude-work` session on strixlappy on 2026-09-29; the setting
+and the `CLAUDE_CODE_DISABLE_AUTO_MEMORY` env var are documented at
+code.claude.com/docs/en/memory.
+
+`settings.json` has no room for an ownership marker, and uninstall must stay symmetric without
+reversing a choice the user made, so the pre-install state goes in `.brain-auto-memory.json`
+next to it: `{"present": bool, "value": …}`. It is written after `settings.json` lands (a
+failed write must not claim a value we never set) and never over an existing marker (a
+re-install after the user flipped the key back must remember the state from before the
+*first* install). Uninstall restores it only while the key still reads `false`; a key that is
+already `false` before install gets no marker, so it is never turned back on.
 
 ### Saves are detected from the saver's record, not the model's command (2026-09-13)
 

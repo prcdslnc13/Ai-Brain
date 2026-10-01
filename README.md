@@ -23,9 +23,10 @@ This repo holds the **code**: hooks, MCP server, templates, setup scripts. The a
 > `%USERPROFILE%\Vaults\Ai-Brain` (Windows).
 
 The setup script wires the two together: it points the hooks block in your Claude Code
-`settings.json` at this repo, installs the `brain` CLI + skill (the default interface), and —
-only if you pass `--with-mcp` — registers the MCP server, all with `BRAIN_VAULT` set to your
-vault path.
+`settings.json` at this repo, installs the `brain` CLI + skill (the default interface), turns off Claude Code's built-in
+auto memory (its machine-local notes would compete with the Brain; uninstall restores the
+setting), and — only if you pass `--with-mcp` — registers the MCP server, all with
+`BRAIN_VAULT` set to your vault path.
 
 ## Architecture
 

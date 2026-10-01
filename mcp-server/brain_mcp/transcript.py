@@ -38,7 +38,7 @@ from . import vault as _vault
 # rather than typed by the user: background-task notifications, skill/command
 # expansions, local-command output, and system reminders. THE list -- both
 # consumers read it from here. `hooks/stop.py` tags such turns `sys=Y` in the
-# activity audit (a skill body matches save-signal phrases like "I want", so
+# activity audit (a skill body matches save-signal phrases like "remember", so
 # `sig` measured on it says nothing about the user), and `parse_claude_transcript`
 # keeps them out of a checkpoint's "What the user asked for". Until 2026-09-01
 # each consumer kept its own list and they disagreed: the checkpoint renderer
@@ -51,6 +51,12 @@ SYSTEM_TURN_PREFIXES = (
     "<local-command-",    # <local-command-stdout>, <local-command-caveat>
     "Base directory for this skill:",
     "<system-reminder>",
+    # A subagent's or peer session's hand-back, delivered as a user entry. Missing
+    # until 2026-09-29, so every such report that quoted a phrase like "I want"
+    # was audited as a user save-signal and the SAVE_GAP banner fired on it.
+    "Another Claude session sent a message:",
+    "<agent-message",
+    "<bash-",             # ! bash mode: <bash-input>, <bash-stdout>, <bash-stderr>
 )
 
 # A system reminder can be *prepended* to a genuine prompt in the same user entry

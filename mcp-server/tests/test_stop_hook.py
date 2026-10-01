@@ -286,7 +286,8 @@ def test_save_gap_credits_a_save_made_on_reentry(vault_dir: Path) -> None:
 # ------------------------------------------- F25: one system-turn prefix list
 
 SYSTEM_MARKERS = ["<task-notification>", "[SYSTEM NOTIFICATION", "<local-command-", "<command-",
-                  "Base directory for this skill:"]
+                  "Base directory for this skill:", "Another Claude session sent a message:",
+                  "<agent-message", "<bash-"]
 
 
 def test_system_turn_prefixes_have_exactly_one_home() -> None:
@@ -315,6 +316,35 @@ def test_both_consumers_agree_on_every_prefix(prefix: str, tmp_path: Path) -> No
     assert stop.is_system_turn(text)
     path = _write_jsonl(tmp_path / "t.jsonl", [_user(text), _assistant("ok")])
     assert transcript.parse_claude_transcript(path)["user_msgs"] == []
+
+
+@pytest.mark.parametrize("text", [
+    # Verbatim openings of real harness-generated user entries (2026-09-29 transcript).
+    'Another Claude session sent a message:\n<agent-message from="a23cff05">\nI want to note…',
+    "<bash-stdout>warning: in the working copy of 'x.h', CRLF will be replaced</bash-stdout>",
+    "<bash-input>git status</bash-input>",
+], ids=["agent-message", "bash-stdout", "bash-input"])
+def test_harness_generated_turns_are_system_turns(text: str) -> None:
+    assert stop.is_system_turn(text)
+    assert transcript.user_authored_text(text) == ""
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("<system-reminder>remember to run tests</system-reminder>\n\nfix the build", "sig=N"),
+    ('Another Claude session sent a message:\n<agent-message from="x">remember this</agent-message>', "sig=N"),
+    ("<system-reminder>context</system-reminder>\n\nremember: tabs, not spaces", "sig=Y"),
+], ids=["reminder-quotes-signal", "agent-message-quotes-signal", "user-signal-behind-reminder"])
+def test_the_save_signal_reads_only_what_the_user_typed(
+    text: str, expected: str, vault_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """A reminder block or a subagent report quoting "remember" is not the user
+    stating a preference, and a real one behind a reminder still is."""
+    project = tmp_path / "Widget"
+    project.mkdir()
+    transcript_path = _write_jsonl(tmp_path / "t.jsonl", [_user(text), _assistant("done")])
+    payload = {"cwd": str(project), "transcript_path": str(transcript_path), "session_id": "s"}
+    _run_stop(payload, monkeypatch, capsys)
+    assert expected in _rows(vault_dir)[-1]
 
 
 def test_a_prompt_behind_a_system_reminder_is_still_the_users() -> None:
