@@ -300,8 +300,10 @@ def pi_session_file(path: Path) -> Path:
     """
     path = path.expanduser()
     if path.is_dir():
-        candidates = sorted(path.rglob("*.jsonl"), key=lambda p: p.stat().st_mtime,
-                            reverse=True)
+        # safe_mtime, not p.stat(): pi writes and rotates session files while a
+        # timer or shutdown hook runs this, and one vanishing mid-sort raised
+        # FileNotFoundError and lost that checkpoint.
+        candidates = sorted(path.rglob("*.jsonl"), key=_vault.safe_mtime, reverse=True)
         if not candidates:
             raise PiSessionError(f"no .jsonl session files under {path}")
         return candidates[0]
