@@ -475,7 +475,8 @@ incident.
   `brain_save`/`brain_checkpoint` tool_use blocks. `test_save_events.py` fails the build if
   `stop.py` looks at a `"Bash"` command again. Promise patterns require a Brain noun;
   emphasis-strip regexes are bounded; `re=Y` rows supersede the row before them;
-  `transcript.SYSTEM_TURN_PREFIXES` is the one list of system-turn markers.
+  `transcript.SYSTEM_TURN_PREFIXES` is the one list of system-turn markers, and `sig` is
+  computed on `user_authored_text()`, never the raw entry.
 - **The pi extension clears `BRAIN_AGENT_SURFACE` per spawn** (`execFile`, `shell:false`,
   explicit env), never in `process.env`, and only for its own spawns: the `brain_*` tools
   run under the gate (`toolEnv`) and build argv with `toolArgv` (`--name=value`, positionals
