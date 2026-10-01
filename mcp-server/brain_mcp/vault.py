@@ -630,11 +630,6 @@ def save_memory(mtype: str, name: str, content: str, project: str | None = None)
     return SaveResult(path=path, overwrote=overwrote, previous_version=version)
 
 
-def write_memory(mtype: str, name: str, content: str, project: str | None = None) -> Path:
-    """Path-returning wrapper over `save_memory` for callers that only need the file."""
-    return save_memory(mtype, name, content, project).path
-
-
 def _try_embed_upsert(path: Path) -> None:
     if os.environ.get("BRAIN_EMBED", "1") == "0":
         return
@@ -756,9 +751,11 @@ def _ripgrep_search(query: str, root: Path) -> dict[Path, int]:
                 continue
             if n:
                 matches[p] = n
-    return {p: n for p, n in matches.items()
-            if not any(part in EXCLUDE_DIRS for part in p.parts)
-            and p.name not in EXCLUDE_FILES}
+    # The shared predicate, not a copy of it. The copy that stood here tested
+    # every component of the *absolute* path, so a vault kept under any folder
+    # named `archive` lost every lexical hit, and it let `_`-prefixed files
+    # through that `brain list` and the index both exclude.
+    return {p: n for p, n in matches.items() if is_memory_path(p, root)}
 
 
 # How often a lexical-only hit gets a slot in the merged ranking: every Nth

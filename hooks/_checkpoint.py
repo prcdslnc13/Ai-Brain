@@ -17,6 +17,3 @@ from brain_mcp.transcript import (  # noqa: F401  (re-exported for the hooks)
     render_checkpoint,
     write_session_checkpoint,
 )
-
-# Historical name, kept so anything still calling it does not break.
-parse_transcript = parse_claude_transcript
