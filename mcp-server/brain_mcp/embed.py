@@ -616,7 +616,7 @@ def embed_text(path: Path) -> str:
         parts = [mem.name or Path(path).stem]
         body = (mem.body or "").strip()
         desc = (mem.description or "").strip()
-        # write_memory derives description from the body's first line, so for most
+        # save_memory derives description from the body's first line, so for most
         # memories it is already a prefix of the body — repeating it would burn budget
         # on a duplicate rather than buying any signal.
         if desc and not body.startswith(desc[:80]):
