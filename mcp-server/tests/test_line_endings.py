@@ -77,3 +77,21 @@ def test_posix_scripts_have_a_clean_shebang(script):
         f"{script} has a CRLF shebang — POSIX will look for an interpreter named "
         f"'bash\\r' and fail with 'bad interpreter'"
     )
+
+
+def test_no_file_carries_control_bytes():
+    """A backslash path written through an escaping writer turns `\b` into a literal
+    backspace (0x08): `<config-dir>\brain-launch.cmd` in CLAUDE.md and
+    `C:\src\Ai-Brain\brain-setup.py` in README.md both shipped that way and rendered
+    as `rain-launch.cmd`. Tab, LF and CR are the only control bytes a text file needs;
+    `.cmd` files are exempt because cmd.exe batch files are OEM-encoded."""
+    allowed = {0x09, 0x0A, 0x0D}
+    offenders = []
+    for path in _tracked_text_files():
+        if path.suffix == ".cmd":
+            continue
+        data = path.read_bytes()
+        bad = sorted({b for b in data if (b < 0x20 and b not in allowed) or b == 0x7F})
+        if bad:
+            offenders.append(f"{path.relative_to(REPO_ROOT).as_posix()} {[hex(b) for b in bad]}")
+    assert not offenders, offenders

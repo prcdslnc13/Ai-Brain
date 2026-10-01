@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """brain-setup — cross-platform installer for the Ai-Brain wiring.
 
-Replaces setup-mac.sh and setup-windows.ps1 for users who prefer a single,
-prompt-driven install. The shell scripts remain as fallbacks.
+The one installer on every platform (ROADMAP 3G retired the shell and
+PowerShell scripts on 2026-08-25). Interactive by default; scripted with flags.
 
 Usage:
     python brain-setup.py                  # interactive — prompts for everything
@@ -29,9 +29,9 @@ MCP_SERVER_DIR = REPO_DIR / "mcp-server"
 TEMPLATES_DIR = REPO_DIR / "templates"
 VENV_DIR = MCP_SERVER_DIR / ".venv"
 
-# The settings.json merge is shared with the three shell/PowerShell installers
-# (which invoke this same file as a script) so the algorithm cannot fork again —
-# see brain_settings_merge.py's docstring. sys.path[0] is already REPO_DIR when
+# The settings.json merge is shared with brain-uninstall.py, which must apply the
+# same ownership predicate, so the algorithm cannot fork again — see
+# brain_settings_merge.py's docstring. sys.path[0] is already REPO_DIR when
 # this file is run as a script; the insert covers every other invocation shape.
 sys.path.insert(0, str(REPO_DIR))
 import brain_settings_merge  # noqa: E402  (must follow the REPO_DIR sys.path setup)
@@ -669,7 +669,7 @@ def merge_settings_json(claude_dir: Path, vault_root: Path, cmd: str) -> tuple[b
     Returns (ok, reason). The merge itself — pruning our old entries, APPENDING our
     groups to whatever third-party hooks already exist for the same events, the
     refusal to rewrite an unparseable file, the backup and the atomic write — lives
-    in brain_settings_merge so all four installers share one implementation.
+    in brain_settings_merge so install and uninstall share one implementation.
     """
     settings_path = claude_dir / "settings.json"
     if IS_WINDOWS:

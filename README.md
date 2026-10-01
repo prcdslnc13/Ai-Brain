@@ -112,7 +112,7 @@ The naming is entirely up to you — Claude Code and the Ai-Brain installer both
 treat `CLAUDE_CONFIG_DIR` as an opaque path. `~/.claude-personal` and
 `~/.claude-work` are used throughout these docs as examples, but
 `~/.claude-acme` or `~/.claude-client-foo` work equally well. The Ai-Brain
-installer's auto-discovery (in `brain-setup.py` and the uninstallers) finds
+installer's auto-discovery (in `brain-setup.py` and `brain-uninstall.py`) finds
 every `~/.claude*` directory, so any name starting with `.claude` is picked up.
 
 ### macOS / Linux
@@ -178,7 +178,7 @@ function claude-work {
 Then install the Brain wiring into each:
 
 ```powershell
-python C:\src\Ai-Brainrain-setup.py --non-interactive `
+python C:\src\Ai-Brain\brain-setup.py --non-interactive `
     --vault "$env:USERPROFILE\Vaults\Ai-Brain" `
     --claude-dir "$env:USERPROFILE\.claude-personal" `
     --claude-dir "$env:USERPROFILE\.claude-work"

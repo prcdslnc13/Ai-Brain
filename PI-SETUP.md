@@ -144,9 +144,9 @@ is a *shell string* (`BRAIN_VAULT=… /path/to/brain`) and the extension spawns 
 Use `BRAIN_PI_CMD` when in doubt — and point it at the venv executable, never at a `.cmd`.
 
 **The budget is the setting that matters.** At the 12 KB default the bundle carries the index,
-the user profile, and as much feedback as fits — on a large corpus that means some feedback is
-skipped (the bundle fills `user/` before `feedback/`). Raise it if the model's window can
-afford it; the same trade-off is described in `LOCAL-HARNESS-SETUP.md`.
+then as much feedback as fits, then user memories — on a large corpus the user memories are
+skipped first, and past that some feedback too. Raise it if the model's window can afford it;
+the same trade-off is described in `LOCAL-HARNESS-SETUP.md`.
 
 ### Verifying
 
