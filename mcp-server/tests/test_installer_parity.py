@@ -26,6 +26,7 @@ import ast
 import json
 import re
 import shlex
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -432,14 +433,26 @@ def test_a_failing_suite_does_not_abort_the_install_but_does_exit_nonzero():
     assert "die(" not in call.group(0), "a failing self-test must not abort the install"
 
 
-def test_the_self_test_does_not_inherit_the_users_real_vault():
+def test_the_self_test_does_not_inherit_the_users_brain_env(monkeypatch):
     """conftest builds a throwaway vault; an inherited BRAIN_VAULT could point the
-    suite at the user's real memories, which setup has no business writing to."""
-    src = read("brain-setup.py")
-    run_tests = src[src.index("def run_tests("):src.index("def ensure_brain_layout(")]
-    assert 'env.pop("BRAIN_VAULT", None)' in run_tests, (
-        "run_tests must drop an inherited BRAIN_VAULT before running the suite"
-    )
+    suite at the user's real memories, and any other inherited knob (a lowered
+    BRAIN_BUNDLE_BUDGET_KB) fails tests over a green checkout. Asserted on the env
+    run_tests actually hands pytest, not on its source text."""
+    setup = load_repo_script("brain-setup.py")
+    for key, value in {"BRAIN_VAULT": "/real/vault", "BRAIN_BUNDLE_BUDGET_KB": "48",
+                       "CLAUDE_PROJECT_DIR": "/some/project", "PATH_KEPT": "yes"}.items():
+        monkeypatch.setenv(key, value)
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen.update(kwargs["env"])
+        return subprocess.CompletedProcess(cmd, 0, stdout="1 passed\n", stderr="")
+
+    monkeypatch.setattr(setup.subprocess, "run", fake_run)
+    assert setup.run_tests(1, 1, skip=False) == (True, "")
+    assert seen.get("PATH_KEPT") == "yes", "the rest of the environment must pass through"
+    leaked = sorted(k for k in seen if k.startswith("BRAIN_") or k == "CLAUDE_PROJECT_DIR")
+    assert not leaked, f"run_tests passed {leaked} to the suite"
 
 
 # ---------------------------------------------- the force-reinstall footgun (2026-09-07)

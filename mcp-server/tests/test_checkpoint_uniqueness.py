@@ -197,15 +197,18 @@ def test_compaction_handles_the_new_names(vault_dir: Path) -> None:
 
     counts = compact._compact_project(sessions.parent, vault_dir / "archive", dry_run=False,
                                       today=later)
-    assert counts["raw_to_daily"] == 4
-    assert not list(sessions.glob("*.md")), "raw checkpoints should have been rolled up"
+    # The project's newest checkpoint stays at the top level for the preload, and
+    # "newest" is read off the name: the `_02`-style disambiguator sorts after `.`,
+    # so the last of several same-second writes is the one kept.
+    assert counts["raw_to_daily"] == 3
+    assert [q.name for q in sessions.glob("*.md")] == [paths[-1].name]
 
     daily = list((sessions / "daily").glob("*.md"))
     assert len(daily) == 1
     text = daily[0].read_text(encoding="utf-8")
-    for p in paths:
+    for p in paths[:-1]:
         assert f"## {p.name}" in text, f"{p.name} missing from the rollup"
-    for i in range(4):
+    for i in range(3):
         assert f"body {i}" in text
 
     # Idempotent: a second run must not duplicate the sources.

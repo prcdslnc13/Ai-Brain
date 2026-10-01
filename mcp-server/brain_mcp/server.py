@@ -314,8 +314,8 @@ async def call_tool(name: str, arguments: dict | None) -> list[TextContent]:
             )
             return _text(render.render_list(payload))
         if name == "brain_forget":
-            path = vault.forget_memory(args["path"])
-            return _ok({"forgot": str(path)})
+            path, version = vault.forget_memory_archived(args["path"])
+            return _ok({"forgot": str(path), "archived": str(version)})
         if name == "brain_checkpoint":
             path = vault.write_checkpoint(args["project"], args["summary"])
             vault.record_save_event("checkpoint", "mcp", path)

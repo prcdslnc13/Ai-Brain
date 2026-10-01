@@ -98,10 +98,13 @@ from _savesig import (
 )
 
 try:
-    from brain_mcp.transcript import is_system_turn
+    from brain_mcp.transcript import is_system_turn, user_authored_text
 except Exception:  # pragma: no cover — venv broken; the audit still runs, untagged
     def is_system_turn(text: str) -> bool:  # type: ignore[misc]
         return False
+
+    def user_authored_text(text: str) -> str:  # type: ignore[misc]
+        return text
 
 try:
     from brain_mcp.vault import count_save_events
@@ -343,7 +346,9 @@ def main() -> None:
     stop_active = bool(payload.get("stop_hook_active"))
 
     last_user, assistant_text, brain_tool_count, turn_start = _analyze_last_turn(transcript)
-    signal = is_save_signal(last_user)
+    # Only what the user typed: a system-reminder block prepended to the prompt,
+    # or a whole system-generated turn, is not the user stating a preference.
+    signal = is_save_signal(user_authored_text(last_user))
     saved = saved_this_turn(brain_tool_count, turn_start, payload.get("session_id"))
     promised = is_save_promise(assistant_text)
     nudged = signal and nudge_enabled()

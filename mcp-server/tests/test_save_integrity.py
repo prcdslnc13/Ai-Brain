@@ -268,10 +268,57 @@ def test_forget_decides_through_the_single_predicate() -> None:
     a private exclusion inside forget would drift exactly as the three earlier
     copies of "is this a memory" did."""
     tree = ast.parse(Path(vault.__file__).read_text(encoding="utf-8"))
+    # Whichever function does the delete -- the name moved once already, when
+    # forget_memory became a wrapper over forget_memory_archived (2026-10-01).
     fn = next(n for n in ast.walk(tree)
-              if isinstance(n, ast.FunctionDef) and n.name == "forget_memory")
+              if isinstance(n, ast.FunctionDef) and n.name.startswith("forget_memory")
+              and any(isinstance(c, ast.Call) and getattr(c.func, "attr", None) == "unlink"
+                      for c in ast.walk(n)))
     calls = {getattr(n.func, "id", None) for n in ast.walk(fn) if isinstance(n, ast.Call)}
     assert "is_memory_path" in calls
     assert not any(name in ast.dump(fn) for name in vault.EXCLUDE_FILES), (
         "forget_memory names excluded files literally instead of using the predicate"
     )
+
+
+# ------------------------------------------- forget keeps a copy (2026-10-01)
+#
+# `forget` is pre-approved, so it runs without a prompt; a save that replaces a
+# memory already archived what it replaced, and forget simply unlinked. Now both
+# leave the previous bytes in archive/versions/.
+
+def test_forget_archives_the_exact_bytes(vault_dir: Path) -> None:
+    target = vault.save_memory("feedback", "Keep a copy", "the rule\n\n**Why:** because").path
+    original = target.read_bytes()
+
+    deleted, version = vault.forget_memory_archived(str(target))
+
+    assert deleted == target and not target.exists()
+    assert version.read_bytes() == original
+    assert version.is_relative_to(vault_dir / "archive" / "versions" / "feedback")
+    listed = {str(m.path) for m in vault.list_memories()}
+    assert str(version) not in listed, "archived copies must stay out of list/recall"
+
+
+def test_a_forgotten_memory_can_be_restored_from_its_copy(vault_dir: Path) -> None:
+    target = vault.save_memory("user", "Restorable", "fact").path
+    _, version = vault.forget_memory_archived(str(target))
+    target.write_bytes(version.read_bytes())
+    assert vault.Memory.from_file(target).name == "Restorable"
+
+
+def test_a_refused_forget_archives_nothing(vault_dir: Path) -> None:
+    index = vault_dir / "_index.md"
+    index.write_text("toc\n", encoding="utf-8")
+    with pytest.raises(PermissionError):
+        vault.forget_memory(str(index))
+    assert not (vault_dir / "archive" / "versions").exists()
+
+
+def test_cli_forget_reports_the_archived_copy(vault_dir: Path, capsys: pytest.CaptureFixture) -> None:
+    target = vault.save_memory("user", "Report me", "fact").path
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["forget", str(target)])
+    assert exc.value.code in (0, None)
+    out = capsys.readouterr().out
+    assert "forgot:" in out and "archived copy:" in out and "archive" in out

@@ -38,7 +38,7 @@ from . import vault as _vault
 # rather than typed by the user: background-task notifications, skill/command
 # expansions, local-command output, and system reminders. THE list -- both
 # consumers read it from here. `hooks/stop.py` tags such turns `sys=Y` in the
-# activity audit (a skill body matches save-signal phrases like "I want", so
+# activity audit (a skill body matches save-signal phrases like "remember", so
 # `sig` measured on it says nothing about the user), and `parse_claude_transcript`
 # keeps them out of a checkpoint's "What the user asked for". Until 2026-09-01
 # each consumer kept its own list and they disagreed: the checkpoint renderer
@@ -51,6 +51,12 @@ SYSTEM_TURN_PREFIXES = (
     "<local-command-",    # <local-command-stdout>, <local-command-caveat>
     "Base directory for this skill:",
     "<system-reminder>",
+    # A subagent's or peer session's hand-back, delivered as a user entry. Missing
+    # until 2026-09-29, so every such report that quoted a phrase like "I want"
+    # was audited as a user save-signal and the SAVE_GAP banner fired on it.
+    "Another Claude session sent a message:",
+    "<agent-message",
+    "<bash-",             # ! bash mode: <bash-input>, <bash-stdout>, <bash-stderr>
 )
 
 # A system reminder can be *prepended* to a genuine prompt in the same user entry
@@ -294,8 +300,10 @@ def pi_session_file(path: Path) -> Path:
     """
     path = path.expanduser()
     if path.is_dir():
-        candidates = sorted(path.rglob("*.jsonl"), key=lambda p: p.stat().st_mtime,
-                            reverse=True)
+        # safe_mtime, not p.stat(): pi writes and rotates session files while a
+        # timer or shutdown hook runs this, and one vanishing mid-sort raised
+        # FileNotFoundError and lost that checkpoint.
+        candidates = sorted(path.rglob("*.jsonl"), key=_vault.safe_mtime, reverse=True)
         if not candidates:
             raise PiSessionError(f"no .jsonl session files under {path}")
         return candidates[0]

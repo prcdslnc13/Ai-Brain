@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """brain-setup — cross-platform installer for the Ai-Brain wiring.
 
-Replaces setup-mac.sh and setup-windows.ps1 for users who prefer a single,
-prompt-driven install. The shell scripts remain as fallbacks.
+The one installer on every platform (ROADMAP 3G retired the shell and
+PowerShell scripts on 2026-08-25). Interactive by default; scripted with flags.
 
 Usage:
     python brain-setup.py                  # interactive — prompts for everything
@@ -29,9 +29,9 @@ MCP_SERVER_DIR = REPO_DIR / "mcp-server"
 TEMPLATES_DIR = REPO_DIR / "templates"
 VENV_DIR = MCP_SERVER_DIR / ".venv"
 
-# The settings.json merge is shared with the three shell/PowerShell installers
-# (which invoke this same file as a script) so the algorithm cannot fork again —
-# see brain_settings_merge.py's docstring. sys.path[0] is already REPO_DIR when
+# The settings.json merge is shared with brain-uninstall.py, which must apply the
+# same ownership predicate, so the algorithm cannot fork again — see
+# brain_settings_merge.py's docstring. sys.path[0] is already REPO_DIR when
 # this file is run as a script; the insert covers every other invocation shape.
 sys.path.insert(0, str(REPO_DIR))
 import brain_settings_merge  # noqa: E402  (must follow the REPO_DIR sys.path setup)
@@ -435,11 +435,14 @@ def run_tests(num: int, total: int, skip: bool) -> tuple[bool, str]:
         return True, "no tests"
 
     step(num, total, "running the test suite")
-    env = os.environ.copy()
     # conftest.py builds a throwaway vault and points BRAIN_VAULT at it. Drop any
     # inherited value so the suite cannot be steered at -- or write into -- the
-    # user's real vault, and so it runs under the same env developers run it under.
-    env.pop("BRAIN_VAULT", None)
+    # user's real vault. Drop every other BRAIN_* knob too, and CLAUDE_PROJECT_DIR:
+    # a user's `BRAIN_BUNDLE_BUDGET_KB=48` in settings.json reached this suite when
+    # setup ran from a Claude Code session and failed four budget tests, which would
+    # have exited 4 over a green checkout (2026-09-29).
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("BRAIN_") and k != "CLAUDE_PROJECT_DIR"}
     try:
         res = subprocess.run(
             [str(VENV_PY), "-m", "pytest", "-q"],
@@ -669,7 +672,7 @@ def merge_settings_json(claude_dir: Path, vault_root: Path, cmd: str) -> tuple[b
     Returns (ok, reason). The merge itself — pruning our old entries, APPENDING our
     groups to whatever third-party hooks already exist for the same events, the
     refusal to rewrite an unparseable file, the backup and the atomic write — lives
-    in brain_settings_merge so all four installers share one implementation.
+    in brain_settings_merge so install and uninstall share one implementation.
     """
     settings_path = claude_dir / "settings.json"
     if IS_WINDOWS:
@@ -704,6 +707,8 @@ def merge_settings_json(claude_dir: Path, vault_root: Path, cmd: str) -> tuple[b
         warn(f"could not write {settings_path}: {exc} (original left unchanged)")
         return False, f"could not write {settings_path}: {exc}"
 
+    if report["auto_memory"] == "disabled":
+        info("       Claude Code auto memory disabled (the Brain replaces it; uninstall restores it)")
     if report["backup"]:
         info(f"       backup of previous settings.json: {report['backup']}")
     return True, ""
@@ -872,6 +877,9 @@ def install_one(claude_dir: Path, vault_root: Path, with_mcp: bool) -> dict:
     info("")
     info(f"━━━ installing into {claude_dir} ━━━")
     claude_dir.mkdir(parents=True, exist_ok=True)
+    # Recorded first, before any wiring lands: a half-finished install still points
+    # at the shared venv, and uninstall must know to look here before deleting it.
+    brain_settings_merge.record_install(REPO_DIR, claude_dir)
     ensure_brain_layout(vault_root)
 
     cmd = brain_cmd_token(claude_dir, vault_root)

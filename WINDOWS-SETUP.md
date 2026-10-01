@@ -88,8 +88,8 @@ auto-discovery.
    arguments are fixed hook names from `settings.json`, never text a model chose.
 7. Merges `templates/settings.hooks.win.json` into `<config>\settings.json`, replacing
    `__BRAIN_LAUNCH__` with the full path to the generated `brain-launch.cmd`. Each hook
-   command ends up as `"<config>/brain-launch.cmd" <hook-name>` (quoted, so a space in the
-   username survives). Also merges one `permissions.allow` rule per agent subcommand
+   command ends up as `"<config>/brain-launch.cmd" <hook-name> [args]` (quoted, so a space in
+   the username survives); the preload hooks carry `--part N --parts M`, one entry per part. Also merges one `permissions.allow` rule per agent subcommand
    (`Bash("<venv python>" "<config>/brain-agent.py" recall:*)`, `… save:*`, …) so
    model-initiated `brain` CLI calls never hit permission prompts; stale rules pointing at
    old wrapper paths — including the retired `brain.cmd` — are pruned on re-run.

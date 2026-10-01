@@ -194,16 +194,18 @@ PRELOAD_PATH_HOOKS = ("session_start.py", "subagent_start.py")
 
 
 def test_no_sort_key_on_the_preload_path_stats_unguarded():
-    """The class: `key=lambda p: p.stat()...` on the preload path is the bug coming back.
+    """The class: `key=lambda p: p.stat()...` is the bug coming back.
 
-    Scoped to the modules a SessionStart runs through — one raise there costs the
-    session every memory. (`compact.py` and `transcript.py` carry the same pattern
-    off this path; they degrade one operation, not the preload.)
+    First scoped to the modules a SessionStart runs through, where one raise costs
+    the session every memory. Widened to the whole package and every hook on
+    2026-10-01, once transcript.py's `pi_session_file` -- the last site -- lost a
+    checkpoint the same way: a pi session file rotated away mid-sort.
     """
     import re
     pkg = Path(vault.__file__).parent
-    files = [pkg / m for m in PRELOAD_PATH_MODULES]
-    files += [pkg.parent.parent / "hooks" / h for h in PRELOAD_PATH_HOOKS]
+    files = sorted(pkg.glob("*.py")) + sorted((pkg.parent.parent / "hooks").glob("*.py"))
+    hooks = pkg.parent.parent / "hooks"
+    assert {pkg / m for m in PRELOAD_PATH_MODULES} | {hooks / h for h in PRELOAD_PATH_HOOKS} <= set(files)
     offenders = []
     for py in files:
         text = py.read_text(encoding="utf-8")
@@ -327,3 +329,19 @@ def test_hook_banner_names_the_installer_that_exists():
     text = session_start._import_failure_banner("x", RuntimeError("y"))
     assert "brain-setup.py" in text
     assert "setup-mac" not in text and "setup-windows" not in text
+
+
+def test_no_runtime_message_names_a_retired_installer():
+    """The class, not the one banner above: doctor's repair hints kept telling users
+    to run setup-mac.sh / setup-windows.ps1 for a month after ROADMAP 3G deleted
+    them, at exactly the moment something was broken. Nothing the package or the
+    hooks can print may name them."""
+    repo = Path(__file__).resolve().parents[2]
+    retired = ("setup-mac", "setup-linux", "setup-windows")
+    offenders = [
+        f"{py.relative_to(repo)}: {name}"
+        for py in [*(repo / "mcp-server" / "brain_mcp").glob("*.py"), *(repo / "hooks").glob("*.py")]
+        for name in retired
+        if name in py.read_text(encoding="utf-8")
+    ]
+    assert not offenders, offenders

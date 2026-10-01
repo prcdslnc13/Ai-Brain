@@ -248,3 +248,26 @@ def test_an_unbounded_sync_heartbeats_the_lock_per_chunk(
 
     assert done == 3 * embed.EmbedIndex.SYNC_CHUNK
     assert len(touches) == 3, "one heartbeat per committed chunk"
+
+
+def test_reindex_releases_the_lock_when_backlog_is_busy(
+    vault_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """`backlog()` raises IndexBusy while another writer holds the index. It ran
+    after `brain reindex` took the lock but outside the try/finally that releases
+    it, so the lock stayed "held" under a dead pid for 30 minutes."""
+    from brain_mcp import cli
+
+    monkeypatch.setenv("BRAIN_EMBED", "1")
+
+    def busy(*args, **kwargs):
+        raise embed.IndexBusy("index locked by another writer")
+
+    monkeypatch.setattr(embed.EmbedIndex, "backlog", classmethod(busy))
+    monkeypatch.setattr(embed.EmbedIndex, "sync", classmethod(lambda cls, budget_seconds=None: 0))
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["reindex"])
+    assert exc.value.code in (0, None)
+    assert not embed.reindex_lock_held(), "reindex left its lock behind"
+    assert "an unknown number" in capsys.readouterr().out

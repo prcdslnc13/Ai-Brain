@@ -333,7 +333,10 @@ def _atomic_write(path: Path, text: str) -> None:
     """
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{next(_tmp_counter)}.tmp")
     try:
-        tmp.write_text(text, encoding="utf-8")
+        # newline="\n": text mode on Windows otherwise writes every "\n" as CRLF, so
+        # the same memory had different bytes depending on which machine last saved
+        # it (41 of 50 strixlappy-stamped notes were CRLF on 2026-10-01).
+        tmp.write_text(text, encoding="utf-8", newline="\n")
         os.replace(tmp, path)
     finally:
         try:
@@ -721,9 +724,14 @@ def _ripgrep_search(query: str, root: Path) -> dict[Path, int]:
     matches: dict[Path, int] = {}
     if rg:
         try:
+            # ripgrep writes UTF-8. `text=True` alone decodes with the locale's
+            # code page -- cp1252 on Windows -- which garbled a non-ASCII project
+            # path (the hit was then dropped) or raised on bytes cp1252 leaves
+            # undefined, and the except below threw away every lexical hit.
             out = subprocess.run(
                 _ripgrep_argv(rg, query, root),
-                capture_output=True, text=True, check=False,
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                check=False,
             )
             for line in out.stdout.splitlines():
                 line = line.strip()
@@ -1169,8 +1177,8 @@ def session_start_bundle(project: str | None = None, budget_kb: float | None = N
     still loads the project's scoped feedback — behavioral rules apply to delegated
     work just as much as to the main session.
 
-    Elastic sections fill in priority order — project-scoped feedback, then user,
-    then global feedback — so under a tight budget, global feedback is what gets
+    Elastic sections fill in priority order — project-scoped feedback, then global
+    feedback, then user — so under a tight budget, user context is what gets
     dropped first. The index, project overview, and latest session checkpoint are
     always included (clipped to a per-item cap — see `pinned_max_chars`). User
     profile entries and feedback files are added in priority order until the budget
@@ -1661,7 +1669,10 @@ def count_save_events(*, since: float, session_id: str | None = None) -> int:
     """
     try:
         raw = save_events_path().read_text(encoding="utf-8")
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
+        # ValueError covers UnicodeDecodeError: one bad byte (a torn sync, a
+        # hand edit) used to raise out of here and crash the Stop hook before it
+        # wrote its audit row or ran the gate.
         return 0
     count = 0
     for line in raw.splitlines():
@@ -1822,6 +1833,19 @@ def stats() -> dict:
 
 
 def forget_memory(rel_or_abs_path: str) -> Path:
+    return forget_memory_archived(rel_or_abs_path)[0]
+
+
+def forget_memory_archived(rel_or_abs_path: str) -> tuple[Path, Path]:
+    """Delete a memory, keeping a copy; return (deleted path, archived copy).
+
+    `forget` sits on the pre-approved agent surface, so a prompt-injected model can
+    run it without a prompt -- and until 2026-10-01 it simply unlinked, while a save
+    that replaced a memory archived what it replaced. Now both go through
+    `_archive_previous_version`: the copy lands in `archive/versions/` (out of the
+    index, recall and both preloads, carried by Obsidian Sync), newest VERSION_KEEP
+    kept.
+    """
     root = vault_root()
     p = Path(rel_or_abs_path)
     if not p.is_absolute():
@@ -1860,6 +1884,11 @@ def forget_memory(rel_or_abs_path: str) -> Path:
             f"refusing to delete {p}: not a memory or session checkpoint "
             f"(only .md files under Brain/ that `brain list` would show can be forgotten)"
         )
+    target = root / rel
+    # Read like save_memory reads what it replaces, so _atomic_write reproduces the
+    # same file; errors="replace" so one undecodable note can still be forgotten.
+    previous = target.read_text(encoding="utf-8", errors="replace")
+    version = _archive_previous_version(target, previous, root)
     p.unlink()
     _try_embed_delete(p)
-    return p
+    return p, version

@@ -77,6 +77,18 @@ def emit(obj: dict) -> None:
     sys.stdout.flush()
 
 
+def project_dir(payload: dict) -> str | None:
+    """The directory the session was launched in, or the payload's cwd as a fallback.
+
+    `CLAUDE_PROJECT_DIR` first, not the payload's `cwd`: Claude Code documents that
+    `cwd` follows the session — into a subdirectory after a `cd`, into a worktree
+    root after entering one — while `CLAUDE_PROJECT_DIR` stays at the project root.
+    Reading `cwd` first split one repo's activity and checkpoints across fake
+    projects named after its subdirectories (`projects/hooks`, `projects/mcp-server`).
+    """
+    return os.environ.get("CLAUDE_PROJECT_DIR") or payload.get("cwd") or None
+
+
 def project_basename(payload: dict) -> str | None:
     """The project key for this session, or None.
 
@@ -89,7 +101,7 @@ def project_basename(payload: dict) -> str | None:
     whole preload — every behavioural rule for that session — which is far worse
     than a session with no project scope.
     """
-    cwd = payload.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR")
+    cwd = project_dir(payload)
     if not cwd:
         return None
     try:
@@ -131,7 +143,8 @@ def append_activity(line: str) -> None:
                          f"(check BRAIN_VAULT, or wait for the vault to sync)\n")
         return
     activity = brain / "activity.md"
-    with activity.open("a", encoding="utf-8") as f:
+    # LF on every OS: rows from a Windows and a Mac session share this one file.
+    with activity.open("a", encoding="utf-8", newline="\n") as f:
         f.write(line.rstrip() + "\n")
     _rotate_activity(activity)
 

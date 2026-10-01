@@ -227,6 +227,8 @@ def prune_settings_hooks(claude_dir: Path) -> None:
         return
     word = "entry" if report["removed"] == 1 else "entries"
     info(f"       ✓ removed {report['removed']} Brain-owned {word}")
+    if report["auto_memory"]:
+        info(f"       ✓ Claude Code auto memory setting {report['auto_memory']}")
     if report["backup"]:
         info(f"       backup of previous settings.json: {report['backup']}")
 
@@ -330,15 +332,32 @@ def remove_generated_launchers(claude_dir: Path) -> None:
         info("       (none present)")
 
 
+def _candidate_config_dirs() -> list[Path]:
+    """Every config dir that might share the venv: ~/.claude*, whatever setup recorded
+    in .brain-installs.json (a config dir can be any path), and $CLAUDE_CONFIG_DIR.
+    Checking only ~/.claude* deleted the venv out from under an install elsewhere."""
+    seen: dict[str, Path] = {}
+    env_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    for cand in [*sorted(Path.home().glob(".claude*")),
+                 *brain_settings_merge.recorded_installs(REPO_DIR),
+                 *([Path(env_dir).expanduser()] if env_dir else [])]:
+        try:
+            key = str(cand.resolve())
+        except OSError:
+            key = str(cand)
+        seen.setdefault(key, cand)
+    return list(seen.values())
+
+
 def _venv_still_referenced(uninstalled: list[Path]) -> Path | None:
-    """Return the first ~/.claude* dir (not in `uninstalled`) whose settings.json,
+    """Return the first candidate config dir (not in `uninstalled`) whose settings.json,
     CLAUDE.md, skill or brain-launch.cmd still references the venv directory. The
     venv is shared across config dirs — we must not remove it out from under a
     sibling install. Both slash directions: the rendered token is forward-slashed.
     """
     venv_variants = {str(VENV_DIR), str(VENV_DIR).replace("\\", "/")}
     uninstalled_resolved = {p.resolve() for p in uninstalled}
-    for cand in sorted(Path.home().glob(".claude*")):
+    for cand in _candidate_config_dirs():
         if not cand.is_dir():
             continue
         try:
@@ -372,7 +391,15 @@ def remove_venv(uninstalled: list[Path]) -> None:
         info(f"       (still referenced by {still_used} — leaving in place)")
         info(f"       Re-run with --claude-dir {still_used} to remove it too.")
         return
-    shutil.rmtree(VENV_DIR, ignore_errors=True)
+    try:
+        shutil.rmtree(VENV_DIR)
+    except OSError as e:
+        info(f"       [warn] could not fully remove {VENV_DIR}: {e}")
+    # Report what is true on disk: on Windows a running MCP server or a brain.exe
+    # another session launched keeps files locked, and rmtree stops part-way.
+    if VENV_DIR.exists():
+        info(f"       [warn] {VENV_DIR} is still present — close anything using it and remove it by hand.")
+        return
     info(f"       ✓ removed {VENV_DIR}")
 
 
@@ -439,6 +466,7 @@ def main() -> None:
 
     for cd in claude_dirs:
         uninstall_one(cd)
+    brain_settings_merge.forget_installs(REPO_DIR, claude_dirs)
 
     # Final shared step — venv lives in the repo, not per-config-dir, so it's
     # removed once after all config dirs are processed.
