@@ -46,6 +46,26 @@ Use the full absolute paths for your machine:
 `brain-setup.py` prints these exact values at the end of a
 successful run — copy from there rather than retyping.
 
+### Size the preload to the model's window
+
+Add `BRAIN_MCP_BUDGET_KB` to the same `env` block. Without it, `brain_session_start` loads
+the full 72 KB Claude Code bundle, which was about 17k tokens on 2026-10-01: a large share
+of a 32k window before the conversation starts. 16 KB comes to about 6.5k tokens in the
+tool's JSON form.
+
+| Model window | `BRAIN_MCP_BUDGET_KB` |
+|---|---|
+| 8k-16k | `6` |
+| 32k | `12`-`16` |
+| 128k and up | leave unset, or `32` |
+
+The value is a ceiling. A model can pass `budget_kb` to `brain_session_start` to ask for
+less, never more, and `slim: true` leaves out the project overview and latest checkpoint.
+When `BRAIN_MCP_BUDGET_KB` is unset the server falls back to `BRAIN_BUNDLE_BUDGET_KB`, so
+an older config that set that name still works. Set the budget here, in the MCP server's
+`env`, and not in a Claude Code `settings.json`: that file's `env` block reaches only
+Claude Code, and lowering the budget there just drops memories from Claude sessions.
+
 ## Add the server to LMStudio
 
 LMStudio's MCP config is JSON-based and lives in the app's settings. The UI path varies by
@@ -67,7 +87,8 @@ LMStudio build exposes.
       "command": "/Users/<you>/src/Ai-Brain/mcp-server/.venv/bin/python",
       "args": ["-m", "brain_mcp"],
       "env": {
-        "BRAIN_VAULT": "/Users/<you>/Vaults/Ai-Brain"
+        "BRAIN_VAULT": "/Users/<you>/Vaults/Ai-Brain",
+        "BRAIN_MCP_BUDGET_KB": "16"
       }
     }
   }
@@ -83,7 +104,8 @@ On Windows, use backslash-escaped absolute paths:
       "command": "C:\\src\\Ai-Brain\\mcp-server\\.venv\\Scripts\\python.exe",
       "args": ["-m", "brain_mcp"],
       "env": {
-        "BRAIN_VAULT": "C:\\Users\\<you>\\Documents\\Vaults\\Ai-Brain"
+        "BRAIN_VAULT": "C:\\Users\\<you>\\Documents\\Vaults\\Ai-Brain",
+        "BRAIN_MCP_BUDGET_KB": "16"
       }
     }
   }

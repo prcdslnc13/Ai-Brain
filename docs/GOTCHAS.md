@@ -990,3 +990,33 @@ not grepped), the hook credits exactly this turn's saves for this session, the 2
 incident replayed end to end no longer blocks, recording cannot fail a save, and
 `stop.py` contains no `"Bash"`, `"PowerShell"`, `get("command"` or `is_cli_save_command` —
 the regex must not come back through a new door.
+
+### Each preload surface has its own budget knob; never size a local model from Claude Code's `settings.json` (2026-10-01)
+
+`BRAIN_BUNDLE_BUDGET_KB` was the only budget name, and three surfaces read it: the Claude
+Code hooks (default 72), the MCP server's `brain_session_start` (same default), and the pi
+extension (its own default, 12). So shrinking the bundle for one reader shrank it for all of
+them, or for none.
+
+On 2026-10-01 `~/.claude-work/settings.json` carried `BRAIN_BUNDLE_BUDGET_KB: "48"`. It was
+set deliberately, because the preload was overflowing smaller-context local models. But a
+`settings.json` `env` block reaches only Claude Code's hooks and shell, and those sessions
+ran Opus with a 1M window. The setting skipped ten user memories from every Opus session
+(`BUNDLE_SATURATED`) and did nothing for LM Studio. LM Studio's `mcp.json` set no budget,
+so `brain_session_start` returned the full 72 KB, about 17k tokens. It was the third time
+a sub-default value in a `settings.json` had cost memories (`.claude-f42` on 2026-08-24, and
+the 32 KB default on 2026-07-30).
+
+The fix gives each surface a name of its own:
+
+- **MCP:** `vault.mcp_budget_kb()` reads `BRAIN_MCP_BUDGET_KB` and falls back to
+  `BRAIN_BUNDLE_BUDGET_KB`, so an existing `mcp.json` keeps its meaning. The tool takes
+  `budget_kb` and `slim`. The argument is **lower-only**. The operator sized the config for
+  the model's window, so a model asking for more is asking to overflow it. A non-numeric,
+  non-finite or non-positive value is an error result, not a silent default.
+- **pi:** reads `BRAIN_PI_BUDGET_KB`, then the shared name, then 12.
+- **Claude Code hooks:** keep `BRAIN_BUNDLE_BUDGET_KB`. Its natural limit is the 7 hook
+  parts, not the budget.
+
+`tests/test_mcp_session_budget.py` covers the MCP precedence, the lower-only argument, bad
+values, `slim`, and the advertised schema.
