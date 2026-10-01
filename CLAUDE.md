@@ -333,7 +333,8 @@ incident.
 - **Recall's index sync is time-boxed; never make it unbounded again.** `EmbedIndex.sync()`
   embeds newest-first in `SYNC_CHUNK` batches, committing per chunk, until
   `BRAIN_SYNC_MAX_SECONDS` (5s); only `brain reindex` and the MCP warmup pass `budget_seconds=0`.
-  A foreground sync returns at once while the reindex lock is held; writers use a 30s sqlite busy
+  A foreground sync returns at once while the reindex lock is held, and takes `_SYNC_LOCK` without
+  waiting (the MCP warmup holds it for minutes); writers use a 30s sqlite busy
   timeout, readers must not (doctor waits `index_busy_timeout()`, 2s, inside a 15s hook). A locked
   index is `INDEX_BUSY`, never `INDEX_CORRUPT`. Foreground syncs skip session checkpoints;
   `_indexable()` is the one predicate for what gets a vector. Embedding cost flattens past ~1500
