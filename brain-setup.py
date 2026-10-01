@@ -435,11 +435,14 @@ def run_tests(num: int, total: int, skip: bool) -> tuple[bool, str]:
         return True, "no tests"
 
     step(num, total, "running the test suite")
-    env = os.environ.copy()
     # conftest.py builds a throwaway vault and points BRAIN_VAULT at it. Drop any
     # inherited value so the suite cannot be steered at -- or write into -- the
-    # user's real vault, and so it runs under the same env developers run it under.
-    env.pop("BRAIN_VAULT", None)
+    # user's real vault. Drop every other BRAIN_* knob too, and CLAUDE_PROJECT_DIR:
+    # a user's `BRAIN_BUNDLE_BUDGET_KB=48` in settings.json reached this suite when
+    # setup ran from a Claude Code session and failed four budget tests, which would
+    # have exited 4 over a green checkout (2026-09-29).
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("BRAIN_") and k != "CLAUDE_PROJECT_DIR"}
     try:
         res = subprocess.run(
             [str(VENV_PY), "-m", "pytest", "-q"],

@@ -234,8 +234,9 @@ The moving parts fit together as follows:
   still lands, because a red test should not cost the user their Brain — but it **exits 4**, the
   same contract a refused `settings.json` already has, so a scripted install cannot report
   success over a broken checkout. Those two pull in opposite directions and both are required.
-  (3) `run_tests()` drops any inherited `BRAIN_VAULT`, so the suite runs against `conftest`'s
-  throwaway vault and setup can never write into the user's real memories. `--skip-tests`
+  (3) `run_tests()` drops every inherited `BRAIN_*` variable and `CLAUDE_PROJECT_DIR`, so the
+  suite runs against `conftest`'s throwaway vault and setup can never write into the user's real
+  memories, nor fail over a green checkout because of a user's tuning knob. `--skip-tests`
   bypasses the step.
 
   The other three installers do **not** do this yet — a deliberate, known gap, not an
@@ -508,7 +509,9 @@ The suite runs against the **source tree**, not the installed copy — `pythonpa
 `[tool.pytest.ini_options]` puts `mcp-server/` and `hooks/` first. That is load-bearing: the
 package is installed non-editable, so without it a run would silently grade whatever was last
 `pip install`ed. Tests never touch the real vault; `conftest.py`'s `vault_dir` fixture builds a
-throwaway one and points `BRAIN_VAULT` at it.
+throwaway one and points `BRAIN_VAULT` at it, and an autouse fixture clears every inherited
+`BRAIN_*` variable (and `CLAUDE_PROJECT_DIR`) first, so a run from a Claude Code session, whose
+`settings.json` `env` block reaches the shell, grades the code and not the user's knobs.
 
 What the suite is *for*: this repo duplicates every concern across parallel sites — four
 installers, two frontends, two hook templates — and every bug cluster so far has been a fix

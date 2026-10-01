@@ -24,6 +24,19 @@ sys.path.insert(0, str(REPO_ROOT / "mcp-server"))
 sys.path.insert(0, str(REPO_ROOT / "hooks"))
 
 
+@pytest.fixture(autouse=True)
+def _isolated_brain_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start every test with no inherited BRAIN_* knob and no CLAUDE_PROJECT_DIR.
+
+    Run from a Claude Code session, the suite inherits that session's settings.json
+    `env` block: `BRAIN_BUNDLE_BUDGET_KB=48` failed four budget tests on 2026-09-29.
+    Autouse fixtures run before the ones a test requests, so `vault_dir` and friends
+    still set exactly what they need on top of a clean slate.
+    """
+    for key in [k for k in os.environ if k.startswith("BRAIN_") or k == "CLAUDE_PROJECT_DIR"]:
+        monkeypatch.delenv(key)
+
+
 def load_repo_script(filename: str):
     """Import a repo-root script (`brain-setup.py`, `brain-uninstall.py`, ...) by path.
 
