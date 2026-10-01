@@ -230,3 +230,12 @@ def test_rotation_survives_crlf_lines_and_leaves_lf(vault_dir: Path) -> None:
     assert all(json.loads(ln)["kind"] == "save" for ln in lines), "every kept line is one event"
     assert json.loads(lines[-1])["surface"] == "cli"
     assert vault.count_save_events(since=0) == vault.SAVE_EVENTS_KEEP_LINES, "the hook reads every kept line"
+
+
+def test_an_undecodable_events_file_counts_as_nothing(vault_dir: Path) -> None:
+    """One bad byte in save-events.jsonl used to raise UnicodeDecodeError out of
+    count_save_events and crash the Stop hook before its audit row and gate ran."""
+    path = vault.save_events_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b'{"ts": 1, "kind": "save"}\n' + bytes([0xFF, 0xFE, 0x80]) + b"\n")
+    assert vault.count_save_events(since=0) == 0

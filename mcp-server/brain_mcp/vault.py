@@ -1661,7 +1661,10 @@ def count_save_events(*, since: float, session_id: str | None = None) -> int:
     """
     try:
         raw = save_events_path().read_text(encoding="utf-8")
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
+        # ValueError covers UnicodeDecodeError: one bad byte (a torn sync, a
+        # hand edit) used to raise out of here and crash the Stop hook before it
+        # wrote its audit row or ran the gate.
         return 0
     count = 0
     for line in raw.splitlines():

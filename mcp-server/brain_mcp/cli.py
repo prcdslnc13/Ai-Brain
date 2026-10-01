@@ -270,9 +270,20 @@ def _cmd_reindex(args: argparse.Namespace) -> int:
         print("reindex already running (see .index/reindex.lock)")
         return 0
 
-    pending = embed.EmbedIndex.backlog()
-    t0 = time.monotonic()
+    def backlog() -> int | None:
+        # backlog() raises IndexBusy rather than guess while another writer holds
+        # the index. It used to run between taking the reindex lock and the
+        # try/finally that releases it, so that raise left the lock held under a
+        # dead pid -- "held" for 30 minutes, with every foreground sync returning 0
+        # and no background reindex spawned.
+        try:
+            return embed.EmbedIndex.backlog()
+        except embed.IndexBusy:
+            return None
+
     try:
+        pending = backlog()
+        t0 = time.monotonic()
         done = embed.EmbedIndex.sync(budget_seconds=0)
     except embed.EmbedUnavailable as e:
         raise SystemExit(f"error: embedder unavailable: {e}")
@@ -284,12 +295,13 @@ def _cmd_reindex(args: argparse.Namespace) -> int:
         print(json.dumps({
             "pending": pending,
             "indexed": done,
-            "remaining": embed.EmbedIndex.backlog(),
+            "remaining": backlog(),
             "elapsed_s": round(elapsed, 1),
         }))
     else:
+        stale = "an unknown number" if pending is None else pending
         print(f"reindexed {done} file(s) in {elapsed:.1f}s "
-              f"({pending} were stale at start)")
+              f"({stale} were stale at start)")
     return 0
 
 
