@@ -499,6 +499,49 @@ def test_a_failed_pip_install_reports_whether_the_package_survived():
     )
 
 
+def test_a_failed_pip_install_checks_the_dependencies_not_just_the_package():
+    """A rebuilt venv gets brain_mcp from the --no-deps step even when the deps fail.
+
+    On 2026-10-10 that is exactly what happened on Python 3.15, and a bare
+    `import brain_mcp` reported "the previous install is intact" over a venv with
+    no pyyaml and no mcp, i.e. no working Brain.
+    """
+    src = read("brain-setup.py")
+    fn_src = src[src.index("def package_importable("):src.index("def install_brain_mcp(")]
+    assert '"import brain_mcp"' not in fn_src
+    assert "brain_mcp.vault" in fn_src and "brain_mcp.server" in fn_src
+
+
+@pytest.mark.parametrize("installed, expected", [
+    (["python3.15", "python3.14", "python3"], ["python3.14"]),
+    (["python3.15", "python3.12"], ["python3.12"]),
+    (["python3.15"], ["python3.15"]),  # last resort, with a warning
+    ([], []),
+])
+def test_find_python3_prefers_a_minor_the_dependency_wheels_exist_for(
+        monkeypatch, installed, expected):
+    """Newest-first picked a fresh 3.15 that onnxruntime had no wheels for (2026-10-10)."""
+    setup = load_repo_script("brain-setup.py")
+    monkeypatch.setattr(setup, "IS_WINDOWS", False)
+    monkeypatch.setattr(setup, "MAX_PY", (3, 14))
+    monkeypatch.setattr(setup, "_CEILING_GATE", "ceiling")
+    monkeypatch.setattr(setup.shutil, "which", lambda name: name if name in installed else None)
+    version = {"python3.15": 15, "python3.14": 14, "python3.12": 12, "python3": 15}
+
+    def fake_run(cmd, **kwargs):
+        minor = version[cmd[0]]
+        ok = minor <= 14 if cmd[-1] == "ceiling" else minor >= setup.MIN_PY[1]
+        return subprocess.CompletedProcess(cmd, 0 if ok else 1)
+
+    monkeypatch.setattr(setup.subprocess, "run", fake_run)
+    assert setup.find_python3() == expected
+
+
+def test_max_py_is_not_below_min_py():
+    setup = load_repo_script("brain-setup.py")
+    assert setup.MAX_PY >= setup.MIN_PY
+
+
 # ------------------------------------------------------------------- retirement (3G)
 
 
