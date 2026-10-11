@@ -53,6 +53,15 @@ MANAGED_MARKER = brain_settings_merge.MANAGED_MARKER
 MIN_PY = (3, 11)
 _VERSION_GATE = f"import sys; sys.exit(0 if sys.version_info >= {MIN_PY} else 1)"
 
+# Newest minor the dependency tree has wheels for. fastembed needs onnxruntime,
+# which ships per-minor wheels months after a CPython release: on 2026-10-10 a
+# python.org 3.15 install took over python3, find_python3() picked it, and pip
+# died with ResolutionImpossible. Interpreters above this are a last resort, and
+# a venv built on one is rebuilt once a supported one appears. Bump this when
+# onnxruntime publishes wheels for the next minor.
+MAX_PY = (3, 14)
+_CEILING_GATE = f"import sys; sys.exit(0 if sys.version_info[:2] <= {MAX_PY} else 1)"
+
 
 # ---------- output helpers ----------
 
@@ -105,13 +114,14 @@ def discover_claude_dirs() -> list[Path]:
     return found
 
 
-def find_python3() -> list[str]:
-    """Return a command-prefix that runs Python >= MIN_PY.
+def _python_candidates() -> tuple[list[str], list[str]]:
+    """Return (newest Python in MIN_PY..MAX_PY, newest Python above MAX_PY).
 
     Prefers version-suffixed binaries (python3.14, py -3.14, ...) over generic
     `python3` because system pythons on some platforms are pinned to old releases
     that fail the brain-mcp install — most notably macOS /usr/bin/python3, which
     is still 3.9 and would shadow a perfectly good Homebrew 3.14 on PATH.
+    Either element is [] when nothing qualifies.
     """
     minors = range(20, MIN_PY[1] - 1, -1)
     candidates: list[list[str]] = []
@@ -121,6 +131,7 @@ def find_python3() -> list[str]:
     else:
         candidates += [[f"python3.{m}"] for m in minors]
         candidates += [["python3"], ["python"]]
+    too_new: list[str] = []
     for cmd in candidates:
         if not shutil.which(cmd[0]):
             continue
@@ -129,11 +140,30 @@ def find_python3() -> list[str]:
                 cmd + ["-c", _VERSION_GATE],
                 capture_output=True, check=False, timeout=10,
             )
+            if res.returncode != 0:
+                continue
+            res = subprocess.run(
+                cmd + ["-c", _CEILING_GATE],
+                capture_output=True, check=False, timeout=10,
+            )
             if res.returncode == 0:
-                return cmd
+                return cmd, too_new
+            too_new = too_new or cmd
         except (OSError, subprocess.TimeoutExpired):
             continue
-    return []
+    return [], too_new
+
+
+def find_python3() -> list[str]:
+    """Return a command-prefix that runs Python >= MIN_PY, preferring <= MAX_PY."""
+    supported, too_new = _python_candidates()
+    if supported:
+        return supported
+    if too_new:
+        warn(f"only Python newer than {MAX_PY[0]}.{MAX_PY[1]} found ({' '.join(too_new)}); "
+             f"its dependency wheels may not exist yet. If pip fails, install "
+             f"Python {MAX_PY[0]}.{MAX_PY[1]} and re-run.")
+    return too_new
 
 
 # ---------- prompts ----------
@@ -259,6 +289,13 @@ def _venv_is_healthy() -> bool:
         )
         if res.returncode != 0:
             return False
+        # Above the ceiling: rebuild if a supported interpreter is now available.
+        res = subprocess.run(
+            [str(VENV_PY), "-c", _CEILING_GATE],
+            capture_output=True, check=False, timeout=10,
+        )
+        if res.returncode != 0 and _python_candidates()[0]:
+            return False
         res = subprocess.run(
             [str(VENV_PIP), "--version"],
             capture_output=True, check=False, timeout=10,
@@ -321,12 +358,17 @@ def locked_venv_scripts():
 
 
 def package_importable():
-    """Does the venv still have a working brain_mcp? Asked from a foreign cwd."""
+    """Does the venv still have a working brain_mcp? Asked from a foreign cwd.
+
+    Imports modules that pull in the real dependencies (pyyaml, mcp): a freshly
+    rebuilt venv gets brain_mcp from the --no-deps step even when the dependency
+    install then fails, and a bare `import brain_mcp` would call that intact.
+    """
     if not VENV_PY.exists():
         return False
     cwd = os.environ.get("TEMP") if IS_WINDOWS else "/tmp"
     res = subprocess.run(
-        [str(VENV_PY), "-c", "import brain_mcp"],
+        [str(VENV_PY), "-c", "import brain_mcp.vault, brain_mcp.server"],
         cwd=cwd or str(REPO_DIR), capture_output=True, check=False,
     )
     return res.returncode == 0
