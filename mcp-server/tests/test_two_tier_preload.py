@@ -278,9 +278,11 @@ def test_the_knob_changes_what_counts_as_oversized(vault_dir: Path,
 def test_the_check_and_the_bundle_agree_on_cost(vault_dir: Path) -> None:
     """The invariant: doctor must measure exactly what the bundle carries.
 
-    Asserted against `vault.preload_text` rather than a copy of its logic, so a
-    change to what the preload defers cannot silently desynchronise the check that
-    polices its budget.
+    Asserted against the item a real bundle holds rather than against any one
+    transform, so a change to what the preload defers or strips cannot silently
+    desynchronise the check that polices its budget. (It was asserted against
+    `vault.preload_text` until 2026-11-11, which would have kept passing while the
+    bundle dropped frontmatter and doctor still counted it.)
     """
     from brain_mcp import doctor
 
@@ -288,5 +290,17 @@ def test_the_check_and_the_bundle_agree_on_cost(vault_dir: Path) -> None:
     f = _mem(vault_dir / "feedback" / "x.md", body)
     raw = f.read_text(encoding="utf-8")
 
-    assert doctor._preload_cost(raw) == len(vault.preload_text(raw).encode("utf-8"))
+    (item,) = vault.collect_preload_candidates(None)["elastic"]
+    assert doctor._preload_cost(raw) == len(item["content"].encode("utf-8"))
     assert doctor._preload_cost(raw) < len(raw.encode("utf-8")), "the Why must be deferred"
+
+    # ...and under every combination of the two opt-outs, not only the default.
+    for defer in ("0", "1"):
+        for strip in ("0", "1"):
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setenv("BRAIN_PRELOAD_DEFER_WHY", defer)
+                mp.setenv("BRAIN_PRELOAD_STRIP_FRONTMATTER", strip)
+                (item,) = vault.collect_preload_candidates(None)["elastic"]
+                assert doctor._preload_cost(raw) == len(item["content"].encode("utf-8")), (
+                    f"defer={defer} strip={strip}"
+                )

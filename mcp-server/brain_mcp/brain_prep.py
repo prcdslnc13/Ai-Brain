@@ -45,6 +45,25 @@ _WHY_NOTE_SHORT = (
 )
 
 
+_SCOPE_NOTE = (
+    "> {n} memories scoped to other machines were left out (this machine: `{machine}`); "
+    "`brain recall <name>` still finds them."
+)
+
+
+def _scope_note(bundle: dict) -> str:
+    """One line saying how many memories machine scope left out, or "" for none.
+
+    It names the machine the scope was judged against: a wrong machine name hides this
+    machine's own memories, and this line is the only place that would show.
+    """
+    items = bundle.get("scoped_out_items") or []
+    if not items:
+        return ""
+    return _SCOPE_NOTE.format(n=len(items), machine=vault.neutralize_fence(
+        str(bundle.get("machine") or "unknown")))
+
+
 def _catalogue_lines(bundle: dict) -> list[str]:
     """One `- type/name` line per memory the bundle's byte budget skipped."""
     items = bundle.get("skipped_items") or []
@@ -69,6 +88,9 @@ def render(bundle: dict) -> str:
         skip_parts = [f"{n} {label}" for label, n in skipped.items() if n]
         skip_str = f" · skipped {', '.join(skip_parts)}" if skip_parts else ""
         lines.append(f"> budget: {consumed}/{limit} KB{skip_str}")
+        lines.append("")
+    if _scope_note(bundle):
+        lines.append(_scope_note(bundle))
         lines.append("")
     if bundle.get("deferred_why_kb"):
         # Explained once here rather than per entry, so the marker itself stays short.
@@ -133,6 +155,9 @@ def _part_document(bundle: dict, index: int, total: int, body_units: list[tuple[
         limit = bundle.get("budget_limit_kb")
         if consumed is not None and limit is not None:
             lines.append(f"> budget: {consumed}/{limit} KB, delivered in {total} part(s)")
+            lines.append("")
+        if _scope_note(bundle):
+            lines.append(_scope_note(bundle))
             lines.append("")
     has_marker = any(vault._WHY_DEFERRED_MARKER in text for _, _, text in body_units)
     if has_marker and bundle.get("deferred_why_kb"):

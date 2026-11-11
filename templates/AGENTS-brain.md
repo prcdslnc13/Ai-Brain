@@ -28,7 +28,8 @@ a deadline/stakeholder/constraint that isn't in the code, or when you make a non
 design decision or rule out an approach. Types: `user` (facts about the user), `feedback`
 (behavior rules — lead with the rule, then `**Why:**` and `**How to apply:**` lines),
 `project` (context not derivable from code; needs `--project`), `reference` (pointers to
-external systems).
+external systems). A fact true only on some machines can open its body with a
+`---` / `machines: [name]` / `---` block, and then preloads only there.
 
 **Do NOT save:** code patterns or structure (readable from the code), git history, anything
 already in project docs, or ephemeral in-progress state.
