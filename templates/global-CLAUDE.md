@@ -101,6 +101,16 @@ Exactly four types. Save things if and only if they fit one:
 
 - **user** — facts about the user that should shape future behavior: role, expertise, preferences,
   working style, tools. Useful, not judgmental.
+  **Scope a fact that is only true on some machines** (a path, an installed tool, a BIOS
+  setting): open the body with a frontmatter block naming them, and it preloads only there.
+  Recall still finds it everywhere. Works for any type; leave it off when unsure.
+
+  ```
+  ---
+  machines: [strixbox]
+  ---
+  StrixBox has podman, not docker.
+  ```
 - **feedback** — behavior corrections AND validated approaches (a non-obvious choice the user
   accepted is a quiet "yes"). Lead with the rule, then `**Why:**` and `**How to apply:**` lines —
   knowing why lets you judge edge cases. **Scope it**: if the rule only makes sense in one

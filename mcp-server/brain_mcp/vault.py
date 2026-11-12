@@ -976,6 +976,9 @@ BANNER_RESERVE_CHARS = 1500
 PINNED_OVERVIEW_MAX_CHARS = 3500
 PINNED_CHECKPOINT_MAX_CHARS = 2500
 
+# The user memory that fills first in the `user` section (see collect_preload_candidates).
+USER_PROFILE_FILE = "profile.md"
+
 
 def _positive_int_from_env(name: str, default: int) -> int:
     raw = os.environ.get(name)
@@ -1086,6 +1089,92 @@ def preload_text(text: str) -> str:
     if len(trimmed.encode("utf-8")) >= len(body.encode("utf-8")):
         return text
     return head + trimmed
+
+
+# Frontmatter is bookkeeping for recall, list and the index, and in an elastic preload
+# item every field of it is already on the page: `name` is the slug in the `### path`
+# header, `description` is the opening of the body (`_render_memory` writes it as
+# `body[:150]`), `type` is the section heading, and `machine` is where the memory was
+# *saved*, not where it applies. Measured 2026-11-11 on the real vault it was 18.8 KB
+# of an 81.9 KB elastic corpus (23%), against about 58 KB that 7 hook parts deliver,
+# so a quarter of what reached the model was a repeat while 33 memories did not load.
+#
+# Like Why-deferral this is lossless: nothing on disk changes and `brain recall` still
+# shows every field. Set BRAIN_PRELOAD_STRIP_FRONTMATTER=0 to carry frontmatter again.
+
+
+def strip_frontmatter_enabled() -> bool:
+    return os.environ.get("BRAIN_PRELOAD_STRIP_FRONTMATTER", "1") != "0"
+
+
+def strip_frontmatter(text: str) -> str:
+    """`text` without its frontmatter block; unchanged when it has no real one.
+
+    "Real" is `_split_caller_frontmatter`'s test (a closed block that parses as a
+    mapping), so a body that merely opens with a horizontal rule keeps its first lines.
+    """
+    split = _split_caller_frontmatter(text)
+    if split is None:
+        return text
+    return split[1].lstrip("\n")
+
+
+def preload_item_text(text: str) -> str:
+    """An elastic memory exactly as a preload carries it.
+
+    The ONE definition of that shape: `collect_preload_candidates` builds bundle items
+    with it and doctor's `_preload_cost` sizes memories with it, so the reported cost
+    of a memory cannot drift from what it actually costs. Honours both opt-outs.
+    """
+    out = preload_text(text) if defer_why_enabled() else text
+    if strip_frontmatter_enabled():
+        out = strip_frontmatter(out)
+    return out
+
+
+# --- Machine scope: a memory can say which machines it applies to ---------------
+#
+# `machine:` records where a memory was saved. It cannot say where the memory
+# *applies*: a note about the laptop's BIOS was saved from the MacBook. So a memory
+# may carry `machines: [strixbox, strixlappy]` in its frontmatter, and a preload on any
+# other machine leaves it out. About 15 of 32 user memories (18 KB) were notes about
+# one box preloading on all of them (2026-11-11).
+#
+# Scope only narrows the *preload*. Recall, list and the index ignore it, so a scoped
+# memory is still one `brain recall` away everywhere. No `machines` field means every
+# machine, and so does a field that is empty or unreadable: a typo must load the memory
+# too widely, never hide it. Names are compared slugified, the form `machine_name()`
+# returns. BRAIN_PRELOAD_MACHINE_SCOPE=0 loads everything everywhere again.
+MACHINE_SCOPE_FIELD = "machines"
+
+
+def machine_scope_enabled() -> bool:
+    return os.environ.get("BRAIN_PRELOAD_MACHINE_SCOPE", "1") != "0"
+
+
+def machine_scope(fm: dict | None) -> list[str]:
+    """The slugified machine names a frontmatter mapping scopes its memory to.
+
+    Empty list means unscoped. Accepts a list or a single string; anything else, and
+    any entry that is not a non-empty string, is ignored.
+    """
+    if not isinstance(fm, dict):
+        return []
+    raw = fm.get(MACHINE_SCOPE_FIELD)
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    names = []
+    for entry in raw:
+        if isinstance(entry, str) and entry.strip():
+            names.append(slugify(entry))
+    return names
+
+
+def applies_to_this_machine(fm: dict | None) -> bool:
+    scope = machine_scope(fm)
+    return not scope or machine_name() in scope
 
 
 # --- Trust boundary: vault content is data, not instructions -------------------
@@ -1219,9 +1308,10 @@ def collect_preload_candidates(project: str | None = None) -> dict:
     (`brain_session_start`), and the budget must count the bytes that actually ship.
     """
     root = vault_root()
-    defer_why = defer_why_enabled()
+    scope_on = machine_scope_enabled()
     pinned: list[dict] = []
     elastic: list[dict] = []
+    scoped_out: list[dict] = []
 
     def rel(file: Path) -> str:
         try:
@@ -1263,16 +1353,26 @@ def collect_preload_candidates(project: str | None = None) -> dict:
             if content is None:
                 continue
             raw_bytes = len(content.encode("utf-8"))
-            deferred = 0
+            # A memory scoped to other machines is left out before the budget sees it,
+            # and is reported as scoped out rather than catalogued as "did not fit":
+            # it is not something this session is missing.
+            if scope_on:
+                split = _split_caller_frontmatter(content)
+                if split is not None and not applies_to_this_machine(split[0]):
+                    scoped_out.append({
+                        "label": label, "path": rel(f), "kind": kind,
+                        "name": memory_display_name(rel(f)),
+                        "machines": machine_scope(split[0]),
+                    })
+                    continue
             # Elastic sections only — these are the behavioural rules, the ones that
             # follow the Why/How convention and the ones the budget actually drops.
             # Pinned sections (index, project overview, latest checkpoint) are narrative
-            # context with no rule structure.
-            if defer_why:
-                trimmed = preload_text(content)
-                if trimmed is not content:
-                    deferred = raw_bytes - len(trimmed.encode("utf-8"))
-                    content = trimmed
+            # context with no rule structure, and keep their frontmatter.
+            deferred = 0
+            if defer_why_enabled():
+                deferred = raw_bytes - len(preload_text(content).encode("utf-8"))
+            content = preload_item_text(content)
             elastic.append({
                 "label": label, "path": rel(f), "content": content, "kind": kind,
                 "clipped": False, "raw_bytes": raw_bytes, "deferred_bytes": deferred,
@@ -1314,11 +1414,21 @@ def collect_preload_candidates(project: str | None = None) -> dict:
             "feedback",
         )
 
+    # `profile.md` first, then by name. The profile is the one user memory written to
+    # be always loaded, and a plain name sort put it 21st of 32 — behind every
+    # `mac-*` and `lmstudio-*` incident note, and among the items that fell off the
+    # last part (2026-11-11). This orders items *within* the user section; the section
+    # order above is unchanged.
     user_dir = root / "user"
     if user_dir.exists():
-        add_elastic("user", sorted(user_dir.glob("*.md")), "user")
+        add_elastic(
+            "user",
+            sorted(user_dir.glob("*.md"), key=lambda p: (p.name != USER_PROFILE_FILE, p.name)),
+            "user",
+        )
 
-    return {"root": root, "project": project, "pinned": pinned, "elastic": elastic}
+    return {"root": root, "project": project, "pinned": pinned, "elastic": elastic,
+            "scoped_out": scoped_out}
 
 
 def latest_checkpoint(sessions_dir: Path) -> Path | None:
@@ -1418,6 +1528,12 @@ def assemble_bundle(candidates: dict, budget_kb: float | None = None,
     bundle["pinned_clipped"] = pinned_clipped
     bundle["skipped_sections"] = skipped_counts
     bundle["skipped_items"] = skipped_items
+    # Scoped to other machines: left out on purpose, so kept apart from `skipped_items`
+    # (which is what this session is missing). `machine` rides along so a renderer can
+    # say which machine the scope was judged against — a wrong `machine_name()` would
+    # otherwise hide this machine's own memories with nothing to show for it.
+    bundle["scoped_out_items"] = list(candidates.get("scoped_out") or [])
+    bundle["machine"] = machine_name()
     bundle["deferred_why_kb"] = round(deferred_bytes / 1024.0, 2)
     return bundle
 

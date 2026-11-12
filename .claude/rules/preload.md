@@ -26,6 +26,15 @@ changing anything a rule guards.
   replaces it with a marker in elastic sections only — lossless, nothing on disk changes,
   `BRAIN_PRELOAD_DEFER_WHY=0` restores. Project-scoping is not a further lever (measured
   2026-08-25).
+- **`vault.preload_item_text()` is the one definition of an elastic memory in a preload:**
+  Why deferred, frontmatter stripped (`BRAIN_PRELOAD_STRIP_FRONTMATTER=0` restores). The
+  bundle is built with it and doctor's `_preload_cost` sizes with it; a test compares the two
+  under every opt-out combination. Pinned items keep their frontmatter.
+- **`machines:` in frontmatter scopes a memory's *preload* to those machines, and fails
+  open.** `machine:` is saved-on and must not be used for this. Missing, empty or unreadable
+  means every machine; recall, list and the index ignore the scope; scoped-out memories are
+  reported in `scoped_out_items` with the machine name, never catalogued as "did not fit"
+  (`BRAIN_PRELOAD_MACHINE_SCOPE=0` loads all). `user/profile.md` fills first in its section.
 - **Vault content reaches a model fenced, and the fence must be unclosable from inside.**
   `vault.fence()` is the only producer; `vault.neutralize_fence()` runs where content enters the
   payload and before clipping; only `brain_prep.render` and `render.py` render vault text;

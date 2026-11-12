@@ -923,13 +923,15 @@ def _preload_cost(text: str) -> int:
     context have diverged. Measured over this vault's flagged memories the day
     after: 20480 B on disk, 12653 B actually preloaded.
 
-    Honours `BRAIN_PRELOAD_DEFER_WHY`: with deferral off, whole bodies load again
-    and the raw text is the true cost.
+    Since 2026-11-11 the bundle also drops the frontmatter block, so the shape is
+    whatever `vault.preload_item_text()` returns -- the same function the bundle is
+    built with, which is what keeps this number honest. It honours both opt-outs
+    (`BRAIN_PRELOAD_DEFER_WHY`, `BRAIN_PRELOAD_STRIP_FRONTMATTER`): with both off,
+    whole files load again and the raw text is the true cost.
     """
     from . import vault
 
-    rendered = vault.preload_text(text) if vault.defer_why_enabled() else text
-    return len(rendered.encode("utf-8"))
+    return len(vault.preload_item_text(text).encode("utf-8"))
 
 
 def _check_memory_sizes(brain: Path) -> list[Finding]:

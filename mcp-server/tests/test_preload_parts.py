@@ -47,14 +47,16 @@ HOW = "**How to apply:** fetch, then switch -c.\n"
 
 @pytest.fixture
 def fat_vault(vault_dir: Path) -> Path:
-    """~65 KB of user/feedback/overview: enough to need every part and overflow it.
+    """~64 KB of user/feedback/overview: enough to need every part and overflow it.
 
     Sized against PRELOAD_PARTS x HOOK_OUTPUT_CAP (7 x 9000 = 63 KB of documents) while
     staying under the 72 KB vault budget, so the overflow tested here is the hook cap's,
-    not the budget's. Raise the counts if PRELOAD_PARTS grows.
+    not the budget's. Sized by what the preload *carries* -- bodies with the Why
+    deferred and the frontmatter stripped -- so the user count went 20 -> 30 when
+    frontmatter stopped loading (2026-11-11). Raise the counts if PRELOAD_PARTS grows.
     """
     (vault_dir / "_index.md").write_text("---\npurpose: index\n---\n\n# Index\n", encoding="utf-8")
-    for i in range(20):
+    for i in range(30):
         memory(vault_dir / "user" / f"user-{i:02d}.md", f"user fact {i}", "user",
                f"User fact {i}. " + ("Detail about the user. " * 40), description=f"user fact {i}")
     for i in range(45):

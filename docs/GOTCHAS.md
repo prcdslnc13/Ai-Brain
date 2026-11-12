@@ -640,6 +640,60 @@ part ~9.0 KB), so 7 is the default for headroom; at 4 parts every global feedbac
 fell into the catalogue, which is why the fill order
 changed (next bullet).
 
+### `vault.preload_item_text()` is the one definition of an elastic memory in a preload (2026-11-11)
+
+**`vault.preload_item_text()` is the one definition of an elastic memory in a preload
+(2026-11-11).** Measured on the real vault, on the Mac Studio: 81.9 KB of loadable
+memories (43 global feedback, 32 user) against a 72 KB budget, and against about 58 KB
+that 7 parts of 9,000 chars deliver. 33 memories were catalogued instead of loaded, and
+`user/profile` was one of them.
+
+**Frontmatter was 18.8 KB of that, 23%.** In an elastic preload item every field is
+already on the page: `name` is the slug in the `### path` header, `description` is the
+opening of the body (`_render_memory` writes `body[:150]`), `type` is the section
+heading, and `machine` is where the memory was saved. Stripping it took the not-loaded
+count 33 -> 22 in simulation, and like Why-deferral it is lossless: nothing on disk
+changes and recall shows every field. What is given up is the saved-on tag in the
+preload; bodies that depend on a machine already name it.
+
+The bundle and doctor used to share `preload_text()` by convention, and the test that
+guarded it compared doctor against `preload_text`, not against a bundle. That test would
+have kept passing while the bundle dropped frontmatter and doctor went on counting it.
+Now both call `preload_item_text()`, and the test compares doctor's number with the
+bytes of a real bundle item under all four opt-out combinations.
+
+### `machines:` scopes a memory's preload to those machines, and fails open (2026-11-11)
+
+**`machines:` scopes a memory's preload to those machines, and fails open
+(2026-11-11).** About 15 of the 32 user memories were notes about one box (StrixBox's
+podman, the laptop's BIOS carve-out, LB-Arm's app control) loading on all of them: about
+18 KB on the Mac. Scoping them took the not-loaded count 33 -> 17 by itself, and to 7
+together with the frontmatter change (0 with an eighth part).
+
+**`machine:` cannot drive this.** It records where a memory was *saved*: the note about
+the laptop's BIOS was saved from the MacBook. It is also not one name per box: since
+2026-10-01 the vault holds checkpoints and memories stamped `joespaniers-mac-studio`
+and `mac`, and `joes-macbook-pro-3` and `macbook-pro`. (Likely cause, not verified: a
+sandbox where `scutil` fails, leaving the `Mac.localdomain` fallback.) So the scope is
+its own field, set by the writer, and a memory for such a box lists every name it has.
+
+The shape follows from what a wrong answer costs. A scope that hides a memory it should
+have loaded is the silent failure the Brain exists to prevent, so everything ambiguous
+loads: no field, an empty list, a non-list, a non-string entry. The scope narrows only
+the preload; recall, list and the index never look at it. Scoped-out memories are kept
+out of `skipped_items`, because the catalogue means "this session is missing these", and
+the preload states the count and **the machine name it was judged against**, which is
+the only place a wrong `machine_name()` would show.
+
+It is set through caller frontmatter (`_render_memory` keeps unknown keys), the one
+route all three frontends already share, so no frontend grew a flag. The cost: re-saving
+a scoped memory without the block drops the scope. That fails open too.
+
+**Neither change is the end of it.** Global feedback went 23 -> 43 between 2026-08-25
+and 2026-11-11, about 5.7 KB a month, so the room recovered here lasts a month or two.
+Always-load-everything grows without limit; the next step is scoping feedback the same
+way (by machine, and by tool), not a bigger budget.
+
 ### Global feedback fills before user memories (reordered 2026-09-01)
 
 **Global feedback fills before user memories (reordered 2026-09-01).** Feedback memories

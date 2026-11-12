@@ -51,6 +51,11 @@ EOF
   that project's sessions), `project` (ongoing-work context not derivable from
   the code; requires `--project` with the project *directory basename*),
   `reference` (pointer to an external system).
+- A memory that is only true on some machines (a path, an installed tool) can open
+  its body with `---`, `machines: [name, name]`, `---`. It then preloads only on
+  those machines; recall finds it everywhere. Names are the `machine:` tags that
+  recall shows (`[user @ strixbox]`). Re-saving a scoped memory without the block
+  removes the scope.
 - Short one-liners can use `--content "..."` instead of stdin.
 - Confirm afterwards in one short sentence: `Saved as <path>.`
 
