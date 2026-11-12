@@ -35,6 +35,14 @@ matters: add `--full-body` (bodies still capped) or `--top-k N` (capped at 10).
 Session checkpoints are excluded unless you pass `--include-sessions` — use
 that when looking for what happened in past work sessions.
 
+**For an exact quote** ("what did you say last time about X", "the verbatim
+response"), recall only finds *which* session: the Brain keeps lessons and
+pointers, not the conversation. Read the raw transcript for the words, at
+`<claude-config-dir>/projects/<project-slug>/<session-id>.jsonl` (the config
+dir is `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`; check every profile you
+use). Parse it line by line with `json.loads`; grep on the raw JSONL misses
+long quoted text, which is escape-mangled. Quote with minimal commentary.
+
 ## Save
 
 Body comes from stdin — use a heredoc for anything multi-line:
