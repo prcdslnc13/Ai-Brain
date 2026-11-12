@@ -662,6 +662,43 @@ have kept passing while the bundle dropped frontmatter and doctor went on counti
 Now both call `preload_item_text()`, and the test compares doctor's number with the
 bytes of a real bundle item under all four opt-out combinations.
 
+### User and reference memories preload as one-line summaries; feedback never does (2026-11-11)
+
+**User and reference memories preload as one-line summaries; feedback never does
+(2026-11-11).** Progressive disclosure, as skills do it: a skill's description stays in
+context and its body is read on demand. The preload becomes a table of contents for
+memories that are context (facts about a box, pointers to a system) and `brain recall`
+reads the rest. On the Mac Studio the 16 applicable user memories went 18.0 KB -> about
+4 KB, and the whole session bundle 55.0 -> 47.7 KB with the 39 reference summaries added.
+
+**Rules are excluded on purpose.** A summary works when the model can tell from it that
+the full memory matters, which is how a skill's description works. A rule has to apply
+when the model would not think to look ("never pipe `git switch` through `tail`" is
+needed exactly when nobody would recall it). So rules stay whole and are narrowed by
+scope instead (`machines:`, `projects:`). This was weighed against Hindsight the same
+day: its per-prompt retrieval needs per-turn LLM extraction and a server every machine
+can reach, which Brain's no-server design rules out.
+
+**The descriptions were not summaries.** `_render_memory` defaulted `description` to
+`body[:150]`, so 469 of 775 memories that day had a description cut off mid-sentence,
+and only 52 had a written one. `memory_summary()` therefore uses the description only
+when `description_quality()` says it is usable and otherwise falls back to the body's
+first sentence; new saves default to `first_sentence(body)`; doctor reports the rest
+as `WEAK_DESCRIPTIONS`. Doctor only reports: a rewrite needs a model that has read the
+memory, so it happens in a session through `brain save`, where versions are archived.
+The scan covers only preloadable kinds, because over all memories it was two thirds of
+doctor's 0.9 s inside the SessionStart hook (56 ms now).
+
+**Eight memories carried two frontmatter blocks**, the inner one holding the real
+description, from an old save that wrapped instead of merging. One rendered its raw
+frontmatter as its summary. `peel_frontmatter()` reads through any number of leading
+blocks (inner keys win) and doctor names them as `NESTED_FRONTMATTER`.
+
+References land in their own section, last, so under pressure the table of contents is
+what gives way. On the day it went in, 6 of the 39 references fell off the seventh part
+and were catalogued by name instead; shorter written descriptions are the fix, not more
+parts.
+
 ### `machines:` scopes a memory's preload to those machines, and fails open (2026-11-11)
 
 **`machines:` scopes a memory's preload to those machines, and fails open

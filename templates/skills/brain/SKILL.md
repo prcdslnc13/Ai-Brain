@@ -51,11 +51,15 @@ EOF
   that project's sessions), `project` (ongoing-work context not derivable from
   the code; requires `--project` with the project *directory basename*),
   `reference` (pointer to an external system).
-- A memory that is only true on some machines (a path, an installed tool) can open
-  its body with `---`, `machines: [name, name]`, `---`. It then preloads only on
-  those machines; recall finds it everywhere. Names are the `machine:` tags that
-  recall shows (`[user @ strixbox]`). Re-saving a scoped memory without the block
-  removes the scope.
+- The body's first sentence becomes its `description`, and the preload shows user
+  and reference memories as that one line. Make it a standalone summary: what it is
+  and when it matters.
+- A memory that only applies in some places can open its body with a frontmatter
+  block. `machines: [name, name]` preloads it only on those machines (names are the
+  `machine:` tags recall shows, `[user @ strixbox]`); `projects: ["*-rev"]` only in
+  projects whose directory name matches a glob; `preload: full` loads a user or
+  reference memory whole instead of as one line. Recall ignores all three. Re-saving
+  without the block removes them.
 - Short one-liners can use `--content "..."` instead of stdin.
 - Confirm afterwards in one short sentence: `Saved as <path>.`
 

@@ -46,7 +46,7 @@ HOW = "**How to apply:** fetch, then switch -c.\n"
 
 
 @pytest.fixture
-def fat_vault(vault_dir: Path) -> Path:
+def fat_vault(vault_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """~64 KB of user/feedback/overview: enough to need every part and overflow it.
 
     Sized against PRELOAD_PARTS x HOOK_OUTPUT_CAP (7 x 9000 = 63 KB of documents) while
@@ -54,7 +54,12 @@ def fat_vault(vault_dir: Path) -> Path:
     not the budget's. Sized by what the preload *carries* -- bodies with the Why
     deferred and the frontmatter stripped -- so the user count went 20 -> 30 when
     frontmatter stopped loading (2026-11-11). Raise the counts if PRELOAD_PARTS grows.
+
+    User memories load whole here (BRAIN_PRELOAD_SUMMARIES=0): these tests are about
+    packing items into parts, and as one-line summaries the user section no longer
+    carries enough bytes to overflow anything. Summaries have their own tests.
     """
+    monkeypatch.setenv("BRAIN_PRELOAD_SUMMARIES", "0")
     (vault_dir / "_index.md").write_text("---\npurpose: index\n---\n\n# Index\n", encoding="utf-8")
     for i in range(30):
         memory(vault_dir / "user" / f"user-{i:02d}.md", f"user fact {i}", "user",
@@ -170,7 +175,7 @@ def test_items_are_never_split_across_parts(fat_vault: Path):
 
 
 def test_a_single_item_larger_than_a_part_is_clipped_with_a_recall_hint(vault_dir: Path):
-    memory(vault_dir / "user" / "huge.md", "huge", "user", "x " * 8000)
+    memory(vault_dir / "feedback" / "huge.md", "huge", "feedback", "x " * 8000)
     bundle = vault.session_start_bundle()
     parts = brain_prep.render_parts(bundle, cap_chars=3000)
     assert len(parts[0]) <= 3000
