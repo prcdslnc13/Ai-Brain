@@ -616,7 +616,7 @@ subagent bundle ~35 KB, so from at least 2026-08-06 no session or subagent recei
 memory, a feedback rule, the overview or the latest checkpoint — only the banner and the
 index — while `BUNDLE_BUDGET_OK` reported clean. The cap is **per hook command** (a 9.5 KB
 test hook arrived intact in the same session where the Brain's hook spilled), so both
-templates register `PRELOAD_PARTS` (7) entries per preload event, each
+templates register `PRELOAD_PARTS` (8 since 2026-11-11, 7 before) entries per preload event, each
 `--part I --parts N`, and `brain_prep.render_parts` renders one part per entry under
 `BRAIN_HOOK_OUTPUT_CAP` (9000; headroom for the JSON envelope). Parts arrive in **any
 order** (observed 3, 4, 2, 1), so every part is self-describing, carries its own trust
@@ -662,6 +662,52 @@ have kept passing while the bundle dropped frontmatter and doctor went on counti
 Now both call `preload_item_text()`, and the test compares doctor's number with the
 bytes of a real bundle item under all four opt-out combinations.
 
+### User and reference memories preload as one-line summaries; feedback never does (2026-11-11)
+
+**User and reference memories preload as one-line summaries; feedback never does
+(2026-11-11).** Progressive disclosure, as skills do it: a skill's description stays in
+context and its body is read on demand. The preload becomes a table of contents for
+memories that are context (facts about a box, pointers to a system) and `brain recall`
+reads the rest. On the Mac Studio the 16 applicable user memories went 18.0 KB -> about
+4 KB, and the whole session bundle 55.0 -> 47.7 KB with the 39 reference summaries added.
+
+**Rules are excluded on purpose.** A summary works when the model can tell from it that
+the full memory matters, which is how a skill's description works. A rule has to apply
+when the model would not think to look ("never pipe `git switch` through `tail`" is
+needed exactly when nobody would recall it). So rules stay whole and are narrowed by
+scope instead (`machines:`, `projects:`). This was weighed against Hindsight the same
+day: its per-prompt retrieval needs per-turn LLM extraction and a server every machine
+can reach, which Brain's no-server design rules out.
+
+**The descriptions were not summaries.** `_render_memory` defaulted `description` to
+`body[:150]`, so 469 of 775 memories that day had a description cut off mid-sentence,
+and only 52 had a written one. `memory_summary()` therefore uses the description only
+when `description_quality()` says it is usable and otherwise falls back to the body's
+first sentence; new saves default to `first_sentence(body)`; doctor reports the rest
+as `WEAK_DESCRIPTIONS`. Doctor only reports: a rewrite needs a model that has read the
+memory, so it happens in a session through `brain save`, where versions are archived.
+The scan covers only preloadable kinds, because over all memories it was two thirds of
+doctor's 0.9 s inside the SessionStart hook (56 ms now).
+
+**Eight memories carried two frontmatter blocks**, the inner one holding the real
+description, from an old save that wrapped instead of merging. One rendered its raw
+frontmatter as its summary. `peel_frontmatter()` reads through any number of leading
+blocks (inner keys win) and doctor names them as `NESTED_FRONTMATTER`.
+
+References land in their own section, last, so under pressure the table of contents is
+what gives way. On the day it went in, 6 of the 39 references fell off the seventh part
+and were catalogued by name instead; shorter written descriptions are the fix, not more
+parts.
+
+**`PRELOAD_PARTS` went 7 -> 8 the same day, for JLaser.** After the vault pass every
+session type measured loaded everything except JLaser, whose 25 project rules fill first
+and pushed 4 user and 15 reference summaries off the seventh part. An eighth part costs
+nothing where it isn't needed: a hook whose part is empty emits 0 bytes (checked on the
+Ai-Brain bundle), so only sessions that use it pay for it. Every machine needed a setup
+re-run for that day's changes anyway, which is the usual cost of touching the hook
+templates. `fat_vault` in `test_preload_parts.py` is now sized from `PRELOAD_PARTS`
+rather than for 7; the move broke three tests that only checked the fixture's arithmetic.
+
 ### `machines:` scopes a memory's preload to those machines, and fails open (2026-11-11)
 
 **`machines:` scopes a memory's preload to those machines, and fails open
@@ -702,7 +748,7 @@ are the behavioural rules the Brain exists to deliver; user memories are context
 whatever fills last is what gets catalogued instead of loaded, and with user first every
 one of the 16 global feedback rules was pushed off the end — the same self-defeating shape
 the 12 KB subagent budget produced on 2026-07-30 (11 user entries, zero feedback). Order is
-now project-feedback → global feedback → user. If the corpus outgrows 7 parts again, the
+now project-feedback → global feedback → user. If the corpus outgrows the parts again, the
 right move is compacting `user/` (re-type incident notes as `project`/`reference`), not
 another reorder.
 

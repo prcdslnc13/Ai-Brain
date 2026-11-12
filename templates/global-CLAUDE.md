@@ -101,9 +101,12 @@ Exactly four types. Save things if and only if they fit one:
 
 - **user** — facts about the user that should shape future behavior: role, expertise, preferences,
   working style, tools. Useful, not judgmental.
-  **Scope a fact that is only true on some machines** (a path, an installed tool, a BIOS
-  setting): open the body with a frontmatter block naming them, and it preloads only there.
-  Recall still finds it everywhere. Works for any type; leave it off when unsure.
+  The session preload shows user and reference memories as **one line each**, a table of
+  contents; `brain recall` loads the rest. So recall one whenever its line bears on the task.
+  **Scope a memory that only applies in some places**: open the body with a frontmatter block,
+  and it preloads only there. `machines:` for a path, tool or setting on one box; `projects:`
+  (shell globs on the project directory name) for a rule about one kind of work. Recall still
+  finds it everywhere. Works for any type; leave it off when unsure.
 
   ```
   ---
@@ -165,6 +168,11 @@ Model-initiated signals:
 The user said: *"I am awful at remembering to do things like this and you are here to save me from
 myself."* The cost of a missed save is high; a slightly redundant save is cheap. Lean toward saving
 — but never save things in the "do NOT save" list.
+
+**Make the first sentence a summary that stands alone**: what the memory is and when it matters.
+It becomes the memory's `description`, and for user and reference memories it is all the
+preload shows. "StrixBox has podman, not docker." works; "On 2026-09-12 the first build
+attempt" does not.
 
 Keep memory bodies tight: the rule or fact, plus the `**Why:**` and `**How to apply:**` lines — a
 few sentences each, not an essay. A memory is a pointer for a future session, not a report; when
