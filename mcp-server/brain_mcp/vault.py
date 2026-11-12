@@ -961,7 +961,7 @@ def safe_mtime(p: Path) -> float:
 #
 # PRELOAD_PARTS is the single source of truth for how many entries the two hook
 # templates register per event; test_preload_parts.py asserts the templates match.
-PRELOAD_PARTS = 7
+PRELOAD_PARTS = 8
 HOOK_OUTPUT_CAP_DEFAULT = 9000  # chars; headroom under 10,000 for the JSON envelope
 # Part 1 is packed as if the health banner occupied exactly this many chars, in EVERY
 # process — only part 1's process runs the doctor and knows the real banner, and the
