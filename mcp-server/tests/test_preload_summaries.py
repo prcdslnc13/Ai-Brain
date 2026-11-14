@@ -55,7 +55,8 @@ def test_a_user_memory_preloads_as_one_line(vault_dir: Path) -> None:
 
     (item,) = _items(bundle, "user")
     assert item["content"] == "StrixBox runs podman, not docker; use podman build.\n"
-    assert bundle["summary_paths"] == ["Brain/user/podman.md"]
+    # Bundle paths use the OS separator (`Brain\user\x.md` on Windows); compare as posix.
+    assert [Path(p).as_posix() for p in bundle["summary_paths"]] == ["Brain/user/podman.md"]
     for text in _renderings(bundle):
         assert "what recall is for" not in text
         assert "one-line summaries" in text
@@ -84,7 +85,7 @@ def test_the_profile_and_preload_full_load_whole(vault_dir: Path) -> None:
     _write(vault_dir / "user" / "pinned.md",
            "name: pinned\ndescription: short\ntype: user\npreload: full", LONG_BODY)
     bundle = vault.session_start_bundle(None)
-    contents = {i["path"]: i["content"] for i in _items(bundle, "user")}
+    contents = {Path(i["path"]).as_posix(): i["content"] for i in _items(bundle, "user")}
     assert "what recall is for" in contents["Brain/user/profile.md"]
     assert "what recall is for" in contents["Brain/user/pinned.md"]
     assert bundle["summary_paths"] == []
