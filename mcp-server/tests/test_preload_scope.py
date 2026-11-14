@@ -43,8 +43,9 @@ def _scoped(path: Path, body: str, machines: str, mtype: str = "user") -> Path:
 
 
 def _elastic_paths(bundle: dict) -> list[str]:
+    # Bundle paths use the OS separator (`Brain\user\x.md` on Windows); compare as posix.
     return [
-        item["path"]
+        Path(item["path"]).as_posix()
         for section in bundle["sections"]
         if section["label"] in ("user", "feedback")
         for item in section["items"]
