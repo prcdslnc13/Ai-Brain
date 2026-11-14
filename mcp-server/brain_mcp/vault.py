@@ -507,7 +507,10 @@ def _render_memory(mtype: str, name: str, content: str, project: str | None) -> 
     body = body.strip()
     merged: dict = {
         "name": fields.get("name") or name,
-        "description": fields.get("description") or body.split("\n", 1)[0][:150],
+        # The body's first sentence, not its first 150 chars: the description is a
+        # memory's one-line summary in the preload, and `body[:150]` cut 469 of 775
+        # of them off mid-sentence (2026-11-11).
+        "description": fields.get("description") or first_sentence(body) or body[:150],
         "type": mtype,
         "machine": fields.get("machine") or machine_name(),
     }
@@ -958,7 +961,7 @@ def safe_mtime(p: Path) -> float:
 #
 # PRELOAD_PARTS is the single source of truth for how many entries the two hook
 # templates register per event; test_preload_parts.py asserts the templates match.
-PRELOAD_PARTS = 7
+PRELOAD_PARTS = 8
 HOOK_OUTPUT_CAP_DEFAULT = 9000  # chars; headroom under 10,000 for the JSON envelope
 # Part 1 is packed as if the health banner occupied exactly this many chars, in EVERY
 # process — only part 1's process runs the doctor and knows the real banner, and the
@@ -1107,29 +1110,170 @@ def strip_frontmatter_enabled() -> bool:
     return os.environ.get("BRAIN_PRELOAD_STRIP_FRONTMATTER", "1") != "0"
 
 
-def strip_frontmatter(text: str) -> str:
-    """`text` without its frontmatter block; unchanged when it has no real one.
+def peel_frontmatter(text: str) -> tuple[dict, str]:
+    """(merged frontmatter, body) with every leading frontmatter block removed.
 
+    Usually there is one block. Eight memories on 2026-11-11 had two: an old save
+    wrapped the caller's own block in a new one instead of merging them, so the body
+    opened with the frontmatter that actually carries the description. Inner keys win,
+    because the inner block is the one the writer wrote. Peels at most three.
     "Real" is `_split_caller_frontmatter`'s test (a closed block that parses as a
     mapping), so a body that merely opens with a horizontal rule keeps its first lines.
     """
+    merged: dict = {}
+    body = text
+    for _ in range(3):
+        split = _split_caller_frontmatter(body)
+        if split is None:
+            break
+        merged.update(split[0])
+        body = split[1].lstrip("\n")
+    return merged, body
+
+
+def nested_frontmatter(text: str) -> bool:
+    """True when the body itself opens with a second frontmatter block."""
     split = _split_caller_frontmatter(text)
-    if split is None:
+    return split is not None and _split_caller_frontmatter(split[1].lstrip("\n")) is not None
+
+
+def strip_frontmatter(text: str) -> str:
+    """`text` without its frontmatter block(s); unchanged when it has no real one."""
+    if _split_caller_frontmatter(text) is None:
         return text
-    return split[1].lstrip("\n")
+    return peel_frontmatter(text)[1]
 
 
-def preload_item_text(text: str) -> str:
+def preload_item_text(text: str, kind: str = "feedback", filename: str | None = None) -> str:
     """An elastic memory exactly as a preload carries it.
 
     The ONE definition of that shape: `collect_preload_candidates` builds bundle items
     with it and doctor's `_preload_cost` sizes memories with it, so the reported cost
-    of a memory cannot drift from what it actually costs. Honours both opt-outs.
+    of a memory cannot drift from what it actually costs. Honours every opt-out.
+
+    `kind` is the section the item fills ("feedback", "user", "reference") and
+    `filename` its basename: together they decide whether it loads whole or as a
+    one-line summary (see `preload_mode`).
     """
+    if preload_mode(text, kind, filename) == "summary":
+        return memory_summary(text) + "\n"
     out = preload_text(text) if defer_why_enabled() else text
     if strip_frontmatter_enabled():
         out = strip_frontmatter(out)
     return out
+
+
+# --- Summaries: the preload is a table of contents for memories that are context ---
+#
+# Progressive disclosure, the way skills work: a skill keeps its name and description
+# in context and its body is read when needed. User and reference memories are facts
+# and context — the laptop's BIOS carve-out, where the Synology stack lives — that
+# matter in some sessions and are dead weight in the rest, so the preload carries one
+# line each and `brain recall` reads the rest. On 2026-11-11 the 16 user memories that
+# applied on the Mac Studio were 18.0 KB whole and 4.1 KB as one line each.
+#
+# Feedback stays whole. A rule has to apply when the model does not think to look —
+# "never pipe `git switch` through `tail`" is needed precisely when nobody would
+# recall it — so a summary is not a substitute for it. Rules that apply only in one
+# context are narrowed by scope (`machines:`, `projects:`) instead.
+#
+# Two ways a context memory still loads whole: it is `user/profile.md`, the one memory
+# written to be always loaded, or its frontmatter says `preload: full`.
+# BRAIN_PRELOAD_SUMMARIES=0 loads user memories whole again and drops the reference
+# section, which only exists as summaries.
+SUMMARY_KINDS = ("user", "reference")
+SUMMARY_MAX_CHARS = 240
+PRELOAD_FULL_FIELD = "preload"
+
+
+def summaries_enabled() -> bool:
+    return os.environ.get("BRAIN_PRELOAD_SUMMARIES", "1") != "0"
+
+
+def _collapse_ws(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+_SENTENCE_END_RE = re.compile(r"[.!?…][)\]\"'`*_]*$")
+# A sentence break: whitespace after `.`, `!` or `?` (searched from a position, so the
+# look-behind can see the character just before it).
+_SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?])\s")
+
+
+def _clip_words(text: str, limit: int) -> str:
+    """`text` cut to at most `limit` chars at a word boundary, with an ellipsis."""
+    if len(text) <= limit:
+        return text
+    head = text[: limit - 1]
+    cut = head.rfind(" ")
+    if cut > limit // 2:
+        head = head[:cut]
+    return head.rstrip(" ,;:-—") + "…"
+
+
+def first_sentence(body: str, limit: int = SUMMARY_MAX_CHARS) -> str:
+    """The opening sentence of a memory body, as one line of at most `limit` chars.
+
+    Skips leading markdown headings (a profile opens with `# User Profile`) and blank
+    lines. A sentence ends at `.`, `!` or `?` followed by whitespace, once at least 40
+    chars are in hand, so `e.g.` or `v1.2` early on does not end it.
+    """
+    lines = [ln for ln in (body or "").splitlines()]
+    while lines and (not lines[0].strip() or lines[0].lstrip().startswith("#")):
+        lines.pop(0)
+    para = _collapse_ws("\n".join(lines).split("\n\n", 1)[0] if lines else "")
+    if not para:
+        return ""
+    m = _SENTENCE_BREAK_RE.search(para, 40)
+    sentence = para[: m.start()] if m else para
+    return _clip_words(sentence.strip(), limit)
+
+
+def description_quality(description: str, body: str) -> str:
+    """How well a memory's `description` works as its one-line summary.
+
+    "missing": empty. "cut": a copy of the opening of the body that stops mid-sentence,
+    which is what `_render_memory` wrote by default until 2026-11-11 (`body[:150]`) —
+    469 of 775 memories that day. "ok": anything else, including a complete opening
+    sentence, which reads fine on its own.
+    """
+    d = _collapse_ws(description).rstrip("…").rstrip()
+    if not d:
+        return "missing"
+    b = _collapse_ws(body)
+    probe = d[: min(len(d), 140)]
+    if len(d) >= 20 and b.startswith(probe) and not _SENTENCE_END_RE.search(d):
+        return "cut"
+    return "ok"
+
+
+def memory_summary(text: str) -> str:
+    """One line standing in for a memory in the preload's table of contents.
+
+    The written `description` when it is a real one; otherwise the body's first
+    sentence, so a memory with a cut-off description still reads as a sentence.
+    """
+    fm, body = peel_frontmatter(text)
+    description = _fm_str(fm.get("description"), "")
+    if description_quality(description, body) == "ok":
+        return _clip_words(_collapse_ws(description), SUMMARY_MAX_CHARS)
+    return first_sentence(body) or _clip_words(_collapse_ws(description), SUMMARY_MAX_CHARS)
+
+
+def wants_full_preload(fm: dict | None) -> bool:
+    return isinstance(fm, dict) and str(fm.get(PRELOAD_FULL_FIELD, "")).strip().lower() == "full"
+
+
+def preload_mode(text: str, kind: str, filename: str | None = None) -> str:
+    """"summary" or "full": how an elastic memory of section `kind` enters the preload."""
+    if kind not in SUMMARY_KINDS or not summaries_enabled():
+        return "full"
+    if kind == "user" and filename == USER_PROFILE_FILE:
+        return "full"
+    split = _split_caller_frontmatter(text)
+    if split is not None and wants_full_preload(split[0]):
+        return "full"
+    return "summary"
 
 
 # --- Machine scope: a memory can say which machines it applies to ---------------
@@ -1175,6 +1319,47 @@ def machine_scope(fm: dict | None) -> list[str]:
 def applies_to_this_machine(fm: dict | None) -> bool:
     scope = machine_scope(fm)
     return not scope or machine_name() in scope
+
+
+# --- Project scope: a memory can say which projects it applies to ---------------
+#
+# The same idea for kinds of work: `projects: ["*-rev", "rev-*"]` preloads a global
+# memory only in sessions whose project (the directory basename) matches one of the
+# patterns. Seven reverse-engineering rules (7 KB) loaded in every session on
+# 2026-11-11, including this repo's. Patterns are shell globs (`fnmatch`), compared
+# case-insensitively.
+#
+# Fails open exactly like `machines:`: no field, an empty or unreadable one, or a
+# session with no project at all loads the memory. Recall, list and the index ignore
+# it. BRAIN_PRELOAD_PROJECT_SCOPE=0 turns it off. A memory with both scopes must pass
+# both.
+PROJECT_SCOPE_FIELD = "projects"
+
+
+def project_scope_enabled() -> bool:
+    return os.environ.get("BRAIN_PRELOAD_PROJECT_SCOPE", "1") != "0"
+
+
+def project_scope(fm: dict | None) -> list[str]:
+    """The lower-cased glob patterns a frontmatter mapping scopes its memory to."""
+    if not isinstance(fm, dict):
+        return []
+    raw = fm.get(PROJECT_SCOPE_FIELD)
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    return [e.strip().lower() for e in raw if isinstance(e, str) and e.strip()]
+
+
+def applies_to_project(fm: dict | None, project: str | None) -> bool:
+    import fnmatch
+
+    patterns = project_scope(fm)
+    if not patterns or not project:
+        return True
+    name = project.lower()
+    return any(fnmatch.fnmatchcase(name, p) for p in patterns)
 
 
 # --- Trust boundary: vault content is data, not instructions -------------------
@@ -1308,7 +1493,8 @@ def collect_preload_candidates(project: str | None = None) -> dict:
     (`brain_session_start`), and the budget must count the bytes that actually ship.
     """
     root = vault_root()
-    scope_on = machine_scope_enabled()
+    machine_on = machine_scope_enabled()
+    project_on = project_scope_enabled()
     pinned: list[dict] = []
     elastic: list[dict] = []
     scoped_out: list[dict] = []
@@ -1353,29 +1539,35 @@ def collect_preload_candidates(project: str | None = None) -> dict:
             if content is None:
                 continue
             raw_bytes = len(content.encode("utf-8"))
-            # A memory scoped to other machines is left out before the budget sees it,
-            # and is reported as scoped out rather than catalogued as "did not fit":
-            # it is not something this session is missing.
-            if scope_on:
-                split = _split_caller_frontmatter(content)
-                if split is not None and not applies_to_this_machine(split[0]):
+            # A memory scoped to other machines or projects is left out before the
+            # budget sees it, and is reported as scoped out rather than catalogued as
+            # "did not fit": it is not something this session is missing.
+            split = _split_caller_frontmatter(content) if (machine_on or project_on) else None
+            if split is not None:
+                fm = split[0]
+                off_machine = machine_on and not applies_to_this_machine(fm)
+                off_project = project_on and not applies_to_project(fm, project)
+                if off_machine or off_project:
                     scoped_out.append({
                         "label": label, "path": rel(f), "kind": kind,
                         "name": memory_display_name(rel(f)),
-                        "machines": machine_scope(split[0]),
+                        "machines": machine_scope(fm) if off_machine else [],
+                        "projects": project_scope(fm) if off_project else [],
                     })
                     continue
             # Elastic sections only — these are the behavioural rules, the ones that
             # follow the Why/How convention and the ones the budget actually drops.
             # Pinned sections (index, project overview, latest checkpoint) are narrative
             # context with no rule structure, and keep their frontmatter.
+            mode = preload_mode(content, kind, f.name)
             deferred = 0
-            if defer_why_enabled():
+            if mode == "full" and defer_why_enabled():
                 deferred = raw_bytes - len(preload_text(content).encode("utf-8"))
-            content = preload_item_text(content)
+            content = preload_item_text(content, kind, f.name)
             elastic.append({
                 "label": label, "path": rel(f), "content": content, "kind": kind,
                 "clipped": False, "raw_bytes": raw_bytes, "deferred_bytes": deferred,
+                "summary": mode == "summary",
             })
 
     index_file = root / "_index.md"
@@ -1426,6 +1618,14 @@ def collect_preload_candidates(project: str | None = None) -> dict:
             sorted(user_dir.glob("*.md"), key=lambda p: (p.name != USER_PROFILE_FILE, p.name)),
             "user",
         )
+
+    # References exist in the preload only as summaries: 39 pointers to external
+    # systems are not worth carrying whole, but a one-line table of contents tells
+    # the model a pointer exists before it goes looking. Last, so under pressure the
+    # table of contents is what gives way, not a rule.
+    ref_dir = root / "references"
+    if summaries_enabled() and ref_dir.exists():
+        add_elastic("reference", sorted(ref_dir.glob("*.md")), "reference")
 
     return {"root": root, "project": project, "pinned": pinned, "elastic": elastic,
             "scoped_out": scoped_out}
@@ -1534,6 +1734,14 @@ def assemble_bundle(candidates: dict, budget_kb: float | None = None,
     # otherwise hide this machine's own memories with nothing to show for it.
     bundle["scoped_out_items"] = list(candidates.get("scoped_out") or [])
     bundle["machine"] = machine_name()
+    bundle["project"] = candidates.get("project")
+    # Which delivered items are one-line summaries, so a renderer can explain once
+    # that the full memory is a recall away instead of marking every line.
+    bundle["summary_paths"] = [
+        i["path"] for i in candidates["elastic"]
+        if i.get("summary") and any(
+            i["path"] == it["path"] for sec in bundle["sections"] for it in sec["items"])
+    ]
     bundle["deferred_why_kb"] = round(deferred_bytes / 1024.0, 2)
     return bundle
 

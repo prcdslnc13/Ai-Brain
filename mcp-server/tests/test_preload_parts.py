@@ -46,17 +46,29 @@ HOW = "**How to apply:** fetch, then switch -c.\n"
 
 
 @pytest.fixture
-def fat_vault(vault_dir: Path) -> Path:
-    """~64 KB of user/feedback/overview: enough to need every part and overflow it.
+def fat_vault(vault_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Enough user/feedback/overview to need every part and overflow it.
 
-    Sized against PRELOAD_PARTS x HOOK_OUTPUT_CAP (7 x 9000 = 63 KB of documents) while
-    staying under the 72 KB vault budget, so the overflow tested here is the hook cap's,
-    not the budget's. Sized by what the preload *carries* -- bodies with the Why
-    deferred and the frontmatter stripped -- so the user count went 20 -> 30 when
-    frontmatter stopped loading (2026-11-11). Raise the counts if PRELOAD_PARTS grows.
+    Sized from PRELOAD_PARTS x HOOK_OUTPUT_CAP, not hard-coded: about 15% more than the
+    parts can deliver, by what the preload *carries* (bodies with the Why deferred and
+    the frontmatter stripped). The byte budgets are raised well above that, so the
+    overflow tested here is always the hook cap's, never the budget's. Until 2026-11-11
+    the counts were fixed for 7 parts, and the move to 8 broke three tests that were
+    only ever checking the fixture's arithmetic.
+
+    User memories load whole here (BRAIN_PRELOAD_SUMMARIES=0): these tests are about
+    packing items into parts, and as one-line summaries the user section no longer
+    carries enough bytes to overflow anything. Summaries have their own tests.
     """
+    monkeypatch.setenv("BRAIN_PRELOAD_SUMMARIES", "0")
+    deliverable = vault.PRELOAD_PARTS * vault.HOOK_OUTPUT_CAP_DEFAULT
+    budget_kb = str(round(deliverable * 1.6 / 1024))
+    monkeypatch.setenv("BRAIN_BUNDLE_BUDGET_KB", budget_kb)
+    monkeypatch.setenv("BRAIN_SUBAGENT_BUDGET_KB", budget_kb)
+    # ~960 chars per user item, ~620 per rule, ~6 KB pinned: fill to ~115% of the parts.
+    n_user = max(30, int((deliverable * 1.15 - 45 * 620 - 6_000) / 960))
     (vault_dir / "_index.md").write_text("---\npurpose: index\n---\n\n# Index\n", encoding="utf-8")
-    for i in range(30):
+    for i in range(n_user):
         memory(vault_dir / "user" / f"user-{i:02d}.md", f"user fact {i}", "user",
                f"User fact {i}. " + ("Detail about the user. " * 40), description=f"user fact {i}")
     for i in range(45):
@@ -170,7 +182,7 @@ def test_items_are_never_split_across_parts(fat_vault: Path):
 
 
 def test_a_single_item_larger_than_a_part_is_clipped_with_a_recall_hint(vault_dir: Path):
-    memory(vault_dir / "user" / "huge.md", "huge", "user", "x " * 8000)
+    memory(vault_dir / "feedback" / "huge.md", "huge", "feedback", "x " * 8000)
     bundle = vault.session_start_bundle()
     parts = brain_prep.render_parts(bundle, cap_chars=3000)
     assert len(parts[0]) <= 3000

@@ -30,6 +30,16 @@ changing anything a rule guards.
   Why deferred, frontmatter stripped (`BRAIN_PRELOAD_STRIP_FRONTMATTER=0` restores). The
   bundle is built with it and doctor's `_preload_cost` sizes with it; a test compares the two
   under every opt-out combination. Pinned items keep their frontmatter.
+- **User and reference memories preload as one-line summaries; feedback never does.**
+  `vault.preload_mode()` decides, `memory_summary()` renders (a usable `description`, else
+  the body's first sentence), `description_quality()` is the one test of "usable", shared with
+  doctor's `WEAK_DESCRIPTIONS`. `user/profile.md` and `preload: full` load whole; references
+  are a last, summary-only section; `BRAIN_PRELOAD_SUMMARIES=0` restores. `_render_memory`
+  writes `first_sentence(body)` as the default description. Leading frontmatter is peeled
+  repeatedly (`peel_frontmatter`), because 8 memories carry two blocks.
+- **`projects:` globs scope a global memory's preload to matching project names**, case-
+  insensitive, failing open exactly like `machines:` (also when the session has no project);
+  `BRAIN_PRELOAD_PROJECT_SCOPE=0` turns it off; both scopes must pass.
 - **`machines:` in frontmatter scopes a memory's *preload* to those machines, and fails
   open.** `machine:` is saved-on and must not be used for this. Missing, empty or unreadable
   means every machine; recall, list and the index ignore the scope; scoped-out memories are
@@ -45,7 +55,8 @@ changing anything a rule guards.
   `brain-launch.cmd` forwarding `%2..%9` must agree (`test_preload_parts.py`). Parts arrive in
   any order and are self-describing; only part 1 runs doctor/stub/reindex; what doesn't fit is
   catalogued by name. No `--part` means the whole bundle.
-- **Global feedback fills before user memories** (project feedback → global feedback → user).
+- **Global feedback fills before user memories** (project feedback → global feedback → user →
+  reference summaries).
   If the corpus outgrows the parts, compact `user/`; don't reorder again.
 - **Each preload surface has its own budget knob; never size a local model from Claude
   Code's `settings.json`.** Hooks read `BRAIN_BUNDLE_BUDGET_KB` (72); `brain_session_start`

@@ -170,7 +170,8 @@ def test_the_preload_says_how_many_were_scoped_out_and_against_which_machine(
 
     bundle = vault.session_start_bundle(None)
     assert bundle["machine"] == THIS
-    note = "2 memories scoped to other machines were left out (this machine: `test-host`)"
+    note = ("2 memories scoped to other machines or projects were left out (this machine: "
+            "`test-host`, project: `none`)")
     assert note in brain_prep.render(bundle)
     parts = brain_prep.render_parts(bundle)
     assert note in parts[0]
@@ -219,7 +220,9 @@ def test_the_profile_fills_first_in_the_user_section(vault_dir: Path) -> None:
     ]
 
 
-def test_the_profile_survives_a_budget_that_drops_other_user_memories(vault_dir: Path) -> None:
+def test_the_profile_survives_a_budget_that_drops_other_user_memories(
+        vault_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BRAIN_PRELOAD_SUMMARIES", "0")  # whole, so the budget overflows
     for i in range(20):
         memory(vault_dir / "user" / f"a-note-{i:02d}.md", f"note {i}", "user", "Filler. " * 150)
     memory(vault_dir / "user" / "profile.md", "profile", "user", "I am the user.")

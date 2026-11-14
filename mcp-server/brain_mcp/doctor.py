@@ -914,7 +914,7 @@ def _check_pinned_sizes(brain: Path) -> list[Finding]:
     )]
 
 
-def _preload_cost(text: str) -> int:
+def _preload_cost(text: str, kind: str = "feedback", filename: str | None = None) -> int:
     """Bytes this memory actually contributes to a preload bundle.
 
     Not `st_size`. Since the two-tier preload (2026-08-25) the bundle carries
@@ -928,10 +928,94 @@ def _preload_cost(text: str) -> int:
     built with, which is what keeps this number honest. It honours both opt-outs
     (`BRAIN_PRELOAD_DEFER_WHY`, `BRAIN_PRELOAD_STRIP_FRONTMATTER`): with both off,
     whole files load again and the raw text is the true cost.
+
+    `kind` and `filename` matter since summaries (2026-11-11): a user memory costs one
+    line unless it is the profile or says `preload: full`.
     """
     from . import vault
 
-    return len(vault.preload_item_text(text).encode("utf-8"))
+    return len(vault.preload_item_text(text, kind, filename).encode("utf-8"))
+
+
+DESCRIPTION_SAMPLE = 5
+
+
+def _check_descriptions(brain: Path) -> list[Finding]:
+    """Memories whose `description` cannot serve as their one-line summary.
+
+    Since 2026-11-11 the description is what the preload shows for every user and
+    reference memory, and it was always part of what recall embeds. Until that day
+    `_render_memory` filled it with the body's first 150 chars, so most read as a
+    sentence cut short. This only reports: rewriting a summary needs a model that has
+    read the memory, which means a session, through `brain save`, where the previous
+    version is archived. Preloaded kinds are named first because their summaries are
+    read every session.
+
+    Scans only what a preload can carry (user, references, global and project
+    feedback): this runs inside the SessionStart hook, and walking all ~775 memories
+    made it two thirds of doctor's 0.9 s (2026-11-11). Project memories are recall-only
+    and get their own pass later.
+
+    Also names memories whose body opens with a second frontmatter block, which an old
+    save produced: the preload reads through it, but a re-save is what fixes the file.
+    """
+    from . import vault
+
+    weak: dict[str, list[str]] = {}
+    totals: dict[str, int] = {}
+    nested: list[str] = []
+    dirs = [brain / "user", brain / "references", brain / "feedback"]
+    projects = vault.projects_root(brain)
+    if projects.exists():
+        dirs += sorted(p for p in projects.glob("*/feedback") if p.is_dir())
+    files = [f for d in dirs if d.exists() for f in sorted(d.rglob("*.md"))]
+    for f in files:
+        if not vault.is_memory_path(f, brain):
+            continue
+        try:
+            raw = f.read_text(encoding="utf-8")
+        except (OSError, ValueError):
+            continue
+        name = vault.memory_display_name(str(f.relative_to(brain.parent)))
+        fm, body = vault.peel_frontmatter(raw)
+        mtype = str(fm.get("type") or "unknown")
+        if mtype not in ("user", "feedback", "reference"):
+            continue  # anything untyped has no summary to judge
+        if vault.nested_frontmatter(raw):
+            nested.append(name)
+        totals[mtype] = totals.get(mtype, 0) + 1
+        if vault.description_quality(str(fm.get("description") or ""), body) != "ok":
+            weak.setdefault(mtype, []).append(name)
+
+    out: list[Finding] = []
+    if nested:
+        out.append(Finding(
+            "info", "NESTED_FRONTMATTER",
+            f"{len(nested)} memories open their body with a second frontmatter block: "
+            f"{', '.join(nested[:DESCRIPTION_SAMPLE])}"
+            f"{f' (+{len(nested) - DESCRIPTION_SAMPLE} more)' if len(nested) > DESCRIPTION_SAMPLE else ''}.",
+            "An old save wrapped the caller's block instead of merging it. The preload and "
+            "summaries read through it; re-saving the memory in a session writes one block.",
+        ))
+    count = sum(len(v) for v in weak.values())
+    if not count:
+        out.append(Finding("ok", "DESCRIPTIONS_OK",
+                           f"all {sum(totals.values())} preloaded memories have a usable "
+                           "one-line summary"))
+        return out
+    order = ("user", "reference", "feedback")
+    detail = ", ".join(f"{len(weak[t])}/{totals[t]} {t}" for t in order if t in weak)
+    sample = [n for t in order for n in weak.get(t, [])][:DESCRIPTION_SAMPLE]
+    return out + [Finding(
+        "info", "WEAK_DESCRIPTIONS",
+        f"{count} memories have a missing or cut-off description ({detail}); first: "
+        f"{', '.join(sample)}.",
+        "The description is the line the preload shows for user and reference memories "
+        "and part of what recall searches. Ask for the summaries to be rewritten in a "
+        "session: each memory is re-saved through `brain save` with a one-sentence "
+        "`description:` saying what it is and when it matters, and the old version is "
+        "archived. Until then the preload falls back to each body's first sentence.",
+    )]
 
 
 def _check_memory_sizes(brain: Path) -> list[Finding]:
@@ -953,6 +1037,7 @@ def _check_memory_sizes(brain: Path) -> list[Finding]:
 
     oversized: list[tuple[int, int, str]] = []
     dirs = [brain / "user", brain / "feedback"]
+    kinds = {brain / "user": "user"}
     projects = vault.projects_root(brain)
     if projects.exists():
         dirs += sorted(p for p in projects.glob("*/feedback") if p.is_dir())
@@ -969,7 +1054,7 @@ def _check_memory_sizes(brain: Path) -> list[Finding]:
                 raw = f.read_text(encoding="utf-8")
             except OSError:
                 continue
-            cost = _preload_cost(raw)
+            cost = _preload_cost(raw, kinds.get(d, "feedback"), f.name)
             if cost > MEMORY_BODY_SOFT_LIMIT:
                 oversized.append((cost, len(raw.encode("utf-8")), f"{sub}/{f.name}"))
 
@@ -1247,6 +1332,7 @@ def check(
         ("frontmatter", _check_frontmatter, (brain,)),
         ("bundle_budget", _check_bundle_budget, (project, bundle_cache)),
         ("memory_sizes", _check_memory_sizes, (brain,)),
+        ("descriptions", _check_descriptions, (brain,)),
         ("pinned_sizes", _check_pinned_sizes, (brain,)),
         ("shadowed_overviews", _check_shadowed_overviews, (brain,)),
         ("stub_only_projects", _check_stub_only_projects, (brain,)),

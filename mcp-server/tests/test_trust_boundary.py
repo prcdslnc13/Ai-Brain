@@ -171,7 +171,9 @@ def test_bundle_items_carry_no_live_markers(populated_vault: Path) -> None:
     prompt; if defanging lived only in the markdown renderer, that client would be
     handed live markers and the boundary would be Claude-Code-only.
     """
-    memory(populated_vault / "user" / "hostile.md", "hostile", "user", HOSTILE_BODY)
+    # A rule, so it loads whole: user memories are one-line summaries since
+    # 2026-11-11, and the summary path is tested on its own below.
+    memory(populated_vault / "feedback" / "hostile.md", "hostile", "feedback", HOSTILE_BODY)
     bundle = vault.session_start_bundle("proj")
 
     contents = json.dumps([

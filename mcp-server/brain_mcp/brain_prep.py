@@ -46,8 +46,17 @@ _WHY_NOTE_SHORT = (
 
 
 _SCOPE_NOTE = (
-    "> {n} memories scoped to other machines were left out (this machine: `{machine}`); "
-    "`brain recall <name>` still finds them."
+    "> {n} memories scoped to other machines or projects were left out (this machine: "
+    "`{machine}`, project: `{project}`); `brain recall <name>` still finds them."
+)
+_SUMMARY_NOTE_FULL = (
+    "> Entries in the `user` and `reference` sections are one-line summaries, a table of "
+    "contents: `brain recall <name>` loads the whole memory when one bears on the task. "
+    "Rules (`feedback`) and the user profile load in full."
+)
+_SUMMARY_NOTE_SHORT = (
+    "> `user` and `reference` entries are one-line summaries; `brain recall <name>` "
+    "loads the whole memory."
 )
 
 
@@ -60,8 +69,11 @@ def _scope_note(bundle: dict) -> str:
     items = bundle.get("scoped_out_items") or []
     if not items:
         return ""
-    return _SCOPE_NOTE.format(n=len(items), machine=vault.neutralize_fence(
-        str(bundle.get("machine") or "unknown")))
+    return _SCOPE_NOTE.format(
+        n=len(items),
+        machine=vault.neutralize_fence(str(bundle.get("machine") or "unknown")),
+        project=vault.neutralize_fence(str(bundle.get("project") or "none")),
+    )
 
 
 def _catalogue_lines(bundle: dict) -> list[str]:
@@ -96,6 +108,9 @@ def render(bundle: dict) -> str:
         # Explained once here rather than per entry, so the marker itself stays short.
         lines.append(_WHY_NOTE_FULL.format(marker=vault._WHY_DEFERRED_MARKER,
                                            kb=bundle["deferred_why_kb"]))
+        lines.append("")
+    if bundle.get("summary_paths"):
+        lines.append(_SUMMARY_NOTE_FULL)
         lines.append("")
     # Everything above this point is ours; everything below is vault content, so it
     # goes inside the trust fence (ROADMAP 3F). `vault.fence` defangs forged markers
@@ -163,6 +178,10 @@ def _part_document(bundle: dict, index: int, total: int, body_units: list[tuple[
     if has_marker and bundle.get("deferred_why_kb"):
         note = _WHY_NOTE_FULL if first else _WHY_NOTE_SHORT
         lines.append(note.format(marker=vault._WHY_DEFERRED_MARKER, kb=bundle["deferred_why_kb"]))
+        lines.append("")
+    summary_paths = set(bundle.get("summary_paths") or ())
+    if summary_paths and any(path in summary_paths for _, path, _ in body_units):
+        lines.append(_SUMMARY_NOTE_FULL if first else _SUMMARY_NOTE_SHORT)
         lines.append("")
     if body_units:
         lines.append((bundle.get("trust_notice") or vault.TRUST_NOTICE) if first
